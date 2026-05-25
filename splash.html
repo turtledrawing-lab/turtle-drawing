@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Turtle Drawing</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: transparent; -webkit-app-region: drag; user-select: none; }
+  .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; gap: 22px; padding: 28px 24px; box-sizing: border-box; }
+  .logo { width: 187px; height: 187px; margin-bottom: -22px;
+    animation: crawl 14s linear infinite;
+    transform-origin: 50% 80%; will-change: transform; }
+  /* Slow, steady left→right crawl with a gentle waddle (tiny rocking +
+     small vertical bob) so it reads as walking, not bobbing in place. */
+  @keyframes crawl {
+    0%   { transform: translate(-90px, 0)   rotate(-1.5deg) translateY(0); }
+    12%  { transform: translate(-72px, 0)   rotate( 1.5deg) translateY(-2px); }
+    25%  { transform: translate(-54px, 0)   rotate(-1.5deg) translateY(0); }
+    37%  { transform: translate(-36px, 0)   rotate( 1.5deg) translateY(-2px); }
+    50%  { transform: translate(-18px, 0)   rotate(-1.5deg) translateY(0); }
+    62%  { transform: translate(  0px, 0)   rotate( 1.5deg) translateY(-2px); }
+    75%  { transform: translate( 18px, 0)   rotate(-1.5deg) translateY(0); }
+    87%  { transform: translate( 36px, 0)   rotate( 1.5deg) translateY(-2px); }
+    100% { transform: translate( 54px, 0)   rotate(-1.5deg) translateY(0); }
+  }
+  .title { font-family: Futura, "Futura PT", "Helvetica Neue", Helvetica, sans-serif;
+    font-size: 38px; font-weight: 500; letter-spacing: 0.5px; color: #000;
+    margin-bottom: 5px; line-height: 1.2; }
+  .version { font-family: Futura, "Futura PT", "Helvetica Neue", Helvetica, sans-serif;
+    font-size: 13px; color: #ffffff; letter-spacing: 0.4px; }
+  /* Classic Mac dot-style progress bar — fills right→left exactly over the
+     splash's visible duration (set via JS to match main.js). */
+  .dots { display: flex; gap: 4px; }
+  .dot  { width: 6px; height: 6px; background: #d9d9d9;
+    animation-name: dotFill;
+    animation-duration: .35s;
+    animation-timing-function: ease-out;
+    animation-iteration-count: 1;
+    animation-fill-mode: forwards; }
+  @keyframes dotFill {
+    0%   { background: #d9d9d9; }
+    100% { background: #000; }
+  }
+  .status { font-family: Geneva, "Helvetica Neue", Helvetica, sans-serif;
+    font-size: 11px; color: #ffffff; min-height: 14px; }
+</style></head>
+<body>
+<div class="wrap">
+  <!-- New halftone turtle logo (square padded; CSS contain to keep aspect) -->
+  <img class="logo" src="build/turtle_square.png" alt="Turtle Drawing"
+       style="object-fit: contain;"/>
+
+  <div class="title">Turtle Drawing</div>
+  <div class="version">Version 1.00 alpha</div>
+
+  <div class="dots" id="dots"></div>
+  <div class="status" id="status">Loading…</div>
+</div>
+<script>
+  // Classic Mac dot progress bar: fills right→left over SPLASH_MS so the
+  // bar reaching its end coincides with the splash window closing.
+  const N = 28;
+  const SPLASH_MS = 5000; // must match the min visible duration in main.js
+  const FILL_MS = 350;    // each dot's own fade duration (CSS .35s)
+  const dots = document.getElementById('dots');
+  for (let i = 0; i < N; i++) {
+    const d = document.createElement('div');
+    d.className = 'dot';
+    // Left-most dot (i = 0) starts first, right-most (i = N-1) finishes last.
+    const t = i / (N - 1);
+    const delayMs = t * (SPLASH_MS - FILL_MS);
+    d.style.animationDelay = (delayMs / 1000).toFixed(3) + 's';
+    dots.appendChild(d);
+  }
+
+  const msgs = ['Loading…', 'Preparing tools…', 'Initializing scene…', 'Almost ready…'];
+  let mi = 0;
+  setInterval(() => {
+    mi = (mi + 1) % msgs.length;
+    document.getElementById('status').textContent = msgs[mi];
+  }, 900);
+</script>
+</body></html>

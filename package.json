@@ -1,0 +1,70 @@
+{
+  "name": "turtle-drawing",
+  "version": "1.0.0-alpha",
+  "description": "Turtle Drawing — architectural sectional perspective tool.",
+  "main": "main.js",
+  "author": "sooyonghwang",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "icon": "bash build/make-icon.sh",
+    "build": "npm run icon && electron-builder --mac",
+    "build:arm64": "npm run icon && electron-builder --mac --arm64",
+    "build:x64": "npm run icon && electron-builder --mac --x64",
+    "build:universal": "npm run icon && electron-builder --mac --universal"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "build": {
+    "appId": "com.sooyonghwang.turtledrawing",
+    "productName": "Turtle Drawing",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.graphics-design",
+      "icon": "build/icon.icns",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false
+    },
+    "dmg": { "sign": false },
+    "fileAssociations": [
+      {
+        "ext": "tt",
+        "name": "Turtle Drawing Document",
+        "role": "Editor",
+        "icon": "build/icon.icns"
+      }
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "turtle_drawing.html",
+      "splash.html",
+      "package.json",
+      "build/icon.icns",
+      "build/turtle.png",
+      "build/turtle_square.png",
+      "ad/**/*"
+    ],
+    "directories": { "output": "dist" },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "turtledrawing-lab",
+        "repo": "turtle-drawing"
+      }
+    ]
+  }
+}
