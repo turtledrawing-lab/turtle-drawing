@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="build/turtle.png" width="220" alt="Turtle Drawing"/>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="build/turtle_white.png">
+  <img src="build/turtle.png" width="220" alt="Turtle Drawing"/>
+</picture>
 
 # Turtle Drawing 🐢
 
