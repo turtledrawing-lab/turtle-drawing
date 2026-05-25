@@ -15,6 +15,8 @@
 
 [**다운로드 (Releases)**](https://github.com/turtledrawing-lab/turtle-drawing/releases/latest)
 
+**한국어** · [English](README.en.md)
+
 </div>
 
 ---
