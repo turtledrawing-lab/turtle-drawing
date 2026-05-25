@@ -7,8 +7,8 @@
 
 # Turtle Drawing 🐢
 
-**Architectural sketching for Mac.**
-2D ↔ 3D 통합 스케치 · 단면 + 해치 · 벽 도구 · 도면 출력
+**Architectural modeling for Mac.**
+3D 모델링 · 단면 + 해치 · 벽 도구 · 도면 출력
 
 [![Latest Release](https://img.shields.io/github/v/release/turtledrawing-lab/turtle-drawing?include_prereleases&label=release)](https://github.com/turtledrawing-lab/turtle-drawing/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)]()
