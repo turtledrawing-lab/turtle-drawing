@@ -112,6 +112,6 @@
 
 <div align="center">
 
-Made with 🐢 by **turtledrawing-lab**
+Made with 🐢 by **LIFE architects**
 
 </div>
