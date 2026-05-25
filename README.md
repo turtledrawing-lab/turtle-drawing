@@ -8,7 +8,7 @@
 # Turtle Drawing
 
 **Architectural modeling for Mac.**
-배우기 쉬운 3D 모델링 툴
+쉬운 3D 모델링 툴
 
 [![Latest Release](https://img.shields.io/github/v/release/turtledrawing-lab/turtle-drawing?include_prereleases&label=release)](https://github.com/turtledrawing-lab/turtle-drawing/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)]()
