@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="build/turtle.png" width="220" alt="Turtle Drawing"/>
+
 # Turtle Drawing 🐢
 
 **Architectural sketching for Mac.**
@@ -88,8 +90,7 @@
 
 ## 📸 스크린샷
 
-> _준비 중._
-> 화면 잡힌 거 추가 예정.
+<img src="docs/screenshot-main.png" alt="Turtle Drawing main view"/>
 
 ---
 
