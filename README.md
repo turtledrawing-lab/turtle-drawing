@@ -5,10 +5,10 @@
   <img src="build/turtle.png" width="220" alt="Turtle Drawing"/>
 </picture>
 
-# Turtle Drawing 🐢
+# Turtle Drawing
 
 **Architectural modeling for Mac.**
-3D 모델링 · 단면 + 해치 · 벽 도구 · 도면 출력
+배우기 쉬운 3D 모델링 툴
 
 [![Latest Release](https://img.shields.io/github/v/release/turtledrawing-lab/turtle-drawing?include_prereleases&label=release)](https://github.com/turtledrawing-lab/turtle-drawing/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)]()
@@ -21,6 +21,7 @@
 
 ## ✨ 주요 기능
 
+- **Sketchup(Obj), Rhino(3dm)의 메쉬 모델링 파일일 불러오고 수정이 가능하도록 호환성을 고려
 - **2D ↔ 3D 통합**: Line / Rectangle / Circle 로 면을 그리고 **Extrude(P)** 로 즉시 입체화
 - **벽 도구 (Wall Tool)**: 두께·높이가 있는 벽을 한 번에. 다층 구조(마감재/단열재/구조체) 자동 생성
 - **단면 (Section Plane)**: 모델 자르기 → 자른 면에 **해치 + 단면선** 자동 생성
