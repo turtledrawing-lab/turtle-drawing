@@ -208,15 +208,58 @@
   }
 
   Clip.copy = function () {
-    const sel = typeof Selection !== 'undefined' ? Array.from(Selection.objects) : [];
-    if (!sel.length) {
+    if (typeof Selection === 'undefined') return;
+    const wholeSel = Array.from(Selection.objects);
+    // Face-only selection (e.g. picking a single face inside a group):
+    // snapshot a SUB-OBJECT containing just the selected faces so paste
+    // recreates that geometry, not stale clipboard data.
+    const facePieces = [];
+    if (!wholeSel.length && Selection.faces && Selection.faces.size) {
+      for (const [obj, faceSet] of Selection.faces) {
+        if (!faceSet || !faceSet.size) continue;
+        const fi = Array.from(faceSet);
+        const usedV = new Map();
+        const remap = (vi) => {
+          if (!usedV.has(vi)) usedV.set(vi, usedV.size);
+          return usedV.get(vi);
+        };
+        const newFaces = fi.map(i => {
+          const f = obj.em.faces[i];
+          return {
+            verts: f.verts.map(remap),
+            color: f.color,
+            layerId: f.layerId,
+            holes: (f.holes || []).map(h => h.map(remap)),
+          };
+        });
+        const newVerts = Array.from(usedV.keys()).map(vi => {
+          const v = obj.em.vertices[vi];
+          return [v.x, v.y, v.z];
+        });
+        facePieces.push({
+          name: obj.name + ' (faces)',
+          layerId: obj.layerId,
+          visible: true, locked: false,
+          smoothShade: !!obj.em._smoothShade,
+          materialId: obj.materialId || null,
+          isImagePlane: false, isEntourage: false,
+          entourageId: null, imageSrc: null, faceCamera: false,
+          componentId: null, componentOrigin: null, ad: null,
+          vertices: newVerts,
+          faces: newFaces,
+          edges: [],
+        });
+      }
+    }
+    const snaps = wholeSel.length ? wholeSel.map(snapshotObject) : facePieces;
+    if (!snaps.length) {
       if (typeof setStatus === 'function') setStatus('msg', 'Nothing selected to copy.');
       return;
     }
-    Clip.objects = sel.map(snapshotObject);
+    Clip.objects = snaps;
     persist(Clip.objects);
     if (typeof setStatus === 'function') {
-      setStatus('msg', `Copied ${sel.length} object(s) to clipboard.`);
+      setStatus('msg', `Copied ${snaps.length} item(s) to clipboard.`);
     }
   };
 

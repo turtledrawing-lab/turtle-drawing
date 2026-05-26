@@ -866,6 +866,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         <div data-act="import-dxf">Import DXF...</div>
         <div data-act="import-obj">Import OBJ... (pick folder, auto-loads textures)</div>
         <div data-act="export-obj">Export OBJ...</div>
+        <div data-act="export-3dm">Export 3DM (Rhino)...</div>
         <div class="sep"></div>
         <div data-act="about">About</div>
       </div>
@@ -1482,6 +1483,8 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
 <!-- Evan Wallace's CSG (BSP-tree Boolean) — used for proper
      Union / Subtract / Intersect on triangulated meshes. Exposes global `CSG`. -->
 <script src="https://cdn.jsdelivr.net/gh/evanw/csg.js@master/csg.js"></script>
+<!-- rhino3dm.js — write native Rhino .3dm files (lazy-init on first export) -->
+<script src="https://cdn.jsdelivr.net/npm/rhino3dm@8.4.0/rhino3dm.min.js"></script>
 <!-- pdf-lib for PDF export -->
 <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <!-- Turtle Drawing's architectural-drawing layer (AD.*). Loaded here
@@ -1888,14 +1891,27 @@ function setShadowEnabled(on) {
     if (!(ambientLight.intensity > 0.1)) ambientLight.intensity = 0.5;
     renderer.shadowMap.needsUpdate = true;
   } else if (ShadowSettings.sunShadeNoShadow) {
-    // Shadow map off but still drive the sun direction/intensity from
-    // the current date/time so faces get realistic sun-based shading.
-    updateSunFromSettings();
+    // Shadow map off but "sun shading" still on: use flat, uniform
+    // brightness (no directional bias) at the same total intensity as
+    // when shading is fully off — sun direction shouldn't make one side
+    // bright and the other dark when there are no shadows.
+    sun.intensity = 0;
+    ambientLight.intensity = 0.9;
+    for (const o of Model.objects) {
+      if (o && o.mesh) { o.mesh.receiveShadow = false; o.mesh.castShadow = false; }
+      if (o && o.mat)  { o.mat.needsUpdate = true; }
+    }
+    if (groundShadowMesh) {
+      groundShadowMesh.visible = false;
+      if (groundShadowMesh.material) groundShadowMesh.material.needsUpdate = true;
+    }
   } else {
     // Restore a pleasant default lighting when shadows are off — without
     // touching ShadowSettings so the panel still reflects user values.
-    sun.intensity = 0.9;
-    ambientLight.intensity = 0.5;
+    // Flat uniform shading at 0.9 so brightness matches the sun-shade
+    // (no-shadow) path.
+    sun.intensity = 0;
+    ambientLight.intensity = 0.9;
     sun.position.set(5, 10, 7);
     sun.target.position.set(0, 0, 0);
     sun.target.updateMatrixWorld();
@@ -6560,7 +6576,9 @@ function toggleGroupSolo() {
   if (Model.activeGroupId != null) {
     Model.outsideVisible = !Model.outsideVisible;
     applyLayerVisibility();
-    setStatus('msg', Model.outsideVisible ? 'Group: outside dimmed.' : 'Group: solo (outside hidden).');
+    setStatus('msg', Model.outsideVisible
+      ? 'Group: outside dimmed.'
+      : 'Group: solo (outside hidden).');
     return;
   }
   // General isolate: hide/show non-selected objects or active layer
@@ -8970,10 +8988,10 @@ const SnapPrefs = {
   },
 };
 
-const SNAP_PX_END  = 44;  // endpoint radius (corners — biggest magnetic zone)
-const SNAP_PX_MID  = 30;  // midpoint radius
-const SNAP_PX_EDGE = 18;  // on-edge radius
-const SNAP_PX_AXIS = 18;  // axis inference radius (standard extension line)
+const SNAP_PX_END  = 18;  // endpoint radius (corners) — tight to cursor
+const SNAP_PX_MID  = 14;  // midpoint radius
+const SNAP_PX_EDGE = 12;  // on-edge radius
+const SNAP_PX_AXIS = 12;  // axis inference radius
 
 // Axis definitions for inference snapping — world-aligned X/Y/Z rays.
 const _AXIS_DEFS = [
@@ -9005,6 +9023,15 @@ function computeSnap(e, opts = {}) {
   let bestMid = null, bestMidDist = SNAP_PX_MID;
   let bestEdge = null, bestEdgeDist = SNAP_PX_EDGE;
   let bestIntersect = null, bestIntersectDist = 14;  // intersection of any two edges
+  // Total faces in the visible scene — used to short-circuit expensive
+  // per-vertex / per-edge raycast occlusion tests on heavy imports where
+  // they would otherwise lock the cursor.
+  let _snapTotalFaces = 0;
+  for (const oCount of Model.objects) {
+    if (oCount && oCount.em && oCount.em.faces) _snapTotalFaces += oCount.em.faces.length;
+    if (_snapTotalFaces > 8000) break;
+  }
+  const _snapHeavy = _snapTotalFaces > 8000;
 
   // Screen-space proximity filter: many inference/extension scans should skip
   // edges that are far from the cursor (so faraway objects don't generate
@@ -9216,25 +9243,25 @@ function computeSnap(e, opts = {}) {
       const d = Math.hypot(sp.x - mx, sp.y - my);
       // Skip occluded vertices entirely so back-of-cube points never win.
       // Tighter radius in endpointOnly mode (fewer candidates → faster).
-      const radMul = opts.endpointOnly ? 1.0 : 1.7;
+      const radMul = 1.0;   // exact: snap only when cursor is within radius
       if (d < SNAP_PX_END * radMul) {
-        // Occlusion via OTHER meshes — skip in endpointOnly mode too
-        // (one raycast per nearby vertex is the worst offender on huge imports).
-        if (!opts.endpointOnly && _isOccludedEarly(v, obj.mesh)) continue;
-        // In endpointOnly mode we already restricted vertIdxSet to front-face
-        // verts and skipped the silhouette safety net, so the expensive
-        // self-mesh raycast is unnecessary — major perf win on big imports.
-        if (!opts.endpointOnly) {
-          const _r = new THREE.Raycaster();
-          const _dir = new THREE.Vector3().subVectors(v, _camPosMain);
-          const _vDist = _dir.length();
-          if (_vDist > 0.02) {
-            _r.set(_camPosMain, _dir.divideScalar(_vDist));
-            _r.near = 0.01;
-            const slack = Math.max(0.03, _vDist * 0.04);
-            _r.far = _vDist - slack;
-            const selfHit = _r.intersectObject(obj.mesh, false);
-            if (selfHit.length) continue;
+        // Occlusion checks via raycasts are the worst offender on heavy
+        // scenes — skip them past the cap and rely on the front-face
+        // pre-filter that already excluded back-of-mesh verts.
+        if (!_snapHeavy) {
+          if (!opts.endpointOnly && _isOccludedEarly(v, obj.mesh)) continue;
+          if (!opts.endpointOnly) {
+            const _r = new THREE.Raycaster();
+            const _dir = new THREE.Vector3().subVectors(v, _camPosMain);
+            const _vDist = _dir.length();
+            if (_vDist > 0.02) {
+              _r.set(_camPosMain, _dir.divideScalar(_vDist));
+              _r.near = 0.01;
+              const slack = Math.max(0.03, _vDist * 0.04);
+              _r.far = _vDist - slack;
+              const selfHit = _r.intersectObject(obj.mesh, false);
+              if (selfHit.length) continue;
+            }
           }
         }
         const candidate = { point: v.clone(), type: 'Endpoint', obj, _d: d };
@@ -9255,7 +9282,7 @@ function computeSnap(e, opts = {}) {
       const sMid = worldToScreen(mid);
       if (sMid.z < 1) {
         const d = Math.hypot(sMid.x - mx, sMid.y - my);
-        if (d < SNAP_PX_MID * 1.7) {
+        if (d < SNAP_PX_MID) {
           if (!_isOccludedEarly(mid, obj.mesh)) {
             // Self-mesh occlusion: reject if a front face of this same mesh
             // sits clearly in front of the midpoint (back-edge midpoint on
@@ -9406,6 +9433,17 @@ function computeSnap(e, opts = {}) {
     ? (Array.isArray(opts.from) ? opts.from.filter(Boolean) : [opts.from])
     : [];
   if (fromPts.length) {
+    // Performance cap: collecting inference directions iterates every edge
+    // of every face of every object. On heavy scenes (10k+ faces) this
+    // turns every mousemove during an in-progress draw into 100k+ vector
+    // ops and freezes the cursor. Skip the per-edge inferences past this
+    // threshold; world X/Y/Z axis snapping still runs.
+    let _totalFacesForSnap = 0;
+    for (const o of Model.objects) {
+      if (o && o.em && o.em.faces) _totalFacesForSnap += o.em.faces.length;
+      if (_totalFacesForSnap > 12000) break;
+    }
+    const _skipPerEdgeInference = _totalFacesForSnap > 12000;
     const rayO = raycaster.ray.origin, rayD = raycaster.ray.direction;
     const _W = new THREE.Vector3();
     const tryRay = (anchor, dirUnit, name, color) => {
@@ -9643,7 +9681,7 @@ function computeSnap(e, opts = {}) {
         }
       }
       // (b) Edge extensions from edges that touch the anchor
-      const { dirs } = collectEdgeDirs(anchor);
+      const { dirs } = _skipPerEdgeInference ? { dirs: [] } : collectEdgeDirs(anchor);
       const dirKeys = new Set();
       for (const d of dirs) {
         const k = d.x.toFixed(4) + ',' + d.y.toFixed(4) + ',' + d.z.toFixed(4);
@@ -9711,7 +9749,7 @@ function computeSnap(e, opts = {}) {
       //     scene becomes an available parallel inference from anchor. Lets
       //     you draw "parallel to that wall" or "along that slope" from any
       //     starting point, not just from the edge's endpoint.
-      const parallelDirs = collectAllSceneDirs(dirKeys);
+      const parallelDirs = _skipPerEdgeInference ? [] : collectAllSceneDirs(dirKeys);
       const parallelKeys = new Set();
       for (const d of parallelDirs) {
         const k = d.x.toFixed(3) + ',' + d.y.toFixed(3) + ',' + d.z.toFixed(3);
@@ -9721,7 +9759,7 @@ function computeSnap(e, opts = {}) {
       dirKeys.forEach(k => parallelKeys.add(k));
       // (d) Perpendicular-to-edge rays — for ANY nearby scene edge, the
       //     direction from anchor to the perpendicular foot on that edge.
-      const perps = collectPerpendicularDirs(anchor, parallelKeys);
+      const perps = _skipPerEdgeInference ? [] : collectPerpendicularDirs(anchor, parallelKeys);
       for (const p of perps) {
         tryRay(anchor, p, 'Perpendicular', 0x00aeb5); // teal
         // Perpendicular extension intersect: where perpendicular ray from
@@ -10259,11 +10297,11 @@ function pickEdgeNearScreen(e, pxRadius = 6) {
         const meshes = Model.objects.filter(o => o.group.visible && !o.locked).map(o => o.mesh);
         const occHits = _r.intersectObjects(meshes, false);
         if (occHits.length > 0) {
-          // 10% slack: edges visually adjacent to their incident face pass,
-          // edges genuinely hidden behind opaque geometry are rejected.
-          // 3% slack with 2cm floor: visible silhouette/coplanar edges pass,
-          // back-of-cube edges (>>3% behind front face) get rejected.
-          const tol = Math.max(0.02, edgeCamDist * 0.03);
+          // Strict occlusion: an edge is only pickable if NO opaque face
+          // sits visibly in front of it. 1% slack (with 1cm floor) is
+          // enough for silhouette/coplanar edges to pass while rejecting
+          // edges hidden behind walls.
+          const tol = Math.max(0.01, edgeCamDist * 0.01);
           if (occHits[0].distance < edgeCamDist - tol) return;
         }
       }
@@ -10362,7 +10400,7 @@ function refreshSelectionVisuals() {
     const wholeSel = Selection.objects.has(o);
     o.edgeMat.color.set(wholeSel ? 0x0066ff : 0x333333);
     o.edgeMat.linewidth = wholeSel ? 2 : 1;
-    // Ungrouped whole-selection: original blue face fill.
+    // Ungrouped whole-selection: blue face fill.
     if (wholeSel && o.mesh && o.mesh.geometry && o.groupId == null) {
       const overlay = new THREE.Mesh(o.mesh.geometry, wholeSelMat);
       o.group.updateMatrixWorld(true);
@@ -10376,6 +10414,14 @@ function refreshSelectionVisuals() {
     // (drawn for both grouped AND ungrouped so the line highlight is visible
     //  — WebGL LineBasicMaterial.linewidth is 1px so the regular edges alone
     //  don't read).
+    // Skip this expensive O(faces) silhouette build for very heavy meshes —
+    // selection would otherwise lock the UI for seconds on every click.
+    const SILHOUETTE_FACE_CAP = 4000;
+    if (wholeSel && o.em && o.em.faces && o.em.faces.length > SILHOUETTE_FACE_CAP) {
+      o.edgeMat.color.set(0x0066ff);
+      o.edgeMat.linewidth = 2;
+      continue;
+    }
     if (wholeSel && o.em && o.em.faces) {
       o.group.updateMatrixWorld(true);
       const edgeFaces = new Map();
@@ -10626,7 +10672,7 @@ Tools.select = {
     }
     if (preferSP) return { type: 'sectionPlane', sp: spHits[0].sectionPlane };
 
-    const edgePick = pickEdgeNearScreen(e, 24);
+    const edgePick = pickEdgeNearScreen(e, 12);
     if (edgePick) {
       return { type: 'edge', obj: edgePick.obj, edgePick };
     }
@@ -11175,6 +11221,10 @@ Tools.select = {
   },
 
   _previewHoverEdge(e) {
+    // Disabled by default — the per-frame edge raycast is the biggest
+    // hover-time cost on heavy meshes. Set `localStorage.turtle_hover_edge=1`
+    // in the console to re-enable.
+    try { if (localStorage.getItem('turtle_hover_edge') !== '1') return; } catch (_) { return; }
     const ep = pickEdgeNearScreen(e, 24);
     helperRoot.clear();
     if (ep) {
@@ -20632,6 +20682,111 @@ function exportOBJ() {
   setStatus('msg', 'Exported ' + a.download + ' (import into the modeler as meters).');
 }
 
+/* ------- Rhino .3dm export (native Rhino format via rhino3dm.js WASM) -------- */
+let _rhinoLib = null;
+async function _ensureRhinoLib() {
+  if (_rhinoLib) return _rhinoLib;
+  if (typeof rhino3dm !== 'function') {
+    throw new Error('rhino3dm.js not loaded');
+  }
+  _rhinoLib = await rhino3dm();
+  return _rhinoLib;
+}
+async function export3DM() {
+  let rhino;
+  try {
+    setStatus('msg', 'Loading rhino3dm…');
+    rhino = await _ensureRhinoLib();
+  } catch (e) {
+    showError('rhino3dm 라이브러리 로드 실패: ' + e.message);
+    return;
+  }
+  const file3dm = new rhino.File3dm();
+  file3dm.applicationName = 'Turtle Drawing';
+  file3dm.applicationDetails = 'https://github.com/turtledrawing-lab/turtle-drawing';
+  // Rhino default unit is meters; mirror that.
+  try { file3dm.settings.modelUnitSystem = rhino.UnitSystem.Meters; } catch (_) {}
+
+  // Build a layer table that mirrors Model.layers so objects inherit
+  // their colour / visibility.
+  const layerIndexById = new Map();
+  if (Array.isArray(Model.layers)) {
+    for (const L of Model.layers) {
+      const rLayer = new rhino.Layer();
+      rLayer.name = L.name || L.id;
+      try {
+        const c = parseInt((L.color || '#888888').slice(1), 16);
+        rLayer.color = { r: (c >> 16) & 0xff, g: (c >> 8) & 0xff, b: c & 0xff, a: 255 };
+      } catch (_) {}
+      const idx = file3dm.layers().add(rLayer, null);
+      layerIndexById.set(L.id, idx);
+      rLayer.delete();
+    }
+  }
+
+  let meshCount = 0, edgeCount = 0;
+  for (const obj of Model.objects) {
+    if (!obj || !obj.em) continue;
+    const em = obj.em;
+    // ----- Mesh (faces) -----
+    if (em.faces && em.faces.length) {
+      const mesh = new rhino.Mesh();
+      const verts = mesh.vertices();
+      for (const v of em.vertices) verts.add(v.x, v.y, v.z);
+      const faces = mesh.faces();
+      for (const f of em.faces) {
+        const vs = f.verts;
+        if (vs.length === 3) {
+          faces.addTriFace(vs[0], vs[1], vs[2]);
+        } else if (vs.length === 4) {
+          faces.addQuadFace(vs[0], vs[1], vs[2], vs[3]);
+        } else if (vs.length > 4) {
+          // Fan-triangulate n-gons into tri faces
+          for (let i = 1; i < vs.length - 1; i++) {
+            faces.addTriFace(vs[0], vs[i], vs[i + 1]);
+          }
+        }
+      }
+      try { mesh.computeVertexNormals(); } catch (_) {}
+      const attr = new rhino.ObjectAttributes();
+      attr.name = obj.name || 'object';
+      const li = layerIndexById.get(obj.layerId);
+      if (li != null) attr.layerIndex = li;
+      file3dm.objects().add(mesh, attr);
+      mesh.delete(); attr.delete();
+      meshCount++;
+    }
+    // ----- Standalone edges -----
+    if (em.edges && em.edges.length) {
+      for (const e of em.edges) {
+        const a = em.vertices[e.a], b = em.vertices[e.b];
+        if (!a || !b) continue;
+        const line = new rhino.Line([a.x, a.y, a.z], [b.x, b.y, b.z]);
+        const lc = new rhino.LineCurve(line);
+        const attr = new rhino.ObjectAttributes();
+        attr.name = (obj.name || 'edge') + '_edge';
+        const li = layerIndexById.get(obj.layerId);
+        if (li != null) attr.layerIndex = li;
+        file3dm.objects().add(lc, attr);
+        lc.delete(); attr.delete();
+        edgeCount++;
+      }
+    }
+  }
+
+  // Serialize → ArrayBuffer → Blob → download
+  const bytes = file3dm.toByteArray();
+  file3dm.delete();
+  const blob = new Blob([bytes], { type: 'model/vnd.3dm' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (currentFileName || 'drawing').replace(/\.(tt|3dm)$/i, '') + '.3dm';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  setStatus('msg', `Exported ${a.download} (${meshCount} meshes, ${edgeCount} edges).`);
+}
+
 /* ------- Wavefront OBJ import (use File → Export → OBJ in the modeler) ------- */
 
 /* Parse a companion .mtl file and return Map<materialName, {color, opacity, hasTexture}> */
@@ -21035,15 +21190,12 @@ function importOBJ(text, filename, mtlText, imageMap) {
       const mtl = materials.get(mtlName);
       curMtlColor = mtl ? mtl.color : 0xffffff;
       curMtlName = mtlName;
-      // If the current group already has faces, start a new sub-group for
-      // this material so different materials become separate objects.
       if (current.faces.length > 0) {
         const newName = current.name.replace(/\s*\[.*\]$/, '') + ' [' + mtlName + ']';
         current = { name: newName, faces: [], mtlName };
         groups.push(current);
       } else {
         current.mtlName = mtlName;
-        // Append material name to current group if it has no faces yet
         if (!current.name.includes('[')) {
           current.name = current.name + ' [' + mtlName + ']';
         }
@@ -21091,9 +21243,7 @@ function importOBJ(text, filename, mtlText, imageMap) {
     }
   }
 
-  // Merge all faces by material into one bucket per material (original
-  // throughput-friendly path). Connected-component splitting later separates
-  // distinct physical parts back out.
+  // Merge all faces by material into one bucket per material.
   const totalFaces = groups.reduce((n, g) => n + g.faces.length, 0);
   const LARGE = totalFaces > 5000;
   const byMtl = new Map();
@@ -21208,25 +21358,30 @@ function importOBJ(text, filename, mtlText, imageMap) {
 
   if (!pendingObjs.length) { setStatus('msg', 'No geometry found in OBJ file.'); return; }
 
-  // Mark heavy objects (>3000 polygons) and auto-collapse them to bbox
-  // proxies so the scene stays responsive. User can re-enable detail per
-  // object from the Outliner.
-  // Heavy if (faces > 1500 OR verts > 5000) AND max bbox axis < 3m.
-  // Catches typical furniture/decoration imported from 3D warehouse without
-  // grabbing walls/slabs/buildings.
+  // Mark heavy objects so the scene stays responsive after import.
+  //   • Small (<3 m bbox) AND >1500 faces  → typical 3D-warehouse prop;
+  //     hide as bbox proxy.
+  //   • ANY object > 10 000 faces            → too heavy to render in full
+  //     detail even at architectural scale; hide as bbox proxy.
+  // Users can re-enable detail per object from the Outliner.
   const HEAVY_FACES = 1500;
   const HEAVY_VERTS = 5000;
   const SMALL_MAX_AXIS_M = 3;
+  const HARD_FACE_CAP = 10000;
   let heavyCount = 0;
   for (const o of pendingObjs) {
     if (!o.em) continue;
     const nf = o.em.faces ? o.em.faces.length : 0;
     const nv = o.em.vertices ? o.em.vertices.length : 0;
-    if (nf <= HEAVY_FACES && nv <= HEAVY_VERTS) continue;
-    const bb = o.computeBBox();
-    const sz = new THREE.Vector3(); bb.getSize(sz);
-    const maxAxis = Math.max(sz.x, sz.y, sz.z);
-    if (maxAxis >= SMALL_MAX_AXIS_M) continue;  // architectural scale → keep
+    let heavy = false;
+    if (nf > HARD_FACE_CAP) {
+      heavy = true;
+    } else if (nf > HEAVY_FACES || nv > HEAVY_VERTS) {
+      const bb = o.computeBBox();
+      const sz = new THREE.Vector3(); bb.getSize(sz);
+      if (Math.max(sz.x, sz.y, sz.z) < SMALL_MAX_AXIS_M) heavy = true;
+    }
+    if (!heavy) continue;
     o._heavy = true;
     try { o.setLowDetail(true); } catch (_) {}
     heavyCount++;
@@ -21358,6 +21513,9 @@ function _placementConfirm(e) {
     obj.rebuild();
     addObject(obj);
   }
+  // (Import auto-wrap removed — imported objects stay independent so
+  //  single-click selects just the clicked one. User can multi-select and
+  //  Edit → Make Group manually if they want to bundle them.)
 
   // Auto-layer + auto-group by material name, and apply built-in materials
   // where we can match by keyword. This runs after addObject so layerId is set.
@@ -22244,14 +22402,8 @@ function drawOverlay() {
   const isSnapTool = ToolMgr.active &&
     ['line','rect','circle','arc','polygon','freehand','wall','stair','pp','move','scale','rotate','tape','dim','dimAngle','text','callout','paint','offset','level'].includes(ToolMgr.active.name);
 
-  if (isSnapTool && snapCandidates.length) {
-    // Draw inactive candidates first (faint dots)
-    for (const c of snapCandidates) {
-      if (c.active) continue;
-      const s = worldToScreen(c.point);
-      if (s.z > 0 && s.z < 1) drawSnapIndicator(s.x, s.y, c.type, false);
-    }
-  }
+  // Per user request: don't show faint hint dots for every nearby snap —
+  // only the single winning snap (drawn below as `currentSnap`).
   if (isSnapTool && currentSnap) {
     const s = worldToScreen(currentSnap.point);
     if (s.z > 0 && s.z < 1) {
@@ -22685,6 +22837,9 @@ function _handleActionImpl(act) {
     case 'export-obj':
       exportOBJ();
       break;
+    case 'export-3dm':
+      export3DM().catch(e => { console.error(e); showError('3DM export failed: ' + e.message); });
+      break;
     case 'export-svg':
       try { AD.Export.saveSVG(); } catch (e) { console.error(e); showError('SVG export failed: ' + e.message); }
       break;
@@ -22746,12 +22901,20 @@ function _handleActionImpl(act) {
       // (the wireframe survives, standard). Other whole-object selects
       // (e.g. via outliner / move tool) still delete the entire object.
       for (const o of Array.from(Selection.objects)) {
+        // Members of a group must be deleted as whole objects, NOT demoted
+        // to the per-face delete path (which would leave the wireframe).
+        if (o.groupId) continue;
         const fset = Selection.faces.get(o);
         const allFacesAlsoSelected =
           fset && o.em.faces.length > 0 && fset.size === o.em.faces.length;
         if (allFacesAlsoSelected) {
           Selection.objects.delete(o);
         }
+      }
+      // Clear face selection on any grouped objects so the per-face delete
+      // path below leaves them alone (we delete the whole group here).
+      for (const o of Array.from(Selection.objects)) {
+        if (o.groupId) Selection.faces.delete(o);
       }
       // Delete whole selected objects (the ones not handled by the face path)
       // BIM-backed objects: remove the parametric entity too (and its
@@ -23725,14 +23888,32 @@ function renderOutliner() {
     }
     const collapsed = _outlinerCollapsed.has(key);
     const header = document.createElement('div');
-    header.className = 'outliner-row';
+    const isGroupHeader = key.startsWith('G:');
+    const isGroupSelected = isGroupHeader && objs.every(o => Selection.objects.has(o));
+    header.className = 'outliner-row' + (isGroupSelected ? ' selected' : '');
     header.style.cssText = 'display:flex; align-items:center; gap:2px; font-weight:600; font-size:10.5px;';
     const arrow = collapsed ? '▸' : '▾';
-    header.innerHTML = `<span style="width:14px; text-align:center; font-size:9px; cursor:pointer;">${arrow}</span><span style="flex:1;">${head.label}</span>`;
-    header.onclick = () => {
-      if (_outlinerCollapsed.has(key)) _outlinerCollapsed.delete(key);
-      else _outlinerCollapsed.add(key);
-      renderOutliner();
+    header.innerHTML = `<span class="ol-arrow" style="width:14px; text-align:center; font-size:9px; cursor:pointer;">${arrow}</span><span class="ol-label" style="flex:1; cursor:pointer;">${head.label}</span>`;
+    header.onclick = (e) => {
+      // Arrow → collapse/expand. Label → select all members (or just the
+      // component instance for component groups).
+      if (e.target.classList.contains('ol-arrow')) {
+        if (_outlinerCollapsed.has(key)) _outlinerCollapsed.delete(key);
+        else _outlinerCollapsed.add(key);
+        renderOutliner();
+        return;
+      }
+      if (isGroupHeader) {
+        const gid = key.slice(2);
+        selectGroup(gid, e.shiftKey);
+        renderOutliner();
+      } else {
+        if (!e.shiftKey) clearSelection();
+        for (const o of objs) Selection.objects.add(o);
+        refreshSelectionVisuals();
+        renderEntityInfo();
+        renderOutliner();
+      }
     };
     list.appendChild(header);
     if (!collapsed) {
@@ -24024,9 +24205,16 @@ function rotateImagePlane(o, angleRad) {
 
 /* Per-frame billboard tick: rotate/rebuild any object flagged faceCamera
    so it squarely faces the current camera. Called from the animate loop. */
+let _faceCamLastPos = new THREE.Vector3(Infinity, Infinity, Infinity);
 function _tickFaceCamera() {
   if (!Model || !Model.objects || !Model.objects.length) return;
   const camPos = camera.position;
+  // Only rebuild billboards when the camera actually moved enough to matter
+  // (~1 cm). Otherwise we were calling SketchObject.rebuild() every frame
+  // for every entourage figure — a huge per-frame cost in scenes with many
+  // people/plants.
+  if (_faceCamLastPos.distanceToSquared(camPos) < 1e-4) return;
+  _faceCamLastPos.copy(camPos);
   const worldUp = new THREE.Vector3(0, 1, 0);
   for (const o of Model.objects) {
     if (!o.faceCamera || !o.group.visible) continue;

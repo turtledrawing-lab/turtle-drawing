@@ -1703,12 +1703,9 @@
     return removed;
   };
 
-  // Auto-run at script load and periodically for first few seconds (the
-  // app may load saved state asynchronously).
+  // Auto-run once after load to clear any leftovers from prior sessions.
   window.addEventListener('DOMContentLoaded', () => {
-    [800, 2000, 4000].forEach(d => setTimeout(() => {
-      try { window._cleanupOnboardingLeftovers(); } catch (_) {}
-    }, d));
+    setTimeout(() => { try { window._cleanupOnboardingLeftovers(); } catch (_) {} }, 1500);
   });
 
   window._startOnboardingTour = function () {

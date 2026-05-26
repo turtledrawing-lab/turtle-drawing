@@ -314,6 +314,7 @@ function createWindow(pendingDocJson) {
           label: 'Export',
           submenu: [
             { label: 'OBJ...',    click: send('export-obj') },
+            { label: '3DM (Rhino)...', click: send('export-3dm') },
             { label: 'STL (3D printing)...',    click: send('export-stl') },
             { type: 'separator' },
             { label: 'Section SVG...',          click: send('export-svg') },
