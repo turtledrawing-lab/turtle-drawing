@@ -8988,10 +8988,10 @@ const SnapPrefs = {
   },
 };
 
-const SNAP_PX_END  = 18;  // endpoint radius (corners) — tight to cursor
-const SNAP_PX_MID  = 14;  // midpoint radius
-const SNAP_PX_EDGE = 12;  // on-edge radius
-const SNAP_PX_AXIS = 12;  // axis inference radius
+const SNAP_PX_END  = 10;  // endpoint radius — must be near corner
+const SNAP_PX_MID  =  6;  // midpoint radius — small so midpoints don't hijack
+const SNAP_PX_EDGE =  8;  // on-edge radius
+const SNAP_PX_AXIS =  4;  // axis inference radius — very tight
 
 // Axis definitions for inference snapping — world-aligned X/Y/Z rays.
 const _AXIS_DEFS = [
@@ -9029,9 +9029,13 @@ function computeSnap(e, opts = {}) {
   let _snapTotalFaces = 0;
   for (const oCount of Model.objects) {
     if (oCount && oCount.em && oCount.em.faces) _snapTotalFaces += oCount.em.faces.length;
-    if (_snapTotalFaces > 8000) break;
+    if (_snapTotalFaces > 500) break;
   }
-  const _snapHeavy = _snapTotalFaces > 8000;
+  // Lowered the threshold — occlusion raycasts on every snap candidate
+  // were the main source of view-angle-dependent lag even on light
+  // scenes (each angle exposed a different cluster of candidates).
+  // Front-face pre-filter already culls back-of-mesh verts.
+  const _snapHeavy = _snapTotalFaces > 500;
 
   // Screen-space proximity filter: many inference/extension scans should skip
   // edges that are far from the cursor (so faraway objects don't generate
@@ -9236,7 +9240,12 @@ function computeSnap(e, opts = {}) {
     for (const ed of obj.em.edges) addEdge(ed.a, ed.b);
 
     // --- ENDPOINTS (screen-space pixel distance) ---
+    // Cap how many verts we examine per object so a 50k-vert mesh can't
+    // by itself blow the frame budget when many of them project near the
+    // cursor (the cause of view-angle-dependent stutter).
+    let _endpointBudget = 1200;
     for (const vi of vertIdxSet) {
+      if (--_endpointBudget < 0) break;
       const v = obj.em.vertices[vi];
       const sp = worldToScreen(v);
       if (sp.z > 1) continue;                // behind the camera
@@ -9272,7 +9281,9 @@ function computeSnap(e, opts = {}) {
 
     // --- MIDPOINTS + ON-EDGE ---
     if (opts.endpointOnly) continue;  // Dimension tool: skip mid/on-edge entirely.
+    let _edgeBudget = 1500;
     for (const [ai, bi] of edgesToScan) {
+      if (--_edgeBudget < 0) break;
       const a = obj.em.vertices[ai], b = obj.em.vertices[bi];
       const sA = worldToScreen(a), sB = worldToScreen(b);
       if (sA.z > 1 && sB.z > 1) continue;
@@ -9360,15 +9371,17 @@ function computeSnap(e, opts = {}) {
   }
 
   // --- INTERSECTION SNAP (any two edges meeting in 3D) ---
-  // Collect all edges that appear near the cursor in screen space, then for
-  // each pair compute their 3D intersection. If lines actually meet within
-  // a small tolerance (25 cm) AND the intersection lies inside both segments,
-  // add it as a snap candidate. Capped by bestIntersectDist px.
+  // Quadratic in the number of edges near the cursor — from certain camera
+  // angles dozens of edges crowd into the snap radius and the O(N²) pair
+  // test causes massive lag. Cap the candidate count so the math stays
+  // bounded regardless of view.
   {
+    const NEAR_EDGE_CAP = 30;
     const nearEdges = [];
     for (const obj of Model.objects) {
       if (!obj.group.visible || obj.locked) continue;
       if (obj.em._smoothShade) continue;
+      if (nearEdges.length >= NEAR_EDGE_CAP) break;
       const pushNear = (A, B) => {
         const sA = worldToScreen(A), sB = worldToScreen(B);
         if (sA.z > 1 && sB.z > 1) return;
@@ -9378,11 +9391,18 @@ function computeSnap(e, opts = {}) {
         let t = ((mx - sA.x) * dx + (my - sA.y) * dy) / lenSq;
         t = Math.max(0, Math.min(1, t));
         const px = sA.x + dx * t, py = sA.y + dy * t;
-        if (Math.hypot(px - mx, py - my) < 60) nearEdges.push({ A, B });
+        if (Math.hypot(px - mx, py - my) < 60 && nearEdges.length < NEAR_EDGE_CAP) {
+          nearEdges.push({ A, B });
+        }
       };
-      for (const ed of obj.em.edges) pushNear(obj.em.vertices[ed.a], obj.em.vertices[ed.b]);
+      for (const ed of obj.em.edges) {
+        if (nearEdges.length >= NEAR_EDGE_CAP) break;
+        pushNear(obj.em.vertices[ed.a], obj.em.vertices[ed.b]);
+      }
       for (const f of obj.em.faces) {
+        if (nearEdges.length >= NEAR_EDGE_CAP) break;
         for (let i = 0; i < f.verts.length; i++) {
+          if (nearEdges.length >= NEAR_EDGE_CAP) break;
           pushNear(obj.em.vertices[f.verts[i]], obj.em.vertices[f.verts[(i+1) % f.verts.length]]);
         }
       }
@@ -27225,10 +27245,25 @@ window.addEventListener('keydown', e => {
     em.addFace([verts[3], verts[7], verts[4], verts[0]], 0xffffff, 'Layer0');
     addObject(new SketchObject(em, 'Box'));
   };
-  // Try once, then retry briefly to give entourage scripts time to load.
+  // Force a face-camera tick right after placement (and once more after a
+  // short delay so the camera matrix has settled) — otherwise the figure
+  // sits with the orientation computed from a stale camera direction and
+  // appears slightly sideways until the user moves the mouse.
+  const orientNow = () => {
+    try {
+      camera.updateMatrixWorld(true);
+      if (typeof _faceCamLastPos !== 'undefined') {
+        _faceCamLastPos.set(Infinity, Infinity, Infinity);
+      }
+      _tickFaceCamera();
+    } catch (_) {}
+  };
   if (!placePerson()) {
-    setTimeout(() => { if (!placePerson()) fallbackBox(); }, 300);
+    setTimeout(() => { if (!placePerson()) fallbackBox(); else orientNow(); }, 300);
+  } else {
+    orientNow();
   }
+  setTimeout(orientNow, 400);
 })();
 
 ToolMgr.set('select');
