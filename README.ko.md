@@ -46,15 +46,6 @@
 2. **Turtle Drawing.app** 을 **Applications** 폴더로 드래그
 3. Applications 에서 더블클릭
 
-### 첫 실행 시 경고 (현재 알파 — 미서명 빌드)
-> 정식 v1.0 부터는 Apple 공증이 적용되어 경고가 없어져요.
-
-"확인되지 않은 개발자" 경고가 뜨면:
-- **방법 1**: Applications 에서 앱을 **우클릭 → 열기** → 다시 "열기"
-- **방법 2**: 터미널에 한 줄:
-  ```
-  xattr -dr com.apple.quarantine /Applications/Turtle\ Drawing.app
-  ```
 
 ---
 
