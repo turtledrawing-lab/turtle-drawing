@@ -785,7 +785,11 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
 /* Cursors per tool */
 .cursor-select  #viewport { cursor: default; }
 .cursor-move    #viewport { cursor: move; }
-.cursor-draw    #viewport { cursor: crosshair; }
+/* Red-pencil cursor (SketchUp-style) — hotspot at the pencil TIP so the
+   point where the line will land is at the cursor's reported position. */
+.cursor-draw    #viewport {
+  cursor: none;
+}
 .cursor-pp      #viewport { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23111' stroke-width='1.5' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M16 4 L12 9 L20 9 Z' fill='%23111'/%3E%3Cline x1='16' y1='9' x2='16' y2='23'/%3E%3Cpath d='M16 28 L12 23 L20 23 Z' fill='%23111'/%3E%3C/g%3E%3C/svg%3E") 16 16, crosshair; }
 .cursor-orbit   #viewport { cursor: grab; }
 .cursor-pan     #viewport { cursor: grab; }
@@ -7213,10 +7217,23 @@ const raycaster = new THREE.Raycaster();
 raycaster.params.Line = { threshold: 0.15 };
 const pointer = new THREE.Vector2();
 
+// Visual offset between OS mouse position and the pencil cursor's drawn tip.
+// Must match the .cursor-draw hotspot + SVG tip location so snap targets and
+// drawn points align with what the user sees as the pencil nib.
+const CURSOR_TIP_OFFSET_X = 0; // hotspot is at pencil tip → no offset needed
+const CURSOR_TIP_OFFSET_Y = 0;
+function _cursorPx(e) {
+  // Only apply offset when a draw-style tool is active (pencil cursor shown).
+  if (document.body.classList.contains('cursor-draw')) {
+    return { x: e.clientX + CURSOR_TIP_OFFSET_X, y: e.clientY + CURSOR_TIP_OFFSET_Y };
+  }
+  return { x: e.clientX, y: e.clientY };
+}
 function ndc(e) {
   const r = CAN.getBoundingClientRect();
-  pointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
-  pointer.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+  const p = _cursorPx(e);
+  pointer.x = ((p.x - r.left) / r.width) * 2 - 1;
+  pointer.y = -((p.y - r.top) / r.height) * 2 + 1;
   return pointer;
 }
 
@@ -8988,9 +9005,9 @@ const SnapPrefs = {
   },
 };
 
-const SNAP_PX_END  = 10;  // endpoint radius — must be near corner
-const SNAP_PX_MID  =  6;  // midpoint radius — small so midpoints don't hijack
-const SNAP_PX_EDGE =  8;  // on-edge radius
+const SNAP_PX_END  =  9;  // endpoint radius — tight so indicator stays at tip
+const SNAP_PX_MID  =  5;  // midpoint radius
+const SNAP_PX_EDGE =  5;  // on-edge radius (smaller than endpoint so vertex wins)
 const SNAP_PX_AXIS =  4;  // axis inference radius — very tight
 
 // Axis definitions for inference snapping — world-aligned X/Y/Z rays.
@@ -9010,8 +9027,9 @@ function computeSnap(e, opts = {}) {
   snapCandidates = [];
   // VP-relative to match worldToScreen output (renderer & overlay are VP-sized).
   const cr = VP.getBoundingClientRect();
-  const mx = e.clientX - cr.left;
-  const my = e.clientY - cr.top;
+  const _cp = _cursorPx(e);
+  const mx = _cp.x - cr.left;
+  const my = _cp.y - cr.top;
   // Editing tools pass skipOuterGroups so the resulting snap won't merge new
   // geometry into a group we're outside of. We STILL scan grouped objects so
   // their endpoints/midpoints/edges/faces remain snap targets — we just blank
@@ -10032,6 +10050,21 @@ function computeSnap(e, opts = {}) {
   else if (SnapPrefs.extIntersect && bestIntersect) best = bestIntersect;
   else if (SnapPrefs.onEdge       && bestEdge)      best = bestEdge;
   else if (SnapPrefs.axis         && bestAxis)      best = bestAxis;
+  // VERTEX MAGNETISM: if best is 'On Edge' but one of the edge's endpoints
+  // is within the endpoint snap radius of the cursor, promote to that
+  // endpoint. Guarantees pencil-tip-near-corner always snaps to corner.
+  if (best && best.type === 'On Edge' && SnapPrefs.endpoint &&
+      best.edgeA && best.edgeB) {
+    const sA = worldToScreen(best.edgeA);
+    const sB = worldToScreen(best.edgeB);
+    const dA = Math.hypot(sA.x - mx, sA.y - my);
+    const dB = Math.hypot(sB.x - mx, sB.y - my);
+    if (dA < SNAP_PX_END && dA <= dB) {
+      best = { point: best.edgeA.clone(), type: 'Endpoint', obj: best.obj };
+    } else if (dB < SNAP_PX_END) {
+      best = { point: best.edgeB.clone(), type: 'Endpoint', obj: best.obj };
+    }
+  }
   if (!best && !opts.endpointOnly) {
     if      (SnapPrefs.onFace   && faceHit) best = faceHit;
     else if (SnapPrefs.onGround) {
@@ -21861,10 +21894,10 @@ window.addEventListener('keydown', e => {
 
 /* --- Overlay (2D) --- */
 const SNAP_STYLES = {
-  'Endpoint':  { shape: 'diamond', color: '#00cc00', size: 7,  fill: true  },
-  'Midpoint':  { shape: 'triangle', color: '#00aaee', size: 7,  fill: true  },
-  'On Edge':   { shape: 'circle',  color: '#ee6600', size: 5,  fill: true  },
-  'On Face':   { shape: 'square',  color: '#8888ff', size: 5,  fill: false },
+  'Endpoint':  { shape: 'square',   color: '#00cc44', size: 6,  fill: true  },
+  'Midpoint':  { shape: 'triangle', color: '#00bfd4', size: 6,  fill: true  },
+  'On Edge':   { shape: 'square',   color: '#e53935', size: 5,  fill: true  },
+  'On Face':   { shape: 'diamond',  color: '#3f78ff', size: 6,  fill: true  },
   'Grid':      { shape: 'cross',   color: '#cc0000', size: 5,  fill: false },
   'On Ground': { shape: 'dot',     color: '#888888', size: 3,  fill: true  },
 };
@@ -22427,11 +22460,101 @@ function drawOverlay() {
   if (isSnapTool && currentSnap) {
     const s = worldToScreen(currentSnap.point);
     if (s.z > 0 && s.z < 1) {
-      // Draw inference lines from active snap
+      // Draw snap indicator AT the snap target so it overlaps the (also-
+      // jumped) crosshair below — one combined visual, not two.
       drawInferenceLines(s.x, s.y, currentSnap);
-      // Draw the active snap indicator on top (larger, bolder)
       drawSnapIndicator(s.x, s.y, currentSnap.type, true);
     }
+  }
+
+  // Custom draw cursor — bold crosshair at the exact CLICK point. When snap
+  // is active the crosshair jumps to the snap target (so what you see is
+  // what you'll draw); otherwise it sits at the mouse position.
+  if (document.body.classList.contains('cursor-draw') && _lastPointerEvt) {
+    const cr = VP.getBoundingClientRect();
+    const snapped = !!(currentSnap && SNAP_STYLES[currentSnap.type]);
+    const snapColor = snapped ? SNAP_STYLES[currentSnap.type].color : '#e53935';
+    let px, py;
+    if (snapped) {
+      const sp = worldToScreen(currentSnap.point);
+      px = sp.x; py = sp.y;
+    } else {
+      px = _lastPointerEvt.clientX - cr.left;
+      py = _lastPointerEvt.clientY - cr.top;
+    }
+    octx.save();
+    octx.translate(px, py);
+
+    // White halo for visibility on any background
+    octx.strokeStyle = '#ffffff';
+    octx.lineWidth = 3;
+    octx.globalAlpha = 0.9;
+    octx.beginPath();
+    octx.moveTo(-8, 0); octx.lineTo(8, 0);
+    octx.moveTo(0, -8); octx.lineTo(0, 8);
+    octx.stroke();
+    // Colored crosshair on top
+    octx.strokeStyle = snapColor;
+    octx.lineWidth = 1.5;
+    octx.globalAlpha = 1;
+    octx.beginPath();
+    octx.moveTo(-8, 0); octx.lineTo(8, 0);
+    octx.moveTo(0, -8); octx.lineTo(0, 8);
+    octx.stroke();
+    // Snap ring around crosshair when snap engaged
+    if (snapped) {
+      octx.strokeStyle = snapColor;
+      octx.lineWidth = 2;
+      octx.globalAlpha = 0.85;
+      octx.beginPath(); octx.arc(0, 0, 10, 0, Math.PI * 2); octx.stroke();
+    }
+    octx.restore();
+  }
+  if (false) {
+    // Original pencil drawing kept below for reference but unreachable.
+    octx.save();
+    // Draw the pencil shifted down-right by (4, 4) so its visual midline
+    // passes through (0, 0). The user reads the "tip" as the centerline of
+    // the wedge, not the absolute apex.
+    const OX = 4, OY = 4;
+    octx.strokeStyle = '#444';
+    octx.fillStyle = '#fff';
+    octx.lineWidth = 1;
+    octx.globalAlpha = 0.95;
+    // Sharp tip — apex at (OX-4, OY-4) = (0,0)
+    octx.beginPath();
+    octx.moveTo(OX - 4, OY - 4); octx.lineTo(OX + 2, OY - 2); octx.lineTo(OX - 2, OY + 2); octx.closePath();
+    octx.fill(); octx.stroke();
+    // Pencil body
+    octx.beginPath();
+    octx.moveTo(OX + 2, OY - 2); octx.lineTo(OX + 18, OY + 14); octx.lineTo(OX + 14, OY + 18); octx.lineTo(OX - 2, OY + 2); octx.closePath();
+    octx.fill(); octx.stroke();
+    // Eraser block at far end
+    octx.beginPath();
+    octx.moveTo(OX + 14, OY + 18); octx.lineTo(OX + 18, OY + 14); octx.lineTo(OX + 22, OY + 18); octx.lineTo(OX + 18, OY + 22); octx.closePath();
+    octx.fill(); octx.stroke();
+    // Snap-engagement feedback: solid colored ring around the tip.
+    if (snapped) {
+      octx.globalAlpha = 0.9;
+      octx.strokeStyle = snapColor;
+      octx.lineWidth = 2;
+      octx.beginPath();
+      octx.arc(0, 0, 7, 0, Math.PI * 2);
+      octx.stroke();
+      octx.globalAlpha = 0.35;
+      octx.beginPath();
+      octx.arc(0, 0, 11, 0, Math.PI * 2);
+      octx.stroke();
+    }
+    // Crosshair at the exact hot point (high contrast so it's always visible).
+    octx.globalAlpha = 1;
+    octx.strokeStyle = snapped ? snapColor : '#e53935';
+    octx.lineWidth = 1.5;
+    octx.beginPath();
+    octx.moveTo(-4, 0); octx.lineTo(4, 0);
+    octx.moveTo(0, -4); octx.lineTo(0, 4);
+    octx.stroke();
+    octx.restore();
   }
 
   // Move tool: draw a colored move-vector line from origin to current
@@ -26409,7 +26532,9 @@ function pickSectionPlaneAt(e) {
   return node && node.userData.sectionPlane ? node.userData.sectionPlane : null;
 }
 
+let _lastPointerEvt = null;
 function updateSnapTooltip(e) {
+  _lastPointerEvt = e;
   const tool = ToolMgr.active;
   const tt = document.getElementById('snapTooltip');
   if (!tool || !['line','rect','circle','arc','polygon','freehand','wall','stair','pp','move','scale','rotate','tape','erase','paint','offset','dim','dimAngle','text','callout'].includes(tool.name)) {
@@ -26423,7 +26548,8 @@ function updateSnapTooltip(e) {
   if (snap) {
     const style = SNAP_STYLES[snap.type];
     const color = style ? style.color : '#888';
-    tt.innerHTML = `<span style="display:inline-block;width:8px;height:8px;background:${color};border-radius:50%;margin-right:4px;vertical-align:middle;"></span>${snap.type}`;
+    const label = snap.type;
+    tt.innerHTML = `<span style="display:inline-block;width:8px;height:8px;background:${color};border-radius:50%;margin-right:4px;vertical-align:middle;"></span>${label}`;
     const r = VP.getBoundingClientRect();
     tt.style.left = (e.clientX - r.left + 16) + 'px';
     tt.style.top  = (e.clientY - r.top  + 16) + 'px';
