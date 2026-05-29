@@ -1,4 +1,11 @@
-# Turtle Drawing
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="build/turtle_white.png">
+  <img src="build/turtle.png" width="220" alt="Turtle Drawing"/>
+</picture>
+
+## Turtle Drawing
 
 **Architectural modeling for Mac.**
 Easy 3D modeling tool
@@ -8,7 +15,9 @@ Easy 3D modeling tool
 
 [**Download (Releases)**](https://github.com/turtledrawing-lab/turtle-drawing/releases/latest)
 
-English · [한국어](README.ko.md)
+**English** · [한국어](README.ko.md)
+
+</div>
 
 ---
 
@@ -94,6 +103,12 @@ To bring a SketchUp model in **with its materials/textures intact**, export to O
 
 - macOS 10.12 (Sierra) or later
 - Apple Silicon or Intel Mac
+
+---
+
+## 📸 Screenshot
+
+<img src="docs/screenshot-main.png" alt="Turtle Drawing main view"/>
 
 ---
 

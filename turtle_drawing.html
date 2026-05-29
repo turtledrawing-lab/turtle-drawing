@@ -301,6 +301,19 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
   z-index: 5;
   flex: 0 0 auto;
 }
+/* Entity Info can collapse to just its header when a right-panel menu is open
+   and the window is too small to show both without overlap. */
+#entityInfo h3 {
+  cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 6px;
+}
+#entityInfo h3::after {
+  content: '▾';
+  margin-left: auto;
+  font-size: 10px; color: #9a9a9f; font-weight: 400;
+}
+#entityInfo.info-collapsed h3::after { content: '▸'; }
+#entityInfo.info-collapsed > *:not(h3) { display: none !important; }
 /* Right panel collapse button — large glyph, no border */
 #rightPanelCollapse {
   position: absolute; top: 8px; right: 12px;
@@ -6292,6 +6305,11 @@ function tryAutoWeld(newObj) {
     if (!o.visible || o.locked || o.hidden) continue;
     if (o.bim || o.componentId || o.isImagePlane || o.isEntourage) continue;
     if (o.layerId !== newObj.layerId) continue;
+    // Never weld across a group boundary. A grouped object is a separate
+    // entity, so a free-standing shape (e.g. a rectangle drawn from OUTSIDE
+    // the group, in the group's hole) must not be silently absorbed into the
+    // group's mesh. Only weld objects that share the same group context.
+    if ((o.groupId ?? null) !== (newObj.groupId ?? null)) continue;
     let shared = 0;
     for (const v of o.em.vertices) if (newKeys.has(vkey(v))) { shared++; if (shared >= 2) break; }
     // Adjacency requires SOME shared verts but not ALL — full overlap means
@@ -9005,10 +9023,15 @@ const SnapPrefs = {
   },
 };
 
-const SNAP_PX_END  =  9;  // endpoint radius — tight so indicator stays at tip
-const SNAP_PX_MID  =  5;  // midpoint radius
-const SNAP_PX_EDGE =  5;  // on-edge radius (smaller than endpoint so vertex wins)
-const SNAP_PX_AXIS =  4;  // axis inference radius — very tight
+// SketchUp-like aperture: snap engages when the cursor is *near* a feature,
+// not only when exactly on it. Safe to widen because the crosshair jumps to
+// the snap target on engage, so the drawn point and indicator still overlap.
+// Priority is by feature TYPE (Endpoint > Midpoint > … > Edge), so a wider
+// edge radius never steals from an endpoint that is also in range.
+const SNAP_PX_END  = 14;  // endpoint radius — grabby corners (SketchUp feel)
+const SNAP_PX_MID  = 11;  // midpoint radius
+const SNAP_PX_EDGE = 11;  // on-edge radius (kept below endpoint; type-priority still favors vertex)
+const SNAP_PX_AXIS =  6;  // axis inference radius
 
 // Axis definitions for inference snapping — world-aligned X/Y/Z rays.
 const _AXIS_DEFS = [
@@ -10453,8 +10476,13 @@ function refreshSelectionVisuals() {
     const wholeSel = Selection.objects.has(o);
     o.edgeMat.color.set(wholeSel ? 0x0066ff : 0x333333);
     o.edgeMat.linewidth = wholeSel ? 2 : 1;
-    // Ungrouped whole-selection: blue face fill.
-    if (wholeSel && o.mesh && o.mesh.geometry && o.groupId == null) {
+    // Whole-selection blue face fill for:
+    //   • ungrouped objects (groupId == null), and
+    //   • grouped members selected via triple-click INSIDE the group
+    //     (_selectActiveGroupAll fills edges too — selectGroup does not), so
+    //     a plain single-click group-as-unit pick keeps just the dashed outline.
+    const groupTripleSel = o.groupId != null && Selection.edges.has(o);
+    if (wholeSel && o.mesh && o.mesh.geometry && (o.groupId == null || groupTripleSel)) {
       const overlay = new THREE.Mesh(o.mesh.geometry, wholeSelMat);
       o.group.updateMatrixWorld(true);
       overlay.matrixAutoUpdate = false;
@@ -10872,6 +10900,37 @@ Tools.select = {
     setStatus('msg', `같은 재질(${label}) 객체 ${n}개 선택됨.`);
   },
 
+  /* Triple-click while INSIDE a group (the group was entered via double-click):
+     select EVERY member of the active group, regardless of material or vertex
+     connectivity — mirrors "triple-click selects the whole thing" for a normal
+     object, but the "whole thing" here is the entire group's contents. */
+  _selectActiveGroupAll(gid, mode = 'replace') {
+    const members = getGroupMembers(gid).filter(o => o.visible && !o.hidden);
+    if (mode === 'replace') { Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear(); }
+    const ek = (a, b) => _edgeKey(a, b);
+    for (const o of members) {
+      // Fill EVERY face + edge so each member highlights exactly like a
+      // triple-clicked standalone object (uniform coloring), instead of a
+      // bare object-level selection. The group's dashed edit outline is
+      // drawn separately (_groupEditOutline) and is unaffected.
+      const allFaces = new Set();
+      for (let i = 0; i < o.em.faces.length; i++) allFaces.add(i);
+      const allEdges = new Set();
+      for (const f of o.em.faces) {
+        const loops = [f.verts, ...(f.holes || [])];
+        for (const loop of loops)
+          for (let k = 0; k < loop.length; k++) allEdges.add(ek(loop[k], loop[(k + 1) % loop.length]));
+      }
+      if (o.em.edges) for (const ed of o.em.edges) allEdges.add(ek(ed.a, ed.b));
+      Selection.objects.add(o);
+      Selection.faces.set(o, allFaces);
+      Selection.edges.set(o, allEdges);
+    }
+    refreshSelectionVisuals();
+    renderEntityInfo();
+    setStatus('msg', `그룹 전체 선택 (${members.length}개 객체).`);
+  },
+
   /* Triple-click (no Shift): flood-fill connected objects by shared vertex
      positions (tolerance 1e-4). Walks the scene graph finding every object
      whose bounding-box vertex set overlaps with the growing frontier. */
@@ -10886,9 +10945,14 @@ Tools.select = {
       return 'c:' + (o.mat ? o.mat.color.getHex() : 0);
     };
     const startMat = matKey(startObj);
+    // Connected selection must NOT cross a group boundary: a grouped object is
+    // a separate entity, so flood-fill from an ungrouped object stops at any
+    // grouped neighbour (and vice-versa). Match the start object's group.
+    const startGroup = startObj.groupId ?? null;
     const candidates = Model.objects.filter(o =>
       o.visible && !o.hidden && !o.isImagePlane && !o.isEntourage &&
       (!Model.activeGroupId || o.groupId === Model.activeGroupId) &&
+      (o.groupId ?? null) === startGroup &&
       matKey(o) === startMat
     );
     const vsets = new Map();
@@ -10926,10 +10990,14 @@ Tools.select = {
     // Build a spatial key for a vertex position
     const vkey = v => `${Math.round(v.x/EPS)},${Math.round(v.y/EPS)},${Math.round(v.z/EPS)}`;
 
-    // Collect all visible, non-locked objects in the same layer context
+    // Collect all visible, non-locked objects in the same layer context.
+    // Stay within the start object's group context so connected selection
+    // never spills across a group boundary (grouped = separate entity).
+    const startGroup = startObj.groupId ?? null;
     const candidates = Model.objects.filter(o =>
       o.visible && !o.hidden && !o.isImagePlane && !o.isEntourage &&
-      (!Model.activeGroupId || o.groupId === Model.activeGroupId)
+      (!Model.activeGroupId || o.groupId === Model.activeGroupId) &&
+      (o.groupId ?? null) === startGroup
     );
 
     // Build vertex-key sets for each candidate (cached once per call)
@@ -11130,11 +11198,19 @@ Tools.select = {
       }
 
       // --- Triple click ---
+      //   Inside a group (no Shift) → select the WHOLE active group.
       //   Plain    → flood-fill CONNECTED objects sharing same material.
       //   Shift+   → all SAME-MATERIAL objects regardless of connectivity.
       if (this._clickCount >= 3) {
-        if (this._clickSeqShift) this._selectSameMaterial(clickedObj);
-        else this._selectConnectedSameMaterial(clickedObj);
+        if (!this._clickSeqShift
+            && Model.activeGroupId != null
+            && clickedObj.groupId === Model.activeGroupId) {
+          this._selectActiveGroupAll(Model.activeGroupId, 'replace');
+        } else if (this._clickSeqShift) {
+          this._selectSameMaterial(clickedObj);
+        } else {
+          this._selectConnectedSameMaterial(clickedObj);
+        }
         this.dragging = false;
         return;
       }
@@ -15740,14 +15816,20 @@ Tools.rect = {
     if (snap.face) {
       normal = snap.face.normal.clone();
     } else {
-      const hits = raycastObjects(e, { skipOuterGroups: true });
+      // Include outer groups here so we can READ the face plane of a grouped
+      // object the user is drawing on top of. (computeSnap strips obj/face for
+      // outer groups, so snap.face is null even though the surface was hit.)
+      // We still must NOT merge the new geometry into that group, so we adopt
+      // `obj` only when the hit object is part of what we're editing — for an
+      // outer group we take its normal but leave obj null → free-standing rect.
+      const hits = raycastObjects(e);
       if (hits.length) {
         const hitObj = hits[0].object.userData.sketchObject;
         const fi = hitObj.mesh.geometry.userData.faceIdxMap[hits[0].faceIndex];
         const face = hitObj.em.faces[fi];
         if (face) {
           normal = face.normal.clone();
-          if (!obj) obj = hitObj;
+          if (!obj && !isOuterGroup(hitObj)) obj = hitObj;
         }
       }
       if (!normal && obj) {
@@ -16452,7 +16534,7 @@ Tools.offset = {
   active: false, faceCopy: null,
   lastDistance: 0, lastSign: 1,
   onActivate() { setStatus('msg', 'Hover a face, click to start offset, move to set distance, click to confirm.'); },
-  onDeactivate() { this.active = false; this.hoverFace = null; this.hoverObj = null; this.faceCopy = null; this.referencePoint = null; helperRoot.clear(); },
+  onDeactivate() { this.active = false; this.hoverFace = null; this.hoverObj = null; this.faceCopy = null; this.referencePoint = null; this._dragArmed = false; this._dragStart = null; helperRoot.clear(); },
 
   highlight() {
     helperRoot.clear();
@@ -16502,42 +16584,30 @@ Tools.offset = {
       this.highlight();
       return;
     }
-    // Hover state — use snap so hovering endpoints/midpoints of a face
-    // boundary also highlights the parent face (gives a snap indicator).
+    // Hover state — use snap so hovering endpoints/midpoints/corners of a face
+    // boundary still highlights the parent face (so a corner click can start
+    // the offset). _resolveFace handles the silhouette-corner case where the
+    // raw raycast would miss the face.
     const snap = computeSnap(e, { skipOuterGroups: true });
-    // Prefer snap's face reference when available (lets user precisely click
-    // a corner/vertex/edge of the face they want to offset), else fall back
-    // to raw raycast for interior face picks.
-    if (snap && snap.obj && snap.face) {
-      this.hoverObj = snap.obj;
-      this.hoverFace = snap.face;
-    } else {
-      const hits = raycastObjects(e, { skipOuterGroups: true });
-      if (hits.length) {
-        const o = hits[0].object.userData.sketchObject;
-        const geo = o.mesh.geometry;
-        const fi = geo.userData.faceIdxMap[hits[0].faceIndex];
-        this.hoverObj = o;
-        this.hoverFace = o.em.faces[fi];
-      } else {
-        this.hoverObj = null; this.hoverFace = null;
-      }
-    }
+    const res = this._resolveFace(snap, e);
+    if (res) { this.hoverObj = res.obj; this.hoverFace = res.face; }
+    else { this.hoverObj = null; this.hoverFace = null; }
     this.highlight();
   },
 
   onPointerDown(e) {
     if (e.button !== 0) return;
     if (!this.active) {
-      // Use snap when picking the reference point so the user can lock onto
-      // endpoints / midpoints / intersections on the face's boundary for a
-      // precise start. Falls back to the current hover face if no snap gives
-      // us face context.
+      // Resolve the target face robustly: snap face → raw raycast → containing
+      // face of a snapped corner/edge point. This ensures pressing on a corner
+      // VERTEX starts the offset on the FIRST click (the silhouette raycast
+      // alone would miss and require a second click).
       const snap = computeSnap(e, { skipOuterGroups: true });
-      if (snap && snap.obj && snap.face) {
-        this.hoverObj = snap.obj;
-        this.hoverFace = snap.face;
-        this.referencePoint = snap.point.clone();
+      const res = this._resolveFace(snap, e);
+      if (res) {
+        this.hoverObj = res.obj;
+        this.hoverFace = res.face;
+        this.referencePoint = res.point;
       } else {
         this.referencePoint = null;
       }
@@ -16546,7 +16616,12 @@ Tools.offset = {
       this.faceCopy = this.hoverFace;
       this.lastDistance = 0;
       this.lastSign = 1;
-      setStatus('msg', 'Move to set offset distance. Click or type a number to confirm.');
+      // Arm a press-drag-release gesture: if the user drags in/out and releases,
+      // pointerup commits the offset (no extra click needed). A plain click
+      // with no drag leaves the tool active for the click-move-click flow.
+      this._dragStart = { x: e.clientX, y: e.clientY };
+      this._dragArmed = true;
+      setStatus('msg', 'Drag in/out to offset (release to apply), or move & click. Type a number to confirm.');
       this.highlight();
     } else {
       this.commit();
@@ -16616,12 +16691,61 @@ Tools.offset = {
     if (k === 'escape') {
       this.active = false;
       this.faceCopy = null;
+      this._dragArmed = false;
+      this._dragStart = null;
       helperRoot.clear();
       setStatus('msg', 'Offset cancelled.');
     }
   },
 
-  onPointerUp() {},
+  onPointerUp(e) {
+    if (!this.active || !this._dragArmed) return;
+    this._dragArmed = false;
+    const ds = this._dragStart;
+    this._dragStart = null;
+    if (!ds) return;
+    const moved = Math.hypot((e.clientX || 0) - ds.x, (e.clientY || 0) - ds.y);
+    // Press-drag-release: a real drag (cursor moved) with a non-zero distance
+    // commits immediately. A plain click (no drag) keeps the tool active so the
+    // classic move-then-click flow still works.
+    if (moved > 6 && this.lastDistance > 1e-6) this.commit();
+  },
+
+  /* Resolve which face the cursor is targeting, robustly:
+       1) the snap's own face (interior / edge / midpoint snaps carry one),
+       2) a raw face raycast (plain interior pick),
+       3) when snapped to a VERTEX/EDGE on a boundary but the ray grazed past
+          the silhouette (very common when clicking a corner), find a face of
+          the snapped object that geometrically contains the snapped point.
+     Returns { obj, face, point } or null. */
+  _resolveFace(snap, e) {
+    if (snap && snap.obj && snap.face) {
+      return { obj: snap.obj, face: snap.face, point: snap.point ? snap.point.clone() : null };
+    }
+    const hits = raycastObjects(e, { skipOuterGroups: true });
+    if (hits.length) {
+      const o = hits[0].object.userData.sketchObject;
+      const geo = o.mesh.geometry;
+      const fi = geo.userData.faceIdxMap[hits[0].faceIndex];
+      return { obj: o, face: o.em.faces[fi], point: hits[0].point ? hits[0].point.clone() : null };
+    }
+    if (snap && snap.obj && snap.point) {
+      const o = snap.obj, P = snap.point;
+      const viewDir = camera.getWorldDirection(new THREE.Vector3());
+      let best = null, bestDot = -Infinity;
+      for (const f of o.em.faces) {
+        let inside = false;
+        try { inside = isPointOnOrInFace(o.em, f, P, 1e-3); } catch (_) {}
+        if (!inside) continue;
+        // When several faces share the snapped corner, prefer the one most
+        // square-on to the camera (the face the user is looking at).
+        const dot = f.normal ? Math.abs(f.normal.clone().normalize().dot(viewDir)) : 0;
+        if (dot > bestDot) { bestDot = dot; best = f; }
+      }
+      if (best) return { obj: o, face: best, point: P.clone() };
+    }
+    return null;
+  },
 
   /* Cast a ray from the cursor and intersect it with the locked face's plane.
      Returns a Vector3 in world coordinates, or null. */
@@ -22825,6 +22949,7 @@ function _wirePanelHeader(h) {
           handle.classList.remove('pb-animating');
           handle.style.maxHeight = '';
         }
+        try { window.adjustEntityInfoForSpace && window.adjustEntityInfoForSpace(); } catch (_) {}
       }, 340);
     } else {
       const cur = Math.round(body.getBoundingClientRect().height);
@@ -22852,6 +22977,7 @@ function _wirePanelHeader(h) {
           handle.classList.remove('pb-animating');
           handle.style.maxHeight = '';
         }
+        try { window.adjustEntityInfoForSpace && window.adjustEntityInfoForSpace(); } catch (_) {}
       }, 340);
     }
   });
@@ -22870,6 +22996,52 @@ if (_rightPanel && typeof MutationObserver !== 'undefined') {
   }).observe(_rightPanel, { childList: true, subtree: true });
 }
 window._wirePanelHeader = _wirePanelHeader;
+
+// --- Entity Info auto-collapse -------------------------------------------
+// When a right-panel accordion section is open AND keeping the Info card
+// expanded would overflow the panel (small window → visual overlap with the
+// scrolled section content), collapse Info to just its header. When the
+// window is large enough that both fit without overlap, keep both expanded.
+function _anyRightSectionExpanded() {
+  const rp = document.getElementById('rightpanel');
+  if (!rp) return false;
+  let open = false;
+  rp.querySelectorAll('.panel-section.collapsible .panel-header[data-toggle]').forEach(h => {
+    const b = document.getElementById(h.dataset.toggle);
+    if (b && b.style.display !== 'none' && getComputedStyle(b).display !== 'none') open = true;
+  });
+  return open;
+}
+function adjustEntityInfoForSpace() {
+  const rp = document.getElementById('rightpanel');
+  const info = document.getElementById('entityInfo');
+  if (!rp || !info) return;
+  // Respect a manual toggle on the current selection.
+  if (info._userToggled) return;
+  // No section open → Info is the main thing shown; always expand.
+  if (!_anyRightSectionExpanded()) { info.classList.remove('info-collapsed'); return; }
+  // Measure overflow WITH Info expanded (deterministic, no oscillation):
+  info.classList.remove('info-collapsed');
+  const overflow = rp.scrollHeight - rp.clientHeight;
+  if (overflow > 4) info.classList.add('info-collapsed');
+}
+window.adjustEntityInfoForSpace = adjustEntityInfoForSpace;
+// Manual toggle: click the Info header to override auto behaviour.
+(function () {
+  const info = document.getElementById('entityInfo');
+  if (!info || info._toggleWired) return;
+  info._toggleWired = true;
+  info.addEventListener('click', (e) => {
+    const h = e.target.closest('h3');
+    if (!h || !info.contains(h)) return;
+    info.classList.toggle('info-collapsed');
+    info._userToggled = true;
+  });
+})();
+window.addEventListener('resize', () => {
+  clearTimeout(window._eiSpaceT);
+  window._eiSpaceT = setTimeout(adjustEntityInfoForSpace, 80);
+});
 
 // Dedupe: the native menu fires via BOTH IPC (preload) and executeJavaScript
 // so every click calls handleAction twice. Swallow the duplicate within 80 ms.
@@ -24161,6 +24333,10 @@ function _formatVolume(m3) {
 
 function renderEntityInfo() {
   const el = document.getElementById('entityInfo');
+  // Fresh selection re-evaluates auto-collapse from scratch.
+  el._userToggled = false;
+  el.classList.remove('info-collapsed');
+  requestAnimationFrame(() => { try { window.adjustEntityInfoForSpace && window.adjustEntityInfoForSpace(); } catch (_) {} });
   const objCount = Selection.objects.size;
   let faceCount = 0;
   for (const s of Selection.faces.values()) faceCount += s.size;
