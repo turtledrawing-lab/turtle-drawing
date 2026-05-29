@@ -37,16 +37,6 @@ Grab the right `.dmg` for your Mac from the [Releases page](https://github.com/t
 2. Drag **Turtle Drawing.app** to **Applications**
 3. Double-click from Applications
 
-### First launch (alpha — unsigned build)
-> From v1.0 onward, Apple notarization is applied so there's no warning.
-
-If you see "unidentified developer":
-- **Option 1**: Right-click the app in Applications → **Open** → "Open" again
-- **Option 2**: One line in Terminal:
-  ```
-  xattr -dr com.apple.quarantine /Applications/Turtle\ Drawing.app
-  ```
-
 ---
 
 ## 🚀 Quick Start
