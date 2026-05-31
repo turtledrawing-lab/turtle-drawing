@@ -922,7 +922,12 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         <div data-act="toggle-grid">Toggle Grid</div>
         <div data-act="toggle-axes">Toggle Axes</div>
         <div data-act="toggle-colorlayer">Color by Layer</div>
+        <div data-act="toggle-linecolorlayer">Lines by Layer Color</div>
+        <div data-act="toggle-darkbg">Dark Background</div>
         <div data-act="toggle-sectionfill">Section Fills</div>
+        <div class="sep"></div>
+        <div data-act="toggle-snap-underlay">Full Snap to Underlay (DXF)</div>
+        <div data-act="toggle-pick-underlay">Select Underlay (DXF)</div>
         <div class="sep"></div>
         <div data-act="toggle-shadows">Shadows</div>
       </div>
@@ -1551,7 +1556,9 @@ const octx = OV.getContext('2d');
 const scene = new THREE.Scene();
 scene.background = null; // use CSS gradient fallback; we'll paint sky below
 
-// Sky gradient via a large sphere
+// Sky gradient via a large sphere. _skyMat is exposed so the dark-background
+// toggle (applyBackgroundMode) can repaint the viewport without rebuilding it.
+let _skyMat = null;
 (function makeSky() {
   const verts = new Float32Array([
     -1,-1, -1, 1,-1, -1, 1, 1, -1,
@@ -1569,6 +1576,7 @@ scene.background = null; // use CSS gradient fallback; we'll paint sky below
   m.frustumCulled = false;
   m.renderOrder = -999;
   scene.add(m);
+  _skyMat = mat;
 })();
 
 const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 5000);
@@ -5967,7 +5975,8 @@ class SketchObject {
       if (this.edges) this.edges.visible = false;
       if (this._proxy) this._proxy.visible = true;
     } else {
-      if (this.mesh)  this.mesh.visible  = true;
+      // Underlay stays linework-only (face hidden) to avoid z-fighting.
+      if (this.mesh)  this.mesh.visible  = !this.isUnderlay;
       if (this.edges) this.edges.visible = true;
       if (this._proxy) this._proxy.visible = false;
     }
@@ -5988,6 +5997,8 @@ const Model = {
   activeLayerId: 'Layer0',
   objects: [],            // SketchObject[]
   colorByLayer: false,
+  lineColorByLayer: false, // when true, edges/lines render in their layer's color
+  darkBackground: false,   // AutoCAD-style: black viewport + light "adaptive" linework
   sectionFills: true,
   showGrid: true, showAxes: true,
   viewMode: 'both',       // 'shaded' | 'wire' | 'both' — default matches the actual rendering (faces + edges)
@@ -6007,6 +6018,16 @@ const Model = {
   isolatedObjects: null,   // Set of isolated objects (N key solo mode)
   scenes: [],              // [{id,name,camPos,camTarget,camUp,fov}]
   activeSceneId: null,
+  // Imported DXF/reference geometry is flagged `isUnderlay` on its objects.
+  // Each import is bundled into one group (shared groupId), so it selects and
+  // moves as a single entity. Defaults:
+  //  • snapToUnderlay=false → LIGHT snap (corners + lines only) so tracing stays
+  //    fast and uncluttered; toggle on for full snap (midpoints, inferences).
+  //  • pickUnderlay=true    → clicking the DXF on-canvas selects the whole group
+  //    (its face mesh is hidden for rendering but still raycast-pickable). Toggle
+  //    off via View ▸ "Select Underlay (DXF)" to make it click-through again.
+  snapToUnderlay: false,
+  pickUnderlay: true,
 };
 Model.layers.push({ id:'Layer0', name:'Layer0', color:'#888888', visible:true, locked:false });
 
@@ -6463,6 +6484,71 @@ function _updateIsolateBanner() {
   }
   b.textContent = `🔒 격리 표시 중 (${Model.isolatedObjects.size}개) — 클릭 또는 N으로 해제`;
 }
+// Resting (i.e. not-selected) edge color for an object. When "lines by layer"
+// is on, edges take their layer's color; otherwise the object's own base edge
+// color (a DXF CAD color, if any) or the default dark gray. THREE's
+// Color.set() accepts both CSS strings ('#rrggbb') and numeric hex.
+// On a dark (AutoCAD-style) background, near-black "adaptive" linework — the
+// ACI-7 / default edges we darken for the white sheet — must flip to light or
+// it disappears. Colored lines keep their hue. Mirrors AutoCAD's color-7.
+function _adaptEdgeColorForBg(col) {
+  if (!Model.darkBackground) return col;
+  const hex = (typeof col === 'string') ? new THREE.Color(col).getHex() : (col | 0);
+  const r = (hex >> 16) & 255, g = (hex >> 8) & 255, b = hex & 255;
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+  return (lum <= 90) ? 0xe6e6e6 : hex;  // dark line on dark bg → light
+}
+function _restingEdgeColor(o) {
+  let col = null;
+  if (Model.lineColorByLayer) {
+    const L = getLayer(o.layerId);
+    if (L && L.color != null && L.color !== '') col = L.color;
+  }
+  if (col == null) col = (o._baseEdgeColor != null) ? o._baseEdgeColor : 0x333333;
+  return _adaptEdgeColorForBg(col);
+}
+
+// The visible linework is AD.Layers' thick-line overlay (THREE.LineSegments2),
+// not o.edges — the thin edges are hidden once the overlay is built. So any
+// edge-color change (resting color, "Lines by Layer Color", dark-bg adapt,
+// selection blue) must be mirrored onto the overlay's LineMaterial or it stays
+// the overlay's hardcoded near-black and the change is invisible.
+function _syncThickEdge(o) {
+  if (o && o._thickEdges && o._thickEdges.material && o.edgeMat) {
+    o._thickEdges.material.color.copy(o.edgeMat.color);
+    o._thickEdges.material.needsUpdate = true;
+  }
+}
+
+// Toggle the viewport between the default white sheet and an AutoCAD-style dark
+// background. Repaints the sky gradient and the ground grid, then re-resolves
+// every resting edge color (via applyLayerVisibility) so "adaptive" linework
+// flips light/dark with the background.
+let _gridColorOrig = null;
+function applyBackgroundMode() {
+  const dark = !!Model.darkBackground;
+  if (_skyMat && _skyMat.uniforms) {
+    _skyMat.uniforms.top.value.set(dark ? '#202024' : '#ffffff');
+    _skyMat.uniforms.bot.value.set(dark ? '#0a0a0c' : '#ffffff');
+  }
+  // GridHelper bakes its colors into a per-vertex 'color' attribute. Cache the
+  // light-mode colors once, then overwrite for dark mode / restore for light.
+  try {
+    const col = grid.geometry && grid.geometry.attributes && grid.geometry.attributes.color;
+    if (col) {
+      if (!_gridColorOrig) _gridColorOrig = col.array.slice();
+      if (dark) {
+        const c = new THREE.Color(0x3a3a40);
+        for (let i = 0; i < col.array.length; i += 3) { col.array[i] = c.r; col.array[i+1] = c.g; col.array[i+2] = c.b; }
+      } else {
+        col.array.set(_gridColorOrig);
+      }
+      col.needsUpdate = true;
+    }
+  } catch (_) {}
+  try { applyLayerVisibility(); } catch (_) {}
+  try { refreshSelectionVisuals(); } catch (_) {}
+}
 function applyLayerVisibility() {
   _updateIsolateBanner();
   const editing = Model.activeGroupId != null;
@@ -6513,6 +6599,14 @@ function applyLayerVisibility() {
     } else {
       if (!o.materialId) o.mat.color.set(0xffffff);
     }
+    // Edge/line color: layer color when "lines by layer" is on, else the
+    // object's base edge color. Don't touch selected objects — their edges are
+    // painted blue by refreshSelectionVisuals().
+    if (!Selection.objects.has(o)) {
+      o.edgeMat.color.set(_restingEdgeColor(o));
+    }
+    // Push the final edge color onto the thick-line overlay (the rendered one).
+    _syncThickEdge(o);
   }
   // Keep dim layer dropdown in sync with the latest layer list
   try { if (typeof refreshDimLayerSelector === 'function') refreshDimLayerSelector(); } catch (_) {}
@@ -6677,6 +6771,8 @@ function snapshot() {
         // Image-plane / entourage state so undo can rebuild the texture.
         isImagePlane: !!o.isImagePlane,
         isEntourage: !!o.isEntourage,
+        isUnderlay: !!o.isUnderlay,
+        edgeColor: (o._baseEdgeColor != null) ? o._baseEdgeColor : null,
         entourageId:  o.entourageId || null,
         imageSrc:     o.imageSrc || null,
         faceCamera:   !!o.faceCamera,
@@ -6799,6 +6895,10 @@ function restore(entry) {
     obj.locked  = s.locked;
     obj.hidden  = !!s.hidden;
     obj.groupId = s.groupId || null;
+    if (s.isUnderlay) { obj.isUnderlay = true; obj.mesh.visible = false; } // linework-only (no coplanar face)
+    if (s.edgeColor != null && obj.edgeMat) {
+      obj._baseEdgeColor = s.edgeColor; obj.edgeMat.color.setHex(s.edgeColor); obj.edgeMat.needsUpdate = true;
+    }
     obj.materialId = s.materialId || null;
     // Preserve material appearance
     if (s.matColor != null) obj.mat.color.setHex(s.matColor);
@@ -7269,6 +7369,7 @@ function raycastObjects(e, opts = {}) {
   const skipGroups = !!opts.skipOuterGroups;
   const meshes = Model.objects.filter(o => {
     if (!o.group.visible || o.locked) return false;
+    if (o.isUnderlay && !Model.pickUnderlay) return false; // don't intercept clicks on background
     if (editing && o.groupId !== Model.activeGroupId) return false;
     if (skipGroups && isOuterGroup(o)) return false;
     return true;
@@ -9048,8 +9149,13 @@ function computeSnap(e, opts = {}) {
   ndc(e);
   raycaster.setFromCamera(pointer, camera);
   snapCandidates = [];
-  // VP-relative to match worldToScreen output (renderer & overlay are VP-sized).
-  const cr = VP.getBoundingClientRect();
+  // Measure the cursor in the CANVAS pixel frame — the same frame worldToScreen
+  // outputs into and that the overlay draws into. The 3D canvas + overlay are
+  // inset from the viewport top (~28px under the macOS title bar), so using the
+  // viewport rect here put every snap target that many px ABOVE the cursor,
+  // forcing the user to hover above a point to catch it. X is unaffected (canvas
+  // and viewport share a left edge); only the top differs.
+  const cr = CAN.getBoundingClientRect();
   const _cp = _cursorPx(e);
   const mx = _cp.x - cr.left;
   const my = _cp.y - cr.top;
@@ -9077,6 +9183,21 @@ function computeSnap(e, opts = {}) {
   // scenes (each angle exposed a different cluster of candidates).
   // Front-face pre-filter already culls back-of-mesh verts.
   const _snapHeavy = _snapTotalFaces > 500;
+
+  // Snap-source object set. Background underlay (imported DXF) is excluded from
+  // every snap scanner — endpoints, midpoints, edges, extensions, parallels,
+  // perpendiculars and intersections — unless the user opts in via
+  // View ▸ "Snap to Underlay". This both restores cursor speed on heavy
+  // imports and stops snap from latching onto the traced drawing's thousands
+  // of reference points. The inference scanners below iterate _snapObjects.
+  const _snapUnderlayOK = !!Model.snapToUnderlay;
+  // Editing tools (e.g. Move) can exclude the objects currently being dragged
+  // so we don't waste time scanning a huge moving DXF underlay every mousemove.
+  const _snapExclude = opts.excludeObjs || null;
+  const _snapObjects = Model.objects.filter(o =>
+    o.group.visible && !o.locked && (_snapUnderlayOK || !o.isUnderlay) &&
+    !(_snapExclude && _snapExclude.has(o))
+  );
 
   // Screen-space proximity filter: many inference/extension scans should skip
   // edges that are far from the cursor (so faraway objects don't generate
@@ -9170,6 +9291,15 @@ function computeSnap(e, opts = {}) {
   // Scan every visible & unlocked object
   for (const obj of Model.objects) {
     if (!obj.group.visible || obj.locked) continue;
+    if (_snapExclude && _snapExclude.has(obj)) continue;
+    // Background underlay (imported DXF): trace-friendly LIGHT snap by default.
+    // We still snap to its real corners (Endpoint) and lines (On Edge) so you
+    // can trace right over it, but skip midpoints, the per-point occlusion
+    // raycasts, and — via _snapObjects above — every inference guide
+    // (extension / parallel / perpendicular / intersection). That keeps the
+    // cursor fast and stops snap from latching onto thousands of phantom
+    // points. View ▸ "Full Snap to Underlay" promotes it to the full treatment.
+    const _ulLight = obj.isUnderlay && !Model.snapToUnderlay;
     // endpointOnly (Dimension): aggressive per-object reject — skip any
     // object whose screen bbox is more than 40px from the cursor. Saves
     // tens of thousands of worldToScreen calls on large imports.
@@ -9284,7 +9414,7 @@ function computeSnap(e, opts = {}) {
     // Cap how many verts we examine per object so a 50k-vert mesh can't
     // by itself blow the frame budget when many of them project near the
     // cursor (the cause of view-angle-dependent stutter).
-    let _endpointBudget = 1200;
+    let _endpointBudget = _ulLight ? 6000 : 1200;
     for (const vi of vertIdxSet) {
       if (--_endpointBudget < 0) break;
       const v = obj.em.vertices[vi];
@@ -9298,7 +9428,7 @@ function computeSnap(e, opts = {}) {
         // Occlusion checks via raycasts are the worst offender on heavy
         // scenes — skip them past the cap and rely on the front-face
         // pre-filter that already excluded back-of-mesh verts.
-        if (!_snapHeavy) {
+        if (!_snapHeavy && !_ulLight) {
           if (!opts.endpointOnly && _isOccludedEarly(v, obj.mesh)) continue;
           if (!opts.endpointOnly) {
             const _r = new THREE.Raycaster();
@@ -9322,16 +9452,16 @@ function computeSnap(e, opts = {}) {
 
     // --- MIDPOINTS + ON-EDGE ---
     if (opts.endpointOnly) continue;  // Dimension tool: skip mid/on-edge entirely.
-    let _edgeBudget = 1500;
+    let _edgeBudget = _ulLight ? 6000 : 1500;
     for (const [ai, bi] of edgesToScan) {
       if (--_edgeBudget < 0) break;
       const a = obj.em.vertices[ai], b = obj.em.vertices[bi];
       const sA = worldToScreen(a), sB = worldToScreen(b);
       if (sA.z > 1 && sB.z > 1) continue;
 
-      // Midpoint
+      // Midpoint — skipped for light underlay so the trace isn't cluttered.
       const mid = a.clone().add(b).multiplyScalar(0.5);
-      const sMid = worldToScreen(mid);
+      const sMid = _ulLight ? { z: 2 } : worldToScreen(mid);
       if (sMid.z < 1) {
         const d = Math.hypot(sMid.x - mx, sMid.y - my);
         if (d < SNAP_PX_MID) {
@@ -9379,7 +9509,7 @@ function computeSnap(e, opts = {}) {
               // Depth occlusion: reject if a face hides this point (with
               // silhouette tolerance so border edges remain pickable).
               let occluded = false;
-              {
+              if (!_ulLight) {
                 const _r = new THREE.Raycaster();
                 const ndc2 = new THREE.Vector2(
                   ((sA.x + dx * t) / cr.width) * 2 - 1,
@@ -9394,7 +9524,7 @@ function computeSnap(e, opts = {}) {
                   if (occH[0].distance < wDist - tol) occluded = true;
                 }
               }
-              if (!occluded && !_isOccludedEarly(worldPt, obj.mesh) && _edgeVisibleOnObj(ai, bi, obj)) {
+              if (!occluded && (_ulLight || (!_isOccludedEarly(worldPt, obj.mesh) && _edgeVisibleOnObj(ai, bi, obj)))) {
                 edgeCandidates.push({
                   point: worldPt, type: 'On Edge', obj,
                   edgeA: a.clone(), edgeB: b.clone(), _d: pxDist,
@@ -9419,7 +9549,7 @@ function computeSnap(e, opts = {}) {
   {
     const NEAR_EDGE_CAP = 30;
     const nearEdges = [];
-    for (const obj of Model.objects) {
+    for (const obj of _snapObjects) {
       if (!obj.group.visible || obj.locked) continue;
       if (obj.em._smoothShade) continue;
       if (nearEdges.length >= NEAR_EDGE_CAP) break;
@@ -9565,7 +9695,7 @@ function computeSnap(e, opts = {}) {
         const proj = A.clone().addScaledVector(dir, t);
         if (proj.distanceToSquared(anchor) <= ANCHOR_EPS2) add(AB);
       };
-      for (const obj of Model.objects) {
+      for (const obj of _snapObjects) {
         if (!obj.group.visible || obj.locked) continue;
         if (obj.em._smoothShade) continue;
         for (const ed of obj.em.edges) handleEdge(obj.em.vertices[ed.a], obj.em.vertices[ed.b]);
@@ -9597,7 +9727,7 @@ function computeSnap(e, opts = {}) {
         seen.add(key);
         dirs.push(d);
       };
-      for (const obj of Model.objects) {
+      for (const obj of _snapObjects) {
         if (!obj.group.visible || obj.locked) continue;
         if (obj.em._smoothShade) continue;
         for (const ed of obj.em.edges) {
@@ -9653,7 +9783,7 @@ function computeSnap(e, opts = {}) {
         if (d.lengthSq() < 1e-6) return;              // anchor already on edge line
         addPerp(d);
       };
-      for (const obj of Model.objects) {
+      for (const obj of _snapObjects) {
         if (!obj.group.visible || obj.locked) continue;
         if (obj.em._smoothShade) continue;
         for (const ed of obj.em.edges) handleEdge(obj.em.vertices[ed.a], obj.em.vertices[ed.b]);
@@ -9700,7 +9830,7 @@ function computeSnap(e, opts = {}) {
         if (s < -0.02 || s > len + 0.02) return;  // outside segment
         hits.push({ point: p2, edge: [A.clone(), B.clone()] });
       };
-      for (const obj of Model.objects) {
+      for (const obj of _snapObjects) {
         if (!obj.group.visible || obj.locked) continue;
         if (obj.em._smoothShade) continue;
         for (const ed of obj.em.edges) process(obj.em.vertices[ed.a], obj.em.vertices[ed.b]);
@@ -9778,7 +9908,7 @@ function computeSnap(e, opts = {}) {
         // snap exactly to the far end of the same (or collinear) edge.
         const ANCHOR_EPS_PT = 1e-3;
         const COLLINEAR_TOL = 0.005;
-        for (const obj of Model.objects) {
+        for (const obj of _snapObjects) {
           if (!obj.group.visible || obj.locked) continue;
           if (obj.em._smoothShade) continue;
           for (let vi = 0; vi < obj.em.vertices.length; vi++) {
@@ -9857,7 +9987,7 @@ function computeSnap(e, opts = {}) {
           const dxA = mx - sAnchor.x, dyA = my - sAnchor.y;
           const liveLenSq = dxA * dxA + dyA * dyA;
           if (liveLenSq > 9) {  // > 3px to define a direction
-            for (const obj of Model.objects) {
+            for (const obj of _snapObjects) {
               if (!obj.group.visible || obj.locked) continue;
               if (obj.em._smoothShade) continue;
               const _ckEdge = (A, B) => {
@@ -9998,7 +10128,7 @@ function computeSnap(e, opts = {}) {
   // new geometry lands coplanar with the surrounding face. Prefer this over
   // a back-wall hit seen through the hole when the hole plane is closer.
   let holeHit = null;
-  for (const obj of Model.objects) {
+  for (const obj of _snapObjects) {
     if (!obj.group.visible || obj.locked) continue;
     if (obj.em._smoothShade) continue; // imported meshes have no holes
     for (const f of obj.em.faces) {
@@ -10291,8 +10421,10 @@ function selectEdge(obj, a, b, mode='replace') {
    Scans face-boundary edges and standalone edges of all visible objects.
    Honors group-edit visibility (won't pick edges of dimmed-out objects). */
 function pickEdgeNearScreen(e, pxRadius = 6) {
-  // VP-relative to match worldToScreen (renderer & overlay are VP-sized).
-  const cr = VP.getBoundingClientRect();
+  // Canvas-frame cursor (see computeSnap): the canvas/overlay are inset from the
+  // viewport top, so worldToScreen output must be compared against canvas-rect
+  // cursor coords, not viewport-rect ones.
+  const cr = CAN.getBoundingClientRect();
   const mx = e.clientX - cr.left;
   const my = e.clientY - cr.top;
 
@@ -10321,6 +10453,7 @@ function pickEdgeNearScreen(e, pxRadius = 6) {
 
   for (const obj of Model.objects) {
     if (!obj.group.visible || obj.locked) continue;
+    if (obj.isUnderlay && !Model.pickUnderlay) continue; // background underlay: keep clicks passing through (consistent with raycastObjects)
     if (Model.activeGroupId != null && obj.groupId !== Model.activeGroupId) continue;
     // Imported smooth-shaded meshes have thousands of internal triangulation
     // edges packed within pixels of each other. Any click is guaranteed to be
@@ -10402,8 +10535,80 @@ function pickEdgeNearScreen(e, pxRadius = 6) {
   return best;
 }
 
+/* Build ONE merged tube BufferGeometry for many line segments (square cross-
+   section, open-ended, no normals — drawn with MeshBasicMaterial). Used to
+   highlight DXF line-only layers, which can have tens of thousands of edges,
+   as bold blue WITHOUT spawning a Mesh per edge (that would freeze the UI on
+   every selection click). Vertices are read in the object's LOCAL space; the
+   caller sets the resulting Mesh's matrix to group.matrixWorld.
+     verts    : array of THREE.Vector3 (em.vertices)
+     segPairs : array of {a,b} index pairs (em.edges)
+     radius   : tube radius (local units)
+   Returns a BufferGeometry, or null if there are no drawable segments. */
+function _buildMergedTubeGeometry(verts, segPairs, radius) {
+  const N = 4;  // radial segments (square tube — cheapest that still reads as a tube)
+  // Pre-count drawable segments so we can allocate typed arrays up front.
+  let segCount = 0;
+  for (const ed of segPairs) {
+    const A = verts[ed.a], B = verts[ed.b];
+    if (!A || !B) continue;
+    if (A.distanceToSquared(B) < 1e-12) continue;
+    segCount++;
+  }
+  if (!segCount) return null;
+  const vertexCount = segCount * N * 2;
+  const positions = new Float32Array(vertexCount * 3);
+  const indices = (vertexCount > 65535)
+    ? new Uint32Array(segCount * N * 6)
+    : new Uint16Array(segCount * N * 6);
+  const cos = new Array(N), sin = new Array(N);
+  for (let k = 0; k < N; k++) { const t = (k / N) * Math.PI * 2; cos[k] = Math.cos(t); sin[k] = Math.sin(t); }
+  const dir = new THREE.Vector3(), u = new THREE.Vector3(), v = new THREE.Vector3(), tmp = new THREE.Vector3();
+  let vp = 0, ip = 0, vbase = 0;
+  for (const ed of segPairs) {
+    const A = verts[ed.a], B = verts[ed.b];
+    if (!A || !B) continue;
+    dir.subVectors(B, A);
+    const len = dir.length();
+    if (len < 1e-6) continue;
+    dir.multiplyScalar(1 / len);
+    // Orthonormal basis perpendicular to the segment.
+    if (Math.abs(dir.x) < 0.9) tmp.set(1, 0, 0); else tmp.set(0, 1, 0);
+    u.crossVectors(tmp, dir).normalize();
+    v.crossVectors(dir, u).normalize();
+    // Ring at A, then ring at B.
+    for (let k = 0; k < N; k++) {
+      positions[vp++] = A.x + (u.x * cos[k] + v.x * sin[k]) * radius;
+      positions[vp++] = A.y + (u.y * cos[k] + v.y * sin[k]) * radius;
+      positions[vp++] = A.z + (u.z * cos[k] + v.z * sin[k]) * radius;
+    }
+    for (let k = 0; k < N; k++) {
+      positions[vp++] = B.x + (u.x * cos[k] + v.x * sin[k]) * radius;
+      positions[vp++] = B.y + (u.y * cos[k] + v.y * sin[k]) * radius;
+      positions[vp++] = B.z + (u.z * cos[k] + v.z * sin[k]) * radius;
+    }
+    for (let k = 0; k < N; k++) {
+      const k2 = (k + 1) % N;
+      const b0 = vbase + k, b1 = vbase + k2, t0 = vbase + N + k, t1 = vbase + N + k2;
+      indices[ip++] = b0; indices[ip++] = b1; indices[ip++] = t1;
+      indices[ip++] = b0; indices[ip++] = t1; indices[ip++] = t0;
+    }
+    vbase += N * 2;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  g.setIndex(new THREE.BufferAttribute(indices, 1));
+  return g;
+}
+
 /* Rebuild the blue overlay meshes for every selected face, and tint selected
    objects' edges blue. Called after any selection change. */
+// While a marquee/rubber-band drag is live this is set true so
+// refreshSelectionVisuals() skips the expensive per-edge/silhouette/merged-tube
+// geometry builds (which can rebuild thousands of cylinders every frame for a
+// heavy DXF group) and instead just tints selected edges blue. The full bold
+// highlight is rebuilt once on mouse-up.
+let _selVisualsLite = false;
 function refreshSelectionVisuals() {
   // Clear previous overlays
   while (selectionHelper.children.length) {
@@ -10419,7 +10624,7 @@ function refreshSelectionVisuals() {
     side: THREE.DoubleSide, depthTest: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   });
-  for (const [obj, faceIdxs] of Selection.faces) {
+  for (const [obj, faceIdxs] of (_selVisualsLite ? [] : Selection.faces)) {
     // Whole-object selection (e.g., grouped object click) auto-fills faces;
     // skip the per-face overlay so the object isn't painted blue.
     if (Selection.objects.has(obj)) continue;
@@ -10445,7 +10650,7 @@ function refreshSelectionVisuals() {
     color: 0x0066ff, depthTest: false, transparent: true, opacity: 0.95,
   });
   const edgeRadius = Math.max(0.00075, controls.spherical.radius * 0.0006);
-  for (const [obj, keys] of Selection.edges) {
+  for (const [obj, keys] of (_selVisualsLite ? [] : Selection.edges)) {
     for (const k of keys) {
       const [a, b] = k.split(':').map(Number);
       const A = obj.em.vertices[a], B = obj.em.vertices[b];
@@ -10474,8 +10679,19 @@ function refreshSelectionVisuals() {
   });
   for (const o of Model.objects) {
     const wholeSel = Selection.objects.has(o);
-    o.edgeMat.color.set(wholeSel ? 0x0066ff : 0x333333);
+    o.edgeMat.color.set(wholeSel ? 0x0066ff : _restingEdgeColor(o));
     o.edgeMat.linewidth = wholeSel ? 2 : 1;
+    // During a marquee drag we skip building per-face/edge highlight geometry.
+    // Tint the whole object's edges blue if any of its faces/edges are picked
+    // so partial selections still read as "selected" while dragging. The exact
+    // highlight is rebuilt on mouse-up.
+    if (_selVisualsLite && !wholeSel) {
+      const _ef = Selection.edges.get(o), _ff = Selection.faces.get(o);
+      if ((_ef && _ef.size) || (_ff && _ff.size)) {
+        o.edgeMat.color.set(0x0066ff);
+        o.edgeMat.linewidth = 2;
+      }
+    }
     // Whole-selection blue face fill for:
     //   • ungrouped objects (groupId == null), and
     //   • grouped members selected via triple-click INSIDE the group
@@ -10497,63 +10713,89 @@ function refreshSelectionVisuals() {
     //  don't read).
     // Skip this expensive O(faces) silhouette build for very heavy meshes —
     // selection would otherwise lock the UI for seconds on every click.
-    const SILHOUETTE_FACE_CAP = 4000;
-    if (wholeSel && o.em && o.em.faces && o.em.faces.length > SILHOUETTE_FACE_CAP) {
+    const SILHOUETTE_FACE_CAP = 4000;      // O(faces) crease build — skip past this
+    const STANDALONE_EDGE_CAP = 120000;    // sanity guard for the merged-tube build
+    const _faceCount = (o.em && o.em.faces ? o.em.faces.length : 0);
+    const _edgeCount = (o.em && o.em.edges ? o.em.edges.length : 0);
+    const _doSilhouette = wholeSel && o.em && _faceCount > 0 && _faceCount <= SILHOUETTE_FACE_CAP;
+    const _doStandalone = wholeSel && o.em && _edgeCount > 0 && _edgeCount <= STANDALONE_EDGE_CAP;
+    // Anything too heavy to draw boldly falls back to a thin blue edge color so
+    // the layer is at least tinted (WebGL ignores LineBasicMaterial.linewidth).
+    if (wholeSel && o.em && ((_faceCount && !_doSilhouette) || (_edgeCount && !_doStandalone))) {
       o.edgeMat.color.set(0x0066ff);
       o.edgeMat.linewidth = 2;
-      continue;
     }
-    if (wholeSel && o.em && o.em.faces) {
+    if (!_selVisualsLite && (_doSilhouette || _doStandalone)) {
       o.group.updateMatrixWorld(true);
-      const edgeFaces = new Map();
-      for (let fi = 0; fi < o.em.faces.length; fi++) {
-        const vs = o.em.faces[fi].verts;
-        for (let i = 0; i < vs.length; i++) {
-          const a = vs[i], b = vs[(i + 1) % vs.length];
-          const k = a < b ? a + ':' + b : b + ':' + a;
-          let arr = edgeFaces.get(k);
-          if (!arr) { arr = []; edgeFaces.set(k, arr); }
-          arr.push(fi);
-        }
-      }
-      const fnormals = o.em.faces.map(f => {
-        try {
-          const A = o.em.vertices[f.verts[0]];
-          const B = o.em.vertices[f.verts[1]];
-          const C = o.em.vertices[f.verts[2]];
-          return new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(C, A)).normalize();
-        } catch (_) { return new THREE.Vector3(0, 0, 1); }
-      });
-      const CREASE_COS = Math.cos(20 * Math.PI / 180);
       const tubeRadius = Math.max(0.0003, controls.spherical.radius * 0.00025);
       const tubeMat = new THREE.MeshBasicMaterial({
         color: 0x0066ff, depthTest: true, transparent: true, opacity: 0.95,
       });
-      for (const [k, fis] of edgeFaces) {
-        let outline = false;
-        if (fis.length === 1) outline = true;
-        else {
-          const n0 = fnormals[fis[0]], n1 = fnormals[fis[1]];
-          if (Math.abs(n0.dot(n1)) < CREASE_COS) outline = true;
+      // (1) Face silhouette / crease edges (per-edge tubes; face count is capped).
+      if (_doSilhouette) {
+        const edgeFaces = new Map();
+        for (let fi = 0; fi < o.em.faces.length; fi++) {
+          const vs = o.em.faces[fi].verts;
+          for (let i = 0; i < vs.length; i++) {
+            const a = vs[i], b = vs[(i + 1) % vs.length];
+            const k = a < b ? a + ':' + b : b + ':' + a;
+            let arr = edgeFaces.get(k);
+            if (!arr) { arr = []; edgeFaces.set(k, arr); }
+            arr.push(fi);
+          }
         }
-        if (!outline) continue;
-        const [a, b] = k.split(':').map(Number);
-        const A = o.em.vertices[a], B = o.em.vertices[b];
-        if (!A || !B) continue;
-        const dir = new THREE.Vector3().subVectors(B, A);
-        const len = dir.length();
-        if (len < 1e-6) continue;
-        const cyl = new THREE.CylinderGeometry(tubeRadius, tubeRadius, len, 6, 1, false);
-        cyl.translate(0, len / 2, 0);
-        cyl.rotateX(Math.PI / 2);
-        const tube = new THREE.Mesh(cyl, tubeMat);
-        tube.position.copy(A);
-        tube.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize());
-        tube.applyMatrix4(o.group.matrixWorld);
-        tube.matrixAutoUpdate = false;
-        tube.updateMatrix();
-        tube.renderOrder = 11;
-        selectionHelper.add(tube);
+        const fnormals = o.em.faces.map(f => {
+          try {
+            const A = o.em.vertices[f.verts[0]];
+            const B = o.em.vertices[f.verts[1]];
+            const C = o.em.vertices[f.verts[2]];
+            return new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(C, A)).normalize();
+          } catch (_) { return new THREE.Vector3(0, 0, 1); }
+        });
+        const CREASE_COS = Math.cos(20 * Math.PI / 180);
+        for (const [k, fis] of edgeFaces) {
+          let outline = false;
+          if (fis.length === 1) outline = true;
+          else {
+            const n0 = fnormals[fis[0]], n1 = fnormals[fis[1]];
+            if (Math.abs(n0.dot(n1)) < CREASE_COS) outline = true;
+          }
+          if (!outline) continue;
+          const [a, b] = k.split(':').map(Number);
+          const A = o.em.vertices[a], B = o.em.vertices[b];
+          if (!A || !B) continue;
+          const dir = new THREE.Vector3().subVectors(B, A);
+          const len = dir.length();
+          if (len < 1e-6) continue;
+          const cyl = new THREE.CylinderGeometry(tubeRadius, tubeRadius, len, 6, 1, false);
+          cyl.translate(0, len / 2, 0);
+          cyl.rotateX(Math.PI / 2);
+          const tube = new THREE.Mesh(cyl, tubeMat);
+          tube.position.copy(A);
+          tube.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize());
+          tube.applyMatrix4(o.group.matrixWorld);
+          tube.matrixAutoUpdate = false;
+          tube.updateMatrix();
+          tube.renderOrder = 11;
+          selectionHelper.add(tube);
+        }
+      }
+      // (2) Stand-alone edges. DXF line-only layers (open polylines, single
+      //     LINEs, arcs — e.g. a furniture layer) have NO faces, so the
+      //     silhouette pass yields nothing and they used to show only a faint
+      //     1px blue. These layers can carry tens of thousands of edges, so we
+      //     build ONE merged tube mesh (a Mesh-per-edge would freeze the UI).
+      //     Result: the WHOLE group — faced AND line-only layers — reads
+      //     uniformly bold blue when selected.
+      if (_doStandalone) {
+        const geom = _buildMergedTubeGeometry(o.em.vertices, o.em.edges, tubeRadius);
+        if (geom) {
+          const mesh = new THREE.Mesh(geom, tubeMat);
+          mesh.matrixAutoUpdate = false;
+          mesh.matrix.copy(o.group.matrixWorld);
+          mesh.renderOrder = 11;
+          selectionHelper.add(mesh);
+        }
       }
     }
   }
@@ -10613,6 +10855,9 @@ function refreshSelectionVisuals() {
     const fill = sp.visual.children[0];
     if (fill && fill.material) fill.material.opacity = sel ? 0.28 : 0.14;
   }
+  // Edge colors (selection blue / resting) are finalized above; mirror them
+  // onto the thick-line overlays so the highlight + colors are actually seen.
+  for (const o of Model.objects) _syncThickEdge(o);
 }
 
 const ToolMgr = {
@@ -10719,6 +10964,8 @@ Tools.select = {
   },
   // Drag state
   dragging: false, didDrag: false,
+  _rbRaf: 0,            // pending requestAnimationFrame id for the marquee update
+  _rbBBoxCache: null,   // Map<obj, Box3> cached for the duration of one marquee drag
   dragStart: null, dragEnd: null, dragShift: false,
   dragInitialFaces: null, // Map<obj, Set<fi>> snapshot at drag start (for shift-toggle)
   dragInitialEdges: null, // Map<obj, Set<edgeKey>> snapshot at drag start
@@ -10738,6 +10985,10 @@ Tools.select = {
     this.didDrag = false;
     this._clickCount = 0;
     if (this._clickTimer) { clearTimeout(this._clickTimer); this._clickTimer = null; }
+    // Don't leave a half-finished marquee in lightweight-visuals mode.
+    if (this._rbRaf) { cancelAnimationFrame(this._rbRaf); this._rbRaf = 0; }
+    this._rbBBoxCache = null;
+    if (_selVisualsLite) { _selVisualsLite = false; try { refreshSelectionVisuals(); } catch (_) {} }
   },
 
   /* Resolve what's under the cursor: returns { type, obj, fi, edgePick, hits } */
@@ -11056,6 +11307,11 @@ Tools.select = {
   onPointerDown(e) {
     if (e.button !== 0) return;
     const shift = e.shiftKey;
+    // Clear any stale marquee state from a drag that didn't finish cleanly so
+    // selection visuals don't get stuck in lightweight mode.
+    if (this._rbRaf) { cancelAnimationFrame(this._rbRaf); this._rbRaf = 0; }
+    this._rbBBoxCache = null;
+    _selVisualsLite = false;
 
     // --- Annotation hit-test (before dim/geometry) ---
     const annHit = _hitTestAnnotation(e.offsetX, e.offsetY, 4);
@@ -11345,8 +11601,29 @@ Tools.select = {
       // and operate as a rubber-band selection.
       this._pendingClick = null;
       // Canvas overlay draws the marquee in drawOverlay() — no DOM box needed.
-      this.applyRubberBand();
+      // Coalesce many mousemove events into one update per animation frame so a
+      // heavy DXF selection stays smooth instead of stuttering.
+      this._scheduleRubberBand();
     }
+  },
+
+  // rAF-throttled marquee update: at most one applyRubberBand() per frame.
+  _scheduleRubberBand() {
+    if (this._rbRaf) return;
+    this._rbRaf = requestAnimationFrame(() => {
+      this._rbRaf = 0;
+      if (this.dragging && this.didDrag) this.applyRubberBand();
+    });
+  },
+
+  // computeBBox() per object is cached for the duration of a single marquee
+  // drag (geometry + camera don't change mid-drag), avoiding a full vertex
+  // sweep per object every frame.
+  _cachedBBox(o) {
+    if (!this._rbBBoxCache) this._rbBBoxCache = new Map();
+    let bb = this._rbBBoxCache.get(o);
+    if (!bb) { bb = o.computeBBox(); this._rbBBoxCache.set(o, bb); }
+    return bb;
   },
 
   _previewHoverEdge(e) {
@@ -11413,6 +11690,19 @@ Tools.select = {
         // Click on empty without drag — deselect.
         clearSelection();
       }
+    }
+    // Finalize a marquee drag: cancel any queued frame, drop the per-drag bbox
+    // cache, and rebuild the full (bold) selection highlight that was deferred
+    // while dragging in lightweight mode.
+    if (this._rbRaf) { cancelAnimationFrame(this._rbRaf); this._rbRaf = 0; }
+    this._rbBBoxCache = null;
+    if (_selVisualsLite) {
+      _selVisualsLite = false;
+      // Rebuild the full highlight + the panels we deferred during the drag.
+      try { refreshSelectionVisuals(); } catch (_) {}
+      try { renderEntityInfo(); } catch (_) {}
+      try { refreshDimLayerSelector && refreshDimLayerSelector(); } catch (_) {}
+      try { drawOverlay(); } catch (_) {}
     }
     this.dragging = false;
     this.didDrag = false;
@@ -11502,6 +11792,8 @@ Tools.select = {
   /* Compute the rubber-band selection based on current drag rect, starting
      from the selection snapshot at drag start. */
   applyRubberBand() {
+    // Lightweight selection visuals while dragging — full highlight on mouse-up.
+    _selVisualsLite = true;
     const x1 = Math.min(this.dragStart.x, this.dragEnd.x);
     const y1 = Math.min(this.dragStart.y, this.dragEnd.y);
     const x2 = Math.max(this.dragStart.x, this.dragEnd.x);
@@ -11550,8 +11842,10 @@ Tools.select = {
         Model.selectedDimIds.add(dim.id);
       }
     }
-    drawOverlay();
-    try { refreshDimLayerSelector && refreshDimLayerSelector(); } catch (_) {}
+    // (The 2D overlay + dim-layer selector are redrawn once at the end of this
+    //  function — drawing them here too meant two full overlay redraws per
+    //  frame. The dim-layer selector is a DOM rebuild, so it's deferred to
+    //  mouse-up while dragging.)
 
     const inRect = (sx, sy) => sx >= x1 && sx <= x2 && sy >= y1 && sy <= y2;
     const addOrToggleFace = (obj, fi) => {
@@ -11564,11 +11858,15 @@ Tools.select = {
     };
     for (const o of Model.objects) {
       if (!o.group.visible || o.locked) continue;
+      // Objects inside a group we're NOT currently editing are handled as a
+      // single unit by the group pass below. Skip per-face/edge picking here so
+      // a marquee can never make a partial selection of a grouped DXF.
+      if (isOuterGroup(o)) continue;
       // Fast path for imported smooth-shaded meshes: project the bbox corners
       // and treat the object as a whole unit — avoids iterating tens of
       // thousands of faces per mouse move.
       if (o.em._smoothShade) {
-        const bb = o.computeBBox();
+        const bb = this._cachedBBox(o);
         const cs = [
           new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z),
           new THREE.Vector3(bb.max.x, bb.min.y, bb.min.z),
@@ -11688,6 +11986,57 @@ Tools.select = {
       }
       for (const ed of o.em.edges) tryEdge(ed.a, ed.b);
     }
+    // --- Outer groups: treat each group as ONE object. Crossing (right→left)
+    //     selects the whole group when the marquee touches any member's screen
+    //     bbox; window (left→right) selects only when every member is fully
+    //     enclosed. Using bbox corners (not per-edge) also keeps a marquee over
+    //     a heavy DXF fast. ---
+    const _outerGroups = new Map();
+    for (const o of Model.objects) {
+      if (!o.group.visible || o.locked || !isOuterGroup(o)) continue;
+      let arr = _outerGroups.get(o.groupId);
+      if (!arr) { arr = []; _outerGroups.set(o.groupId, arr); }
+      arr.push(o);
+    }
+    for (const [, members] of _outerGroups) {
+      let anyFront = false, anyIn = false, allIn = true;
+      let gMinX = Infinity, gMinY = Infinity, gMaxX = -Infinity, gMaxY = -Infinity;
+      for (const o of members) {
+        const bb = this._cachedBBox(o);
+        if (!bb || bb.isEmpty()) continue;
+        const cs = [
+          new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z), new THREE.Vector3(bb.max.x, bb.min.y, bb.min.z),
+          new THREE.Vector3(bb.min.x, bb.max.y, bb.min.z), new THREE.Vector3(bb.max.x, bb.max.y, bb.min.z),
+          new THREE.Vector3(bb.min.x, bb.min.y, bb.max.z), new THREE.Vector3(bb.max.x, bb.min.y, bb.max.z),
+          new THREE.Vector3(bb.min.x, bb.max.y, bb.max.z), new THREE.Vector3(bb.max.x, bb.max.y, bb.max.z),
+        ];
+        for (const v of cs) {
+          const p = worldToScreen(v);
+          if (p.z >= 1) { allIn = false; continue; }
+          anyFront = true;
+          if (p.x < gMinX) gMinX = p.x;
+          if (p.y < gMinY) gMinY = p.y;
+          if (p.x > gMaxX) gMaxX = p.x;
+          if (p.y > gMaxY) gMaxY = p.y;
+          if (inRect(p.x, p.y)) anyIn = true; else allIn = false;
+        }
+      }
+      if (!anyFront) continue;
+      const rectHitsBox = !(gMaxX < x1 || gMinX > x2 || gMaxY < y1 || gMinY > y2);
+      const hit = crossing ? (anyIn || rectHitsBox) : allIn;
+      if (!hit) continue;
+      const wasSel = members.every(m => Selection.objects.has(m));
+      if (this.dragShift && wasSel) {
+        for (const m of members) { Selection.objects.delete(m); Selection.faces.delete(m); Selection.edges.delete(m); }
+      } else {
+        for (const m of members) {
+          Selection.objects.add(m);
+          const s = Selection.faces.get(m) || new Set();
+          for (let i = 0; i < m.em.faces.length; i++) s.add(i);
+          Selection.faces.set(m, s);
+        }
+      }
+    }
     // Auto-promote to whole-object selection: if all visible front-facing faces
     // of an object are selected, treat it as a whole object selection.
     for (const o of Model.objects) {
@@ -11710,7 +12059,9 @@ Tools.select = {
       }
     }
     refreshSelectionVisuals();
-    renderEntityInfo();
+    // The entity-info panel is a DOM rebuild (+ a bbox sweep); during a marquee
+    // drag it's deferred to mouse-up so it isn't rebuilt every frame.
+    if (!_selVisualsLite) renderEntityInfo();
     drawOverlay();   // ensure marquee selection overlay redraws
   },
 };
@@ -11768,6 +12119,16 @@ Tools.move = {
       this.copyObjs = null;
     }
     this.copyMode = false;
+    // Defensive: if a drag was interrupted (tool switch mid-move), an underlay
+    // member may still carry a transient group.position offset. Clear it so the
+    // object reflects its true (vertex) position and never gets stuck offset.
+    if (this.objs) {
+      for (const o of this.objs) {
+        if (o && o.isUnderlay && o.group && o.group.position.lengthSq() > 0) {
+          o.group.position.set(0, 0, 0);
+        }
+      }
+    }
     this.dragging = false; this.obj = null; this.objs = null;
     this.origVertsByObj = null; this.sectionTarget = null;
     this.inferredAxis = null; this.activeAxis = null; this.activeDelta = null;
@@ -11785,6 +12146,7 @@ Tools.move = {
     for (const o of this.objs) {
       const orig = this.origVertsByObj.get(o);
       if (orig) for (let i = 0; i < o.em.vertices.length; i++) o.em.vertices[i].copy(orig[i]);
+      if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
       o.rebuild();
     }
     // Create clones. Map old groupId → new groupId so members of the same
@@ -12074,6 +12436,9 @@ Tools.move = {
               o.em.vertices[i].copy(orig[i]).add(delta);
             }
           }
+          // Underlay was dragged via group.position; the delta is now baked
+          // into vertices, so zero the group offset to avoid double movement.
+          if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
           o.rebuild();
         }
       }
@@ -12083,6 +12448,7 @@ Tools.move = {
         for (const o of this.objs) {
           const orig = this.origVertsByObj.get(o);
           if (orig) for (let i = 0; i < o.em.vertices.length; i++) o.em.vertices[i].copy(orig[i]);
+          if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
           o.rebuild();
         }
         // For component instance copies: shift componentOrigin by delta so
@@ -12180,6 +12546,41 @@ Tools.move = {
       helperRoot.clear();
     }
   },
+  /* Apply a move delta to the current targets. Whole-object UNDERLAY (imported
+     DXF) members are translated via a cheap group-transform offset instead of
+     rewriting every vertex + rebuilding the LineSegments geometry each frame.
+     That per-frame O(verts) rebuild + GPU re-upload is what makes dragging a
+     heavy DXF stutter. The offset is baked back into the vertices (and
+     group.position reset to 0) the moment the move commits / cancels, so the
+     rest of the app still sees vertices as the single source of truth.
+     Non-underlay objects keep the exact per-vertex behavior. */
+  _applyMoveDelta(delta) {
+    const moveTargets = this.copyMode ? this.copyObjs : this.objs;
+    for (let ti = 0; ti < moveTargets.length; ti++) {
+      const o = moveTargets[ti];
+      const origObj = this.objs[ti];
+      const isPartial = this.copyMode && this._clonePartial && this._clonePartial.get(o);
+      const mask = this.origMaskByObj ? this.origMaskByObj.get(origObj) : null;
+      // Fast path: whole-object underlay → translate the group, skip rebuild.
+      if (!this.copyMode && !isPartial && !mask && o.isUnderlay && o.group) {
+        o.group.position.copy(delta);
+        continue;
+      }
+      if (isPartial) {
+        const cloneOrig = this._cloneOrigVerts.get(o);
+        for (let i = 0; i < o.em.vertices.length; i++) {
+          o.em.vertices[i].copy(cloneOrig[i]).add(delta);
+        }
+      } else {
+        const orig = this.origVertsByObj.get(origObj);
+        for (let i = 0; i < o.em.vertices.length; i++) {
+          if (mask && !mask.has(i)) { o.em.vertices[i].copy(orig[i]); continue; }
+          o.em.vertices[i].copy(orig[i]).add(delta);
+        }
+      }
+      o.rebuild();
+    }
+  },
   onPointerMove(e) {
     if (!this.dragging) return;
     if (this.sectionTarget) {
@@ -12221,7 +12622,12 @@ Tools.move = {
     // back to projecting the cursor ray onto a plane that passes through the
     // original pick point and faces the camera — this guarantees the object
     // tracks the cursor 1:1 regardless of what's under it.
-    let snap = computeSnap(e);
+    // Exclude only the moving UNDERLAY from snap scanning: a heavy DXF being
+    // dragged would otherwise be re-scanned O(N) every mousemove (the lag the
+    // user hit). Normal objects stay snap-scanned, so their behavior is intact.
+    const _moveSet = this.copyMode ? this.copyObjs : this.objs;
+    const _exclUnderlay = (_moveSet || []).filter(o => o && o.isUnderlay);
+    let snap = computeSnap(e, _exclUnderlay.length ? { excludeObjs: new Set(_exclUnderlay) } : {});
     let snapPoint = snap ? snap.point : null;
     if (!snapPoint) {
       ndc(e);
@@ -12261,28 +12667,9 @@ Tools.move = {
     this.activeDelta = delta.clone();
 
     // In copy mode, move the CLONES; in normal mode, move the originals.
-    const moveTargets = this.copyMode ? this.copyObjs : this.objs;
-    for (let ti = 0; ti < moveTargets.length; ti++) {
-      const o = moveTargets[ti];
-      const origObj = this.objs[ti];
-      const isPartial = this.copyMode && this._clonePartial && this._clonePartial.get(o);
-      if (isPartial) {
-        // Partial clone: translate ALL verts by delta (clone has only the
-        // selected geometry, vert indices don't match origObj).
-        const cloneOrig = this._cloneOrigVerts.get(o);
-        for (let i = 0; i < o.em.vertices.length; i++) {
-          o.em.vertices[i].copy(cloneOrig[i]).add(delta);
-        }
-      } else {
-        const orig = this.origVertsByObj.get(origObj);
-        const mask = this.origMaskByObj ? this.origMaskByObj.get(origObj) : null;
-        for (let i = 0; i < o.em.vertices.length; i++) {
-          if (mask && !mask.has(i)) { o.em.vertices[i].copy(orig[i]); continue; }
-          o.em.vertices[i].copy(orig[i]).add(delta);
-        }
-      }
-      o.rebuild();
-    }
+    // Whole-object underlay members translate via group.position (no per-frame
+    // rebuild) inside _applyMoveDelta — that's what keeps heavy DXF drags smooth.
+    this._applyMoveDelta(delta);
 
     // Draw a guide line from origin to destination
     helperRoot.clear();
@@ -12344,18 +12731,7 @@ Tools.move = {
       else if (activeAxis === 'y') d.set(0, d.y, 0);
       else if (activeAxis === 'z') d.set(0, 0, d.z);
       this.activeDelta = d.clone();
-      const targets = this.copyMode ? this.copyObjs : this.objs;
-      for (let ti = 0; ti < targets.length; ti++) {
-        const o = targets[ti];
-        const origObj = this.objs[ti];
-        const orig = this.origVertsByObj.get(origObj);
-        const mask = this.origMaskByObj ? this.origMaskByObj.get(origObj) : null;
-        for (let i = 0; i < o.em.vertices.length; i++) {
-          if (mask && !mask.has(i)) { o.em.vertices[i].copy(orig[i]); continue; }
-          o.em.vertices[i].copy(orig[i]).add(d);
-        }
-        o.rebuild();
-      }
+      this._applyMoveDelta(d);
       const copyTag = this.copyMode ? ' [COPY]' : '';
       const axisTag = this.axisLock   ? ` [locked ${this.axisLock.toUpperCase()}]`
                     : this.inferredAxis ? ` [on ${this.inferredAxis.toUpperCase()} axis]`
@@ -12394,16 +12770,7 @@ Tools.move = {
         }
         this.copyMode = false;
         // Re-apply current delta to originals
-        if (this.activeDelta) {
-          for (let ti = 0; ti < this.objs.length; ti++) {
-            const o = this.objs[ti];
-            const orig = this.origVertsByObj.get(o);
-            for (let i = 0; i < o.em.vertices.length; i++) {
-              o.em.vertices[i].copy(orig[i]).add(this.activeDelta);
-            }
-            o.rebuild();
-          }
-        }
+        if (this.activeDelta) this._applyMoveDelta(this.activeDelta);
         setStatus('msg', 'Copy mode OFF — moving original.');
       }
       return;
@@ -12423,16 +12790,7 @@ Tools.move = {
       if (raw) {
         this.activeDelta = raw.clone();
         this.activeAxis = null; this.inferredAxis = null;
-        const targets = this.copyMode ? this.copyObjs : this.objs;
-        for (let ti = 0; ti < targets.length; ti++) {
-          const o = targets[ti];
-          const origObj = this.objs[ti];
-          const orig = this.origVertsByObj.get(origObj);
-          for (let i = 0; i < o.em.vertices.length; i++) {
-            o.em.vertices[i].copy(orig[i]).add(raw);
-          }
-          o.rebuild();
-        }
+        this._applyMoveDelta(raw);
         const copyTag = this.copyMode ? ' [COPY]' : '';
         setStatus('msg', `dx=${Units.format(raw.x)}  dy=${Units.format(raw.y)}  dz=${Units.format(raw.z)}${copyTag}`);
         VCB.set(Units.format(raw.length(), { noSuffix: true }));
@@ -12460,6 +12818,7 @@ Tools.move = {
               for (let i = 0; i < o.em.vertices.length; i++) {
                 o.em.vertices[i].copy(orig[i]);
               }
+              if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
               o.rebuild();
             }
           }
@@ -12567,6 +12926,7 @@ Tools.move = {
       for (let i = 0; i < o.em.vertices.length; i++) {
         o.em.vertices[i].copy(orig[i]).addScaledVector(dir, signedD);
       }
+      if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
       o.rebuild();
     }
     if (this.copyMode) {
@@ -12574,6 +12934,7 @@ Tools.move = {
       for (const o of this.objs) {
         const orig = this.origVertsByObj.get(o);
         if (orig) for (let i = 0; i < o.em.vertices.length; i++) o.em.vertices[i].copy(orig[i]);
+        if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
         o.rebuild();
       }
       // Save copy info for *N multiplier
@@ -13544,7 +13905,7 @@ Tools.pp = {
   hoverObj: null, hoverFace: null,
   active: false, faceCopy: null, origVerts: null, startDist: 0,
   anchorNDC: null, faceCentroid: null,
-  lastDistance: 1,
+  lastDistance: 1, _viewChanged: false, _snapPoint: null, _snapType: null,
   onActivate() { setStatus('msg', 'Hover a face, click to start push/pull. Double-click to repeat last.'); },
   onDeactivate() {
     this.active = false;
@@ -13565,6 +13926,22 @@ Tools.pp = {
   },
   onPointerMove(e) {
     if (this.active) {
+      // Mid-extrude view navigation: while the user middle-drags to orbit (or
+      // shift+middle to pan) the view, FREEZE the push. Recomputing the pushed
+      // distance from a rotating camera every frame would swing the geometry
+      // wildly. Mark the view dirty so the next real cursor move re-anchors the
+      // reference, keeping the distance continuous across the orbit — matching
+      // SketchUp, where you can orbit mid-push without disturbing the depth.
+      if (controls.state === 'orbit' || controls.state === 'pan') {
+        this._viewChanged = true;
+        return;
+      }
+      if (this._viewChanged) {
+        const sRe = this.raycastExtrusion(e);
+        if (sRe === null) return;                 // ray parallel to axis — wait
+        this.initialS = sRe - (this.currentDistance || 0);
+        this._viewChanged = false;
+      }
       // Extrusion distance: distance along face normal between click-time
       // closest-approach and current closest-approach. Positive = pull along
       // the outward face normal (e.g. pulling the top of a box upward).
@@ -13591,7 +13968,9 @@ Tools.pp = {
         // target face (splitting it along the cap's interior edges) and
         // remove both the cap and the matching sub-face, so the cut goes
         // through but the complementary portion of the target survives.
-        if (snap) {
+        // Only for FACE snaps: a point/height inference (snapTarget null) has
+        // no target face to cut, and reading tgt.normal would throw.
+        if (snap && this.snapTarget) {
           const tgt = this.snapTarget;
           const Ntgt = tgt.normal;
           const Ptgt = this.origVerts[tgt.verts[0]];
@@ -14085,7 +14464,10 @@ Tools.pp = {
         }
         obj.rebuild();
         this.currentDistance = dist;
-        const tag = snap ? '   [snapped to face]' : '';
+        const tag = snap
+          ? (this.snapTarget ? '   [snapped to face]'
+                             : '   [snapped to ' + (this._snapType || 'point') + ']')
+          : '';
         setStatus('msg', 'Extrude distance: ' + Units.format(dist) + tag);
         VCB.set(Units.format(dist, { noSuffix: true }));
         // After rebuild, redraw helper overlays (rebuild clears nothing in
@@ -14128,6 +14510,7 @@ Tools.pp = {
       // 0 at the start and +/- sign matching the face normal direction.
       this.initialS = this.raycastExtrusion(e) || 0;
       this.currentDistance = 0;
+      this._viewChanged = false;
       setStatus('msg', 'Move mouse to extrude. Click or type distance + Enter to confirm.');
     } else {
       // Confirm — flag burn-through cleanup, run extrudeFace pipeline once
@@ -14539,6 +14922,7 @@ Tools.pp = {
   findSnapDistance(rawDist, evt) {
     const obj = this.hoverObj;
     if (!obj || !this.faceCopy) return null;
+    this._snapPoint = null; this._snapType = null;
     const N = this.faceCopy.normal;
     const C = this.faceCentroid;
     // Convert ~10px screen tolerance into world units at the face centroid.
@@ -14610,6 +14994,8 @@ Tools.pp = {
         bestDelta = delta;
         bestDist = t;
         bestFace = null; // vertex/edge-based snap; we just want the distance
+        this._snapPoint = v.clone();
+        this._snapType = 'Vertex';
       }
     };
     // Only consider snaps to the cursor-hovered object (or none if cursor
@@ -14637,6 +15023,29 @@ Tools.pp = {
       for (const v of other.em.vertices) acceptVertex(v);
     }
 
+    // ----- SketchUp-style height inference to ANY nearby reference point -----
+    // Hover a vertex / edge / midpoint / intersection on any OTHER object and
+    // the push snaps so the moving face lands exactly at that point's height.
+    // We reuse the global snap engine — the same one the line tool uses — which
+    // already finds the feature under the cursor and gates it by screen
+    // proximity, so this only fires when the user genuinely hovers a reference
+    // (it never auto-clamps to random nearby heights). The pushed object itself
+    // is excluded so we don't latch onto its own moving geometry. A deliberate
+    // feature hover takes priority over the parallel-face heuristics above.
+    if (evt && typeof computeSnap === 'function') {
+      let fs = null;
+      try { fs = computeSnap(evt, { skipOuterGroups: true, excludeObjs: new Set([obj]) }); } catch (_) {}
+      if (fs && fs.point && /Endpoint|Midpoint|On Edge|Intersection|Extension/i.test(fs.type || '')) {
+        const tF = fs.point.clone().sub(C).dot(N);   // project onto the push axis
+        if (Math.abs(tF) >= 1e-4) {
+          bestDist = tF;
+          bestFace = null;            // height snap — no target face to cut
+          this._snapPoint = fs.point.clone();
+          this._snapType = fs.type;
+        }
+      }
+    }
+
     if (bestDist === null) return null;
     return { face: bestFace, dist: bestDist };
   },
@@ -14644,7 +15053,26 @@ Tools.pp = {
      push/pull distance is being inferenced. Uses origVerts (the source state)
      to keep the indicator stable while the live mesh deforms. */
   drawSnapOverlay() {
-    if (!this.snapTarget) return;
+    // Height-inference snap to a reference point (no target face): draw a small
+    // magenta marker at the point so the user sees what the push locked onto.
+    if (!this.snapTarget) {
+      if (this._snapPoint) {
+        const r = camera.position.distanceTo(this._snapPoint) * 0.012;
+        const p = this._snapPoint;
+        const segs = [
+          p.clone().add(new THREE.Vector3(-r, 0, 0)), p.clone().add(new THREE.Vector3(r, 0, 0)),
+          p.clone().add(new THREE.Vector3(0, -r, 0)), p.clone().add(new THREE.Vector3(0, r, 0)),
+          p.clone().add(new THREE.Vector3(0, 0, -r)), p.clone().add(new THREE.Vector3(0, 0, r)),
+        ];
+        const m = new THREE.LineSegments(
+          new THREE.BufferGeometry().setFromPoints(segs),
+          new THREE.LineBasicMaterial({ color: 0xff00ff, depthTest: false })
+        );
+        m.renderOrder = 999;
+        helperRoot.add(m);
+      }
+      return;
+    }
     const f = this.snapTarget;
     const verts = f.verts.map(i => this.origVerts[i]);
     const tri = [];
@@ -15513,13 +15941,106 @@ Tools.wall = {
 
 Tools.line = {
   name: 'line', label: 'Line', cursor: 'draw',
-  firstPoint: null, firstObj: null, firstIdx: -1, lastDir: null,
-  onActivate() { setStatus('msg', 'Click a point, then type a length or click again. Esc to finish.'); },
+  firstPoint: null, firstObj: null, firstIdx: -1, lastDir: null, axisLock: null,
+  onActivate() { setStatus('msg', 'Click a point, then type a length or click again. ←↑→ to lock axis, Esc to finish.'); },
   onDeactivate() { this.reset(); },
   reset() {
     this.firstPoint = null; this.firstObj = null; this.firstIdx = -1; this.lastDir = null;
-    this.firstFace = null;
+    this.firstFace = null; this.axisLock = null;
     helperRoot.clear();
+  },
+  /* Arrow-key axis lock — direction + color for 'x'|'y'|'z'. Mirrors the Move
+     tool's mapping (↑=Y up/green, →=X red, ←=Z blue). */
+  _axisInfo(ax) {
+    switch (ax) {
+      case 'x': return { vec: new THREE.Vector3(1, 0, 0), color: 0xff3b30 };
+      case 'y': return { vec: new THREE.Vector3(0, 1, 0), color: 0x34c759 };
+      case 'z': return { vec: new THREE.Vector3(0, 0, 1), color: 0x007aff };
+      default:  return null;
+    }
+  },
+  /* Closest point on the infinite axis line {origin + dir·t} to the mouse RAY.
+     This is the key to mouse-controlled LENGTH under an axis constraint:
+     projecting the surface snap point onto the axis collapses to length 0 for
+     a vertical axis (the ground snap sits at ~0 height), whereas projecting the
+     cursor RAY onto the axis keeps the length tracking the mouse for ALL axes —
+     including the vertical Y. Math: minimize the distance between the axis line
+     and the ray. With unit dir & rayD: b = dir·rayD, W = origin − rayO,
+     t = (b·(rayD·W) − dir·W) / (1 − b²). */
+  _closestOnAxis(origin, dir, ray) {
+    const rayO = ray.origin, rayD = ray.direction;
+    const b = dir.dot(rayD);
+    const denom = 1 - b * b;
+    const W = origin.clone().sub(rayO);
+    const d0 = dir.dot(W);
+    const eN = rayD.dot(W);
+    const t = (Math.abs(denom) < 1e-8) ? 0 : (b * eN - d0) / denom;
+    return origin.clone().addScaledVector(dir, t);
+  },
+  /* Mouse-driven axis inference. Returns {name,vec,color} when the cursor sits
+     within ~14px (screen space) of one of the three world axes drawn through
+     firstPoint, else null. Uses a robust 2D perpendicular-distance test against
+     each axis's on-screen direction, so it behaves at any camera angle (and
+     skips axes that point straight at the camera). A small minimum drag keeps
+     the band from snapping to an axis the instant after the first click. */
+  _inferAxis(e) {
+    const cr = CAN.getBoundingClientRect();
+    const cp = _cursorPx(e);
+    const mx = cp.x - cr.left, my = cp.y - cr.top;
+    const o = worldToScreen(this.firstPoint);
+    if (o.z > 1) return null;                                 // first point behind camera
+    const vx = mx - o.x, vy = my - o.y;
+    const vlen = Math.hypot(vx, vy);
+    if (vlen < 18) return null;                               // need a little drag first
+    // Angular cone test: the drag direction (firstPoint→cursor) must fall within
+    // ~8° of an axis's on-screen direction. An angular cone — not a fixed pixel
+    // distance — matches SketchUp and, crucially, stays engaged for long drags
+    // along an axis that projects a couple degrees off-vertical/-horizontal.
+    let best = null, bestCos = Math.cos(8 * Math.PI / 180);
+    for (const ax of _AXIS_DEFS) {
+      const tip = worldToScreen(this.firstPoint.clone().add(ax.vec));
+      if (tip.z > 1) continue;
+      let dx = tip.x - o.x, dy = tip.y - o.y;
+      const dl = Math.hypot(dx, dy);
+      if (dl < 1e-3) continue;                                // axis points at camera — unusable
+      dx /= dl; dy /= dl;
+      const cosA = Math.abs((vx * dx + vy * dy) / vlen);      // axes are bidirectional
+      if (cosA > bestCos) { bestCos = cosA; best = { name: ax.name, vec: ax.vec.clone(), color: ax.color }; }
+    }
+    return best;
+  },
+  /* Resolve the constrained second point for the current cursor position.
+     Returns { snap, p2, axis } where axis (if present) is the active world-axis
+     constraint — either an explicit arrow-key lock (axis.locked) or a live
+     mouse inference. Under an axis, p2 is the ray→axis closest point so its
+     LENGTH follows the mouse (works for the vertical Y axis too). With no axis
+     we fall back to the first face's plane, as before. */
+  _constrainedPoint(e) {
+    const snap = computeSnap(e, { skipOuterGroups: true, from: this.firstPoint });
+    if (!snap) return null;
+    ndc(e);
+    raycaster.setFromCamera(pointer, camera);
+    const ray = raycaster.ray.clone();
+    let p2 = snap.point.clone();
+    let axis = null;
+    if (this.axisLock) {
+      const i = this._axisInfo(this.axisLock);
+      axis = { vec: i.vec, color: i.color, name: this.axisLock.toUpperCase(), locked: true };
+    } else {
+      // Let inference take over only WEAK surface snaps (ground/face/grid or no
+      // type). A real feature snap — endpoint/midpoint/edge/extension — still
+      // wins, matching SketchUp's precedence.
+      const t = snap.type || '';
+      if (!t || /Ground|Face|Grid/i.test(t)) axis = this._inferAxis(e);
+    }
+    if (axis) {
+      p2 = this._closestOnAxis(this.firstPoint, axis.vec, ray);
+    } else if (this.firstFace && this.firstFace.normal) {
+      const n = this.firstFace.normal;
+      const d = p2.clone().sub(this.firstPoint).dot(n);
+      p2.addScaledVector(n, -d);
+    }
+    return { snap, p2, axis };
   },
 
   /* Commit a single edge from (p1, snap1) to (p2, snap2). Returns the
@@ -15709,11 +16230,11 @@ Tools.line = {
 
   onPointerDown(e) {
     if (e.button !== 0) return;
-    const snap = computeSnap(e, { skipOuterGroups: true, from: this.firstPoint });
-    if (!snap) return;
 
     if (!this.firstPoint) {
       // Start of a new line (or a new chain)
+      const snap = computeSnap(e, { skipOuterGroups: true, from: this.firstPoint });
+      if (!snap) return;
       this.firstPoint = snap.point.clone();
       this.firstObj   = snap.obj || null;
       this.firstIdx   = -1;
@@ -15723,18 +16244,14 @@ Tools.line = {
       return;
     }
 
-    // Second click — commit
+    // Second click — commit exactly the point the preview showed (honoring the
+    // arrow-key lock or live mouse axis inference via the shared resolver).
+    const cp = this._constrainedPoint(e);
+    if (!cp) return;
     const p1 = this.firstPoint;
-    let p2 = snap.point.clone();
-    // Constrain the second point onto the first point's face plane so the
-    // line never escapes onto a hidden back face.
-    if (this.firstFace && this.firstFace.normal) {
-      const n = this.firstFace.normal;
-      const d = p2.clone().sub(p1).dot(n);
-      p2.addScaledVector(n, -d);
-    }
-    const firstSnapInfo  = { obj: this.firstObj };
-    const result = this._commitEdge(p1, firstSnapInfo, p2, snap);
+    const p2 = cp.p2;
+    const firstSnapInfo = { obj: this.firstObj };
+    const result = this._commitEdge(p1, firstSnapInfo, p2, cp.snap);
     helperRoot.clear();
 
     if (result) {
@@ -15742,6 +16259,7 @@ Tools.line = {
       this.firstPoint = p2;
       this.firstObj   = result.obj;
       this.firstIdx   = result.ib;
+      this.axisLock   = null;   // release the lock after each committed segment
     } else {
       this.reset();
     }
@@ -15749,27 +16267,28 @@ Tools.line = {
 
   onPointerMove(e) {
     if (!this.firstPoint) return;
-    const snap = computeSnap(e, { skipOuterGroups: true, from: this.firstPoint });
-    if (!snap) return;
+    const cp = this._constrainedPoint(e);
+    if (!cp) return;
+    const { snap, p2, axis } = cp;
     helperRoot.clear();
-    // Constrain preview point to the first face's plane so the rubber-band
-    // line stays on the visible face the user started drawing on.
-    let p2 = snap.point.clone();
-    if (this.firstFace && this.firstFace.normal) {
-      const n = this.firstFace.normal;
-      const d = p2.clone().sub(this.firstPoint).dot(n);
-      p2.addScaledVector(n, -d);
-    }
-    // Axis inference guide (colored dashed along X/Y/Z from firstPoint)
-    drawInferenceHelper(snap);
+    // Feature-snap guide dot only when no axis constraint is active — the
+    // colored rubber band already conveys an axis lock/inference.
+    if (!axis) drawInferenceHelper(snap);
+    // Color the rubber band by the active constraint: an axis lock or live
+    // mouse inference paints the axis color (R/G/B); otherwise mirror any
+    // parallel/extension (magenta) / perpendicular (teal) snap, else blue.
+    const bandColor = axis ? axis.color
+                    : (snap.axis && snap.color != null ? snap.color : 0x0066ff);
     const g = new THREE.BufferGeometry().setFromPoints([this.firstPoint, p2]);
-    const mat = new THREE.LineDashedMaterial({ color: 0x0066ff, dashSize: 0.2, gapSize: 0.1 });
+    const mat = new THREE.LineDashedMaterial({ color: bandColor, dashSize: 0.2, gapSize: 0.1 });
     const line = new THREE.Line(g, mat);
     line.computeLineDistances();
     helperRoot.add(line);
     const len = this.firstPoint.distanceTo(p2);
     VCB.set(Units.format(len, { noSuffix: true }));
-    setStatus('msg', 'Length: ' + Units.format(len) + (snap.axis ? ' · ' + snap.axis + '축' : '') + '   (Esc to finish)');
+    const axisTag = axis ? (axis.locked ? ` · ${axis.name}축 고정` : ` · ${axis.name}축`)
+                  : (snap.axis ? ' · ' + snap.axis : '');
+    setStatus('msg', 'Length: ' + Units.format(len) + axisTag + '   (←↑→ 축고정 · Esc 종료)');
     // Cache the live direction so onVCB works even if the user types before moving
     if (len > 1e-6) this.lastDir = p2.clone().sub(this.firstPoint).normalize();
   },
@@ -15778,10 +16297,19 @@ Tools.line = {
     if (!this.firstPoint) return;
     const d = Units.parse(val);
     if (!isFinite(d) || d <= 0) return;
-    // Prefer cached direction; fall back to +X if the user hasn't moved the mouse.
-    const dir = (this.lastDir && this.lastDir.lengthSq() > 0.5)
-      ? this.lastDir.clone()
-      : new THREE.Vector3(1, 0, 0);
+    // Direction: an explicit axis lock forces the world axis (keeping the sign
+    // of the live preview); otherwise use the cached live direction, falling
+    // back to +X if the user hasn't moved the mouse yet.
+    let dir;
+    const lockInfo = this.axisLock ? this._axisInfo(this.axisLock) : null;
+    if (lockInfo) {
+      const sgn = (this.lastDir && this.lastDir.dot(lockInfo.vec) < 0) ? -1 : 1;
+      dir = lockInfo.vec.clone().multiplyScalar(sgn);
+    } else {
+      dir = (this.lastDir && this.lastDir.lengthSq() > 0.5)
+        ? this.lastDir.clone()
+        : new THREE.Vector3(1, 0, 0);
+    }
     const p2 = this.firstPoint.clone().addScaledVector(dir, d);
     const result = this._commitEdge(this.firstPoint, { obj: this.firstObj }, p2, { obj: this.firstObj });
     helperRoot.clear();
@@ -15789,13 +16317,38 @@ Tools.line = {
       this.firstPoint = p2;
       this.firstObj = result.obj;
       this.firstIdx = result.ib;
+      this.axisLock = null;   // release the lock after each committed segment
     } else {
       this.reset();
     }
   },
 
   onPointerUp() {},
-  onKey(k) { if (k === 'escape') this.reset(); },
+  onKey(k) {
+    if (k === 'escape') { this.reset(); return; }
+    // Axis-direction lock — only meaningful once a segment is in progress.
+    // Mapping mirrors the Move tool: ↑=Y (up/green) →=X (red) ←=Z (blue),
+    // ↓ clears. Pressing the same axis again toggles it off. X/Y/Z letters
+    // also work when not claimed by a tool shortcut.
+    if (!this.firstPoint) return;
+    const setLock = (ax) => {
+      this.axisLock = (this.axisLock === ax) ? null : ax;
+      const tag = this.axisLock ? `${this.axisLock.toUpperCase()}축 고정` : '축 고정 해제';
+      setStatus('msg', `${tag}   (←↑→ 축고정 · Esc 종료)`);
+      // Re-run the preview at the last cursor position so the lock shows
+      // immediately, without waiting for the next mouse move.
+      if (_lastPointerEvt) { try { this.onPointerMove(_lastPointerEvt); } catch (_) {} }
+    };
+    if (k === 'arrowright' || k === 'x') { setLock('x'); return; }
+    if (k === 'arrowup'    || k === 'y') { setLock('y'); return; }
+    if (k === 'arrowleft'  || k === 'z') { setLock('z'); return; }
+    if (k === 'arrowdown') {
+      this.axisLock = null;
+      setStatus('msg', '축 고정 해제   (←↑→ 축고정 · Esc 종료)');
+      if (_lastPointerEvt) { try { this.onPointerMove(_lastPointerEvt); } catch (_) {} }
+      return;
+    }
+  },
 };
 
 /* ------------------------- RECTANGLE TOOL ------------------------- */
@@ -19685,12 +20238,67 @@ function rebuildSectionFills() {
     LINE, LWPOLYLINE, POLYLINE, CIRCLE, ARC
   Maps LAYER names to our app layers. ACI color index -> RGB.
 */
-const ACI_COLORS = [
-  0x000000,0xff0000,0xffff00,0x00ff00,0x00ffff,0x0000ff,0xff00ff,0xffffff,
-  0x414141,0x808080,0xff0000,0xffaaaa,0xbd0000,0xbd7e7e,0x810000,0x815656,
-  0x680000,0x684545,0x4f0000,0x4f3535,
-];
+// Full 256-entry AutoCAD Color Index palette, generated from the documented
+// pattern: 9 fixed primaries (1-9), 24 hues × 10 shades for the chromatic range
+// (10-249), and a 6-step grayscale tail (250-255). Within each hue there are 5
+// brightness levels, each with a "pure" and a "pale" (white-mixed) variant —
+// this reproduces AutoCAD's palette to within ±1 per channel (imperceptible),
+// so imported DXF layers show their true CAD colors instead of collapsing to gray.
+const ACI_COLORS = (function buildACI() {
+  const t = new Array(256).fill(0xffffff);
+  t[0] = 0x000000;
+  const fixed = [0xff0000,0xffff00,0x00ff00,0x00ffff,0x0000ff,0xff00ff,0xffffff,0x414141,0x808080];
+  for (let i = 0; i < 9; i++) t[i + 1] = fixed[i];
+  const ramps = [
+    [1,0,0],[1,.25,0],[1,.5,0],[1,.75,0],
+    [1,1,0],[.75,1,0],[.5,1,0],[.25,1,0],
+    [0,1,0],[0,1,.25],[0,1,.5],[0,1,.75],
+    [0,1,1],[0,.75,1],[0,.5,1],[0,.25,1],
+    [0,0,1],[.25,0,1],[.5,0,1],[.75,0,1],
+    [1,0,1],[1,0,.75],[1,0,.5],[1,0,.25],
+  ];
+  const BRI = [255, 189, 129, 104, 79];
+  const PALE = 0.6667; // low channels lift 2/3 toward the brightness ceiling
+  let idx = 10;
+  for (let h = 0; h < 24; h++) {
+    const f = ramps[h];
+    for (let s = 0; s < 5; s++) {
+      const B = BRI[s];
+      t[idx++] = (Math.round(f[0]*B) << 16) | (Math.round(f[1]*B) << 8) | Math.round(f[2]*B);
+      const lr = Math.round((f[0] + (1 - f[0]) * PALE) * B);
+      const lg = Math.round((f[1] + (1 - f[1]) * PALE) * B);
+      const lb = Math.round((f[2] + (1 - f[2]) * PALE) * B);
+      t[idx++] = (lr << 16) | (lg << 8) | lb;
+    }
+  }
+  const grays = [0x333333,0x505050,0x696969,0x828282,0xbebebe,0xffffff];
+  for (let i = 0; i < 6; i++) t[250 + i] = grays[i];
+  return t;
+})();
 function aciToColor(i) { return ACI_COLORS[i] || 0xffffff; }
+function _hexToCss(n) { return '#' + ((n >>> 0) & 0xffffff).toString(16).padStart(6, '0'); }
+// Resolve a DXF layer's ACI color (group code 62) to a viewport-visible color.
+// Returns a 0xRRGGBB number, or null when the layer carries no explicit color
+// (BYBLOCK=0 / BYLAYER=256) so callers keep their existing default. ACI 7
+// ("white") and any near-white value map to dark gray: AutoCAD renders color-7
+// as black on a light sheet, and our viewport background is light, so this
+// keeps imported linework readable instead of washing it out to white.
+function _dxfDisplayColor(aci) {
+  if (aci == null) return null;
+  aci = Math.abs(aci | 0);
+  if (aci === 0 || aci === 256) return null;
+  const c = aciToColor(aci);
+  const r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+  // Only true white (ACI 7 / 255 / out-of-range) is washed out on a light
+  // background — darken just those. Pale tints keep their hue.
+  if (aci === 7 || lum >= 250) return 0x333333;
+  return c;
+}
+
+// Records how the most recent DXF import was normalized (unit scale + whether
+// it was recentered onto the origin) so importDXF can report it to the user.
+let _dxfLastImportInfo = null;
 
 function parseDXF(text) {
   const lines = text.split(/\r?\n/).map(s => s.trim());
@@ -19775,12 +20383,29 @@ function parseDXF(text) {
   if (sections.ENTITIES == null) throw new Error('No ENTITIES section found');
   const entities = readEntitiesUntilEndsec(sections.ENTITIES).entities;
 
+  // Parse the LAYER table (in the TABLES section) so each layer's CAD color
+  // (ACI, group code 62) can be reflected onto our matching app layer. The
+  // table walker reuses readEntitiesUntilEndsec — every "0 LAYER" record there
+  // carries its name (code 2) and default color (code 62).
+  const layerColorByName = {};
+  if (sections.TABLES != null) {
+    const tableEnts = readEntitiesUntilEndsec(sections.TABLES).entities;
+    for (const e of tableEnts) {
+      if (e.type === 'LAYER' && e.data[2] != null) {
+        layerColorByName[String(e.data[2])] = (e.data[62] != null) ? (e.data[62] | 0) : null;
+      }
+    }
+  }
+
   // Collect DXF layer names from both top-level entities and block-internal ones.
   const layerIdByName = {};
   const collectLayers = (ents) => {
     for (const ent of ents) {
       const lname = ent.data[8] || '0';
-      if (!layerIdByName[lname]) layerIdByName[lname] = addLayer(lname);
+      if (!layerIdByName[lname]) {
+        const disp = _dxfDisplayColor(layerColorByName[lname]);
+        layerIdByName[lname] = addLayer(lname, disp != null ? { color: _hexToCss(disp) } : undefined);
+      }
     }
   };
   collectLayers(entities);
@@ -19913,7 +20538,58 @@ function parseDXF(text) {
   }
   processEntities(entities, null, 0);
 
-  // Turn each bucket into a SketchObject
+  // ── Normalize units & placement so the import lands on the ground grid ────
+  // DXF is usually authored in millimetres and/or at large absolute (survey)
+  // coordinates, which would push the model thousands of units from the origin
+  // — out past the ground grid, so the grid "disappears" after a fit-to-view.
+  // Scale to metres (via the $INSUNITS header, else a size heuristic) and
+  // recenter the drawing onto the origin so it sits squarely on the grid.
+  _dxfLastImportInfo = { scale: 1, recentered: false };
+  {
+    const raw = new THREE.Box3();
+    for (const lname in bucketByLayer)
+      for (const v of bucketByLayer[lname].vertices) raw.expandByPoint(v);
+    if (!raw.isEmpty()) {
+      // $INSUNITS: header group 9 "$INSUNITS" followed by group 70 integer.
+      let insUnits = null;
+      for (let i = 0; i + 1 < pairs.length; i++) {
+        if (pairs[i].code === 9 && pairs[i].value === '$INSUNITS') {
+          for (let j = i + 1; j < Math.min(pairs.length, i + 4); j++) {
+            if (pairs[j].code === 70) { insUnits = parseInt(pairs[j].value, 10); break; }
+          }
+          break;
+        }
+      }
+      // AutoCAD unit code → metres
+      const UNIT_M = { 1: 0.0254, 2: 0.3048, 4: 0.001, 5: 0.01, 6: 1, 14: 0.1 };
+      let scale = 1;
+      if (insUnits && UNIT_M[insUnits] != null) {
+        scale = UNIT_M[insUnits];
+      } else {
+        const sz = new THREE.Vector3(); raw.getSize(sz);
+        if (Math.max(sz.x, sz.y, sz.z) > 3000) scale = 0.001;  // looks like mm
+      }
+      const c = new THREE.Vector3(); raw.getCenter(c);
+      const oy = raw.min.y;  // drop the base onto y=0
+      const recenter = scale !== 1 || c.lengthSq() > 1 || Math.abs(oy) > 1e-6;
+      if (recenter) {
+        for (const lname in bucketByLayer) {
+          for (const v of bucketByLayer[lname].vertices) {
+            v.x = (v.x - c.x) * scale;
+            v.y = (v.y - oy)  * scale;
+            v.z = (v.z - c.z) * scale;
+          }
+        }
+        _dxfLastImportInfo = { scale, recentered: true };
+      }
+    }
+  }
+
+  // Turn each bucket into a SketchObject. All layers of one DXF import share a
+  // single groupId so the whole drawing behaves as one entity — selecting/
+  // moving any part grabs the entire underlay (enable "Select Underlay (DXF)"
+  // in the View menu to pick it). Each import gets its own fresh group.
+  const dxfGroupId = (typeof _newGroupId === 'function') ? _newGroupId() : ('G' + Date.now());
   let produced = 0;
   const bbox = new THREE.Box3();
   for (const lname in bucketByLayer) {
@@ -19921,6 +20597,28 @@ function parseDXF(text) {
     if (em.vertices.length === 0) continue;
     const obj = new SketchObject(em, 'DXF:' + lname);
     obj.layerId = layerIdByName[lname];
+    // Treat imported DXF as a non-interactive background underlay: excluded
+    // from snapping and click-picking (see Model.snapToUnderlay / pickUnderlay)
+    // so it never slows the cursor or steals snap points. Toggle via the
+    // View menu ("Snap to Underlay") to trace over it.
+    obj.isUnderlay = true;
+    // Bundle every layer of this import into one group.
+    obj.groupId = dxfGroupId;
+    // Underlay = linework only. A DXF's closed polylines/circles become faces
+    // that sit exactly on the linework plane (y=0); coplanar face+lines z-fight,
+    // so the lines look "buried" in the floor at some camera angles (and a
+    // wireframe toggle, which hides the face, made them reappear). Hiding the
+    // face removes the coplanar surface entirely — lines always render cleanly.
+    obj.mesh.visible = false;
+    // Reflect the CAD layer color onto the linework. _baseEdgeColor is the
+    // "resting" edge color that refreshSelectionVisuals restores to when the
+    // object isn't selected (selection still overrides it with blue).
+    const _disp = _dxfDisplayColor(layerColorByName[lname]);
+    if (_disp != null && obj.edgeMat) {
+      obj.edgeMat.color.setHex(_disp);
+      obj.edgeMat.needsUpdate = true;
+      obj._baseEdgeColor = _disp;
+    }
     Model.objects.push(obj);
     worldRoot.add(obj.group);
     for (const v of em.vertices) bbox.expandByPoint(v);
@@ -20270,7 +20968,14 @@ function importDXF(text, filename) {
       try {
         const n = parseDXF(text);
         pushHistory('Import DXF');
-        setStatus('msg', `Imported ${n} object(s) from ${filename}`);
+        let extra = '';
+        if (_dxfLastImportInfo && _dxfLastImportInfo.recentered) {
+          const s = _dxfLastImportInfo.scale;
+          extra = s !== 1
+            ? ` — 단위 보정(×${s}) 후 원점으로 이동, 그리드 위에 배치`
+            : ` — 원점으로 이동해 그리드 위에 배치`;
+        }
+        setStatus('msg', `${filename}에서 ${n}개 객체 임포트${extra}`);
       } catch (err) {
         console.error(err);
         showError('DXF import failed: ' + err.message);
@@ -20333,6 +21038,9 @@ function sceneToDoc() {
       // Image-plane / entourage so reopening restores the picture.
       isImagePlane: !!o.isImagePlane,
       isEntourage:  !!o.isEntourage,
+      isUnderlay:   !!o.isUnderlay,
+      edgeColor:    (o._baseEdgeColor != null) ? o._baseEdgeColor : null,
+      groupId:      o.groupId || null,
       entourageId:  o.entourageId || null,
       imageSrc:     o.imageSrc || null,
       faceCamera:   !!o.faceCamera,
@@ -20490,6 +21198,13 @@ function loadDocIntoScene(doc) {
     obj.layerId = od.layerId || 'Layer0';
     obj.visible = od.visible !== false;
     obj.locked = !!od.locked;
+    obj.groupId = od.groupId || null;  // restore group membership (incl. DXF underlay group)
+    // Underlay flag. Back-compat: files saved before this flag existed still
+    // tag their imported DXF via the 'DXF:' name prefix, so infer it there.
+    if (od.isUnderlay || (od.isUnderlay === undefined && /^DXF:/.test(od.name || ''))) { obj.isUnderlay = true; obj.mesh.visible = false; } // linework-only (no coplanar face)
+    if (od.edgeColor != null && obj.edgeMat) {
+      obj._baseEdgeColor = od.edgeColor; obj.edgeMat.color.setHex(od.edgeColor); obj.edgeMat.needsUpdate = true;
+    }
 
     // Restore built-in material (glass / concrete / wood / …).
     if (od.materialId && typeof MATERIALS !== 'undefined') {
@@ -22595,7 +23310,10 @@ function drawOverlay() {
   // is active the crosshair jumps to the snap target (so what you see is
   // what you'll draw); otherwise it sits at the mouse position.
   if (document.body.classList.contains('cursor-draw') && _lastPointerEvt) {
-    const cr = VP.getBoundingClientRect();
+    // Canvas frame (see computeSnap): the overlay is inset from the viewport
+    // top, so the un-snapped crosshair must use the canvas rect to sit exactly
+    // under the real cursor instead of ~28px below it.
+    const cr = CAN.getBoundingClientRect();
     const snapped = !!(currentSnap && SNAP_STYLES[currentSnap.type]);
     const snapColor = snapped ? SNAP_STYLES[currentSnap.type].color : '#e53935';
     let px, py;
@@ -23470,12 +24188,40 @@ function _handleActionImpl(act) {
     }
     case 'toggle-axes':  axes.visible = !axes.visible; Model.showAxes = !Model.showAxes; break;
     case 'toggle-colorlayer': Model.colorByLayer = !Model.colorByLayer; applyLayerVisibility(); break;
+    case 'toggle-linecolorlayer':
+      Model.lineColorByLayer = !Model.lineColorByLayer;
+      applyLayerVisibility();
+      try { refreshSelectionVisuals(); } catch (_) {}
+      setStatus('msg', '선색을 레이어 색으로: ' + (Model.lineColorByLayer ? 'on' : 'off'));
+      break;
+    case 'toggle-darkbg':
+      Model.darkBackground = !Model.darkBackground;
+      applyBackgroundMode();
+      setStatus('msg', '검정 배경: ' + (Model.darkBackground ? 'on' : 'off'));
+      break;
     case 'toggle-sectionfill':
       Model.sectionFills = !Model.sectionFills;
       if (typeof rebuildSectionFills === 'function') rebuildSectionFills();
       setStatus('msg', 'Section fills: ' + (Model.sectionFills ? 'on' : 'off'));
       break;
     case 'toggle-shadows': toggleShadowPanel(); break;
+    case 'toggle-snap-underlay': {
+      const n = (Model.objects || []).filter(o => o.isUnderlay).length;
+      if (!n) { setStatus('msg', '언더레이(DXF)가 없습니다.'); break; }
+      Model.snapToUnderlay = !Model.snapToUnderlay;
+      currentSnap = null; snapCandidates = [];
+      setStatus('msg', Model.snapToUnderlay
+        ? '언더레이 전체 스냅(보조선·중간점 포함) 켜짐 — 무거우면 다시 꺼주세요. (기본은 모서리·선 스냅 항상 켜짐)'
+        : '언더레이 전체 스냅 꺼짐 — 모서리·선 스냅은 그대로 동작합니다.');
+      break;
+    }
+    case 'toggle-pick-underlay': {
+      const n = (Model.objects || []).filter(o => o.isUnderlay).length;
+      if (!n) { setStatus('msg', '언더레이(DXF)가 없습니다.'); break; }
+      Model.pickUnderlay = !Model.pickUnderlay;
+      setStatus('msg', '언더레이 선택: ' + (Model.pickUnderlay ? '켜짐' : '꺼짐'));
+      break;
+    }
     case 'tool-select': ToolMgr.set('select'); break;
     case 'tool-move':   ToolMgr.set('move'); break;
     case 'tool-pp':     ToolMgr.set('pp'); break;
@@ -23870,6 +24616,14 @@ function setViewMode(mode) {
   Model.viewMode = mode;
   const isHidden = (mode === 'hiddenline');
   for (const o of Model.objects) {
+    // Underlay (imported DXF) is linework-only: never show its coplanar faces
+    // (they z-fight with the lines and "bury" them), always keep edges visible.
+    if (o.isUnderlay) {
+      o.mesh.visible = false;
+      o.edges.visible = true;
+      o.mat.wireframe = false;
+      continue;
+    }
     o.mesh.visible = (mode !== 'wire');
     o.edges.visible = (mode !== 'shaded'); // show edges in wire/both/hiddenline
     o.mat.wireframe = (mode === 'wire');

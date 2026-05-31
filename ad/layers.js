@@ -46,7 +46,13 @@
       for (const o of Model.objects) {
         if (!o || !o.edgeMat) continue;
         o.edgeMat.linewidth = 1;
-        try { o.edgeMat.color.set('#2a2a2a'); } catch (_) {}
+        // Respect the object's resting edge color (DXF/CAD layer color, or the
+        // active "Lines by Layer Color" mode) instead of forcing a flat dark
+        // gray — otherwise this clobbers imported colors back to near-black.
+        try {
+          const _rest = (typeof _restingEdgeColor === 'function') ? _restingEdgeColor(o) : '#2a2a2a';
+          o.edgeMat.color.set(_rest);
+        } catch (_) {}
         o.edgeMat.needsUpdate = true;
         AD.Layers.syncThickEdges(o, BASE_WEIGHT);
       }
@@ -73,8 +79,13 @@
         const geom = new THREE.LineSegmentsGeometry();
         geom.setPositions(Array.from(positions));
         const vp = renderer && renderer.domElement;
+        // Seed the overlay's color from the object's edge material so DXF/CAD
+        // layer colors (and "Lines by Layer Color") show through. The thin
+        // o.edges this overlay replaces are recolored by _restingEdgeColor;
+        // the overlay must match or every line renders the same near-black.
+        const _seedColor = (o.edgeMat && o.edgeMat.color) ? o.edgeMat.color.getHex() : 0x1a1a1a;
         const mat = new THREE.LineMaterial({
-          color: 0x1a1a1a,
+          color: _seedColor,
           linewidth: pxWidth,
           resolution: new THREE.Vector2(vp ? vp.clientWidth : 1280, vp ? vp.clientHeight : 720),
           dashed: false,
@@ -98,6 +109,8 @@
         g.setPositions(Array.from(positions));
         m.geometry = g;
         m.material.linewidth = pxWidth;
+        // Keep the overlay color in sync with the object's edge material.
+        if (o.edgeMat && o.edgeMat.color) m.material.color.copy(o.edgeMat.color);
         const vp = renderer && renderer.domElement;
         if (vp) m.material.resolution.set(vp.clientWidth, vp.clientHeight);
         m.material.needsUpdate = true;
