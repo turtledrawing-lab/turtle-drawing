@@ -185,7 +185,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
 }
 /* Containment: isolating each section's layout so a sibling's height
    change doesn't trigger re-layout of every panel below — that was the
-   "뚝뚝" stutter, especially with the Outliner's many rows. */
+   "Rough" stutter, especially with the Outliner's many rows. */
 #rightpanel .panel-section.collapsible { contain: layout style; }
 /* contain:layout makes position:fixed descendants resolve against this box,
    shrinking the collapsed-mode popup to the 40px section. Drop containment
@@ -1005,7 +1005,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
   </div>
 
   <!-- ============================================================ Right Panel -->
-  <div id="rightResizer" title="드래그로 폭 조절" style="position:absolute; top:0; bottom:22px; width:6px; cursor:ew-resize; z-index:1500; background:transparent;"></div>
+  <div id="rightResizer" title="Drag to adjust width" style="position:absolute; top:0; bottom:22px; width:6px; cursor:ew-resize; z-index:1500; background:transparent;"></div>
   <div id="rightpanel" class="is-collapsed">
     <button id="rightPanelCollapse" title="Collapse panel">»»</button>
     <div class="entity-info" id="entityInfo">
@@ -1016,7 +1016,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
     <div class="panel-section collapsible" style="flex:0 0 auto;">
       <div class="panel-header" data-toggle="sceneTabsBody">
         <span><span class="arrow">▸</span> <svg class="panel-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M8 5v14 M16 5v14 M3 9h5 M3 14h5 M16 9h5 M16 14h5"/></svg> Scenes</span>
-        <button id="btnAddScene" onclick="event.stopPropagation();" title="현재 뷰를 장면으로 저장" style="font-size:10px;">+ Add</button>
+        <button id="btnAddScene" onclick="event.stopPropagation();" title="Save the current view as a scene" style="font-size:10px;">+ Add</button>
       </div>
       <div class="panel-body" id="sceneTabsBody" style="display:none; padding:6px 8px;">
         <div id="sceneTabs">
@@ -1075,7 +1075,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         <div style="font-size:9px; color:#888; margin-bottom:4px;">Tools → Make Component</div>
         <div id="componentList" style="display:flex; flex-direction:column; gap:3px;"></div>
         <hr style="border:none; border-top:1px solid #e0e0e0; margin:8px 0 4px;">
-        <div style="font-size:10px; font-weight:600; color:#555; margin-bottom:3px;">📚 라이브러리 (영구 저장)</div>
+        <div style="font-size:10px; font-weight:600; color:#555; margin-bottom:3px;">📚 Library (Save permanently)</div>
         <div id="componentLibraryList" style="display:flex; flex-direction:column; gap:3px;"></div>
       </div>
     </div>
@@ -1123,38 +1123,38 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
       </div>
       <div class="panel-body" id="wallToolBody" style="padding:6px 10px; display:block; font-size:11px;">
         <div style="display:flex; align-items:center; gap:6px; margin-bottom:5px;">
-          <label style="width:54px;">두께</label>
+          <label style="width:54px;">Thickness</label>
           <select id="wtThickPreset" style="flex:1; font-size:11px; padding:1px 2px;">
-            <option value="0.05">50mm (가벽)</option>
-            <option value="0.1" selected>100mm (내벽)</option>
+            <option value="0.05">50mm (Partition)</option>
+            <option value="0.1" selected>100mm (Interior wall)</option>
             <option value="0.15">150mm</option>
-            <option value="0.2">200mm (외벽)</option>
+            <option value="0.2">200mm (Exterior wall)</option>
             <option value="0.25">250mm</option>
-            <option value="0.3">300mm (단열외벽)</option>
-            <option value="custom">커스텀</option>
+            <option value="0.3">300mm (Insulated exterior wall)</option>
+            <option value="custom">Custom</option>
           </select>
         </div>
         <div id="wtThickCustomRow" style="display:none; align-items:center; gap:6px; margin-bottom:5px;">
-          <label style="width:54px;">두께(m)</label>
+          <label style="width:54px;">Thickness(m)</label>
           <input type="number" id="wtThick" step="0.01" min="0.01" max="2" value="0.1" style="width:80px; font-size:11px; padding:1px 4px;">
         </div>
         <div style="display:flex; align-items:center; gap:6px; margin-bottom:5px;">
-          <label style="width:54px;">높이</label>
+          <label style="width:54px;">Height</label>
           <select id="wtHeightPreset" style="flex:1; font-size:11px; padding:1px 2px;">
             <option value="2.1">2.1m</option>
             <option value="2.4">2.4m</option>
             <option value="2.7" selected>2.7m</option>
             <option value="3.0">3.0m</option>
             <option value="3.6">3.6m</option>
-            <option value="custom">커스텀</option>
+            <option value="custom">Custom</option>
           </select>
         </div>
         <div id="wtHeightCustomRow" style="display:none; align-items:center; gap:6px; margin-bottom:5px;">
-          <label style="width:54px;">높이(m)</label>
+          <label style="width:54px;">Height(m)</label>
           <input type="number" id="wtHeight" step="0.05" min="0.5" max="10" value="2.7" style="width:80px; font-size:11px; padding:1px 4px;">
         </div>
         <label style="display:flex; align-items:center; gap:6px; margin-top:4px;">
-          <input type="checkbox" id="wtMiter" checked> 모서리 자동 정리(miter)
+          <input type="checkbox" id="wtMiter" checked> Auto-clean edges(miter)
         </label>
       </div>
     </div>
@@ -1204,12 +1204,12 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
       <div class="panel-body" id="materialBody" style="display:none; padding:10px 8px;">
         <!-- Tab bar (5 macOS-style icon tabs) -->
         <div id="materialTabs" style="display:flex; gap:4px; margin-bottom:10px; padding:4px; background:rgba(0,0,0,0.04); border-radius:8px;">
-          <button class="mat-tab active" data-mat-tab="wheel"    title="컬러 휠"    style="flex:1;height:30px;padding:0;font-size:16px;background:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,0.08);">🎨</button>
-          <button class="mat-tab"        data-mat-tab="sliders"  title="슬라이더"   style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">🎚</button>
-          <button class="mat-tab"        data-mat-tab="spectrum" title="스펙트럼"   style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">🌈</button>
-          <button class="mat-tab"        data-mat-tab="pencils"  title="연필"       style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">✏️</button>
-          <button class="mat-tab"        data-mat-tab="material" title="재질"       style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">🧱</button>
-          <button class="mat-tab"        data-mat-tab="inmodel"  title="모델 내 재질" style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">🗂</button>
+          <button class="mat-tab active" data-mat-tab="wheel"    title="Color wheel"    style="flex:1;height:30px;padding:0;font-size:16px;background:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,0.08);">🎨</button>
+          <button class="mat-tab"        data-mat-tab="sliders"  title="Slider"   style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">🎚</button>
+          <button class="mat-tab"        data-mat-tab="spectrum" title="Spectrum"   style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">🌈</button>
+          <button class="mat-tab"        data-mat-tab="pencils"  title="Pencil"       style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">✏️</button>
+          <button class="mat-tab"        data-mat-tab="material" title="Material"       style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">🧱</button>
+          <button class="mat-tab"        data-mat-tab="inmodel"  title="Materials in model" style="flex:1;height:30px;padding:0;font-size:16px;background:transparent;border:none;border-radius:6px;cursor:pointer;">🗂</button>
         </div>
 
         <!-- WHEEL TAB -->
@@ -1228,7 +1228,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         <div id="matTabSliders" class="mat-tab-content" style="display:none;">
           <div style="display:flex;flex-direction:column;gap:10px;">
             <div>
-              <div style="font-size:11px;color:#3c3c43;margin-bottom:4px;">밝기</div>
+              <div style="font-size:11px;color:#3c3c43;margin-bottom:4px;">Brightness</div>
               <div style="display:flex;align-items:center;gap:8px;">
                 <input type="range" id="slBright" min="0" max="100" value="95"
                        style="flex:1;height:18px;background:linear-gradient(to right,#000,#fff);-webkit-appearance:none;border-radius:9px;outline:none;">
@@ -1271,7 +1271,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
 
         <!-- Bottom: opacity + preview/eyedropper (hidden on Material tab) -->
         <div id="cwBottomBar" style="margin-top:12px;padding-top:10px;border-top:0.5px solid rgba(0,0,0,0.08);">
-          <div style="font-size:11px;color:#3c3c43;margin-bottom:4px;">불투명도</div>
+          <div style="font-size:11px;color:#3c3c43;margin-bottom:4px;">Opacity</div>
           <div style="display:flex;align-items:center;gap:8px;">
             <input type="range" id="cwAlpha" min="5" max="100" value="100"
                    style="flex:1;height:18px;-webkit-appearance:none;border-radius:9px;outline:none;background:linear-gradient(to right,rgba(0,0,0,0.1),#000);">
@@ -1344,24 +1344,24 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
             </label>
           </div>
           <hr style="border:none; border-top:1px solid #e0e0e0; margin:6px 0 2px;">
-          <div style="font-weight:600; color:#555;">Layer (선택된 치수)</div>
+          <div style="font-weight:600; color:#555;">Layer (Selected dimensions)</div>
           <div style="display:flex; align-items:center; gap:6px;">
             <select id="dimLayerSel" style="flex:1; font-size:10px; padding:1px 2px;" disabled></select>
           </div>
-          <div id="dimLayerHint" style="color:#888; font-size:9px;">선택된 치수가 없습니다</div>
+          <div id="dimLayerHint" style="color:#888; font-size:9px;">No dimensions selected</div>
           <hr style="border:none; border-top:1px solid #e0e0e0; margin:6px 0 2px;">
           <label style="display:flex; align-items:center; gap:6px;">
-            <input type="checkbox" id="bpMode"> Blueprint Mode (흰 면 + 검정 윤곽)
+            <input type="checkbox" id="bpMode"> Blueprint Mode (White side + Black outline)
           </label>
           <hr style="border:none; border-top:1px solid #e0e0e0; margin:6px 0 2px;">
           <div style="font-weight:600; color:#555;">Snap</div>
-          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spEndpoint"> Endpoint (꼭지점)</label>
-          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spMidpoint"> Midpoint (중점)</label>
-          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spOnEdge"> On Edge (모서리 위)</label>
-          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spAxis"> Axis / Extension (축·연장선)</label>
-          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spXint"> Extension Intersect (교차)</label>
-          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spOnFace"> On Face (면 위)</label>
-          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spOnGround"> On Ground (지면)</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spEndpoint"> Endpoint</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spMidpoint"> Midpoint</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spOnEdge"> On Edge</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spAxis"> Axis / Extension</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spXint"> Extension Intersect</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spOnFace"> On Face</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="spOnGround"> On Ground</label>
           <hr style="border:none; border-top:1px solid #e0e0e0; margin:6px 0 2px;">
           <div style="font-weight:600; color:#555;">Section Depth Fade</div>
           <div style="display:flex; align-items:center; gap:6px;">
@@ -1379,7 +1379,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
             <input type="color" id="sfCol" style="width:28px; height:18px; border:1px solid #ccc; border-radius:3px; padding:0; background:none;">
           </div>
           <label style="display:flex; align-items:center; gap:6px;">
-            <input type="checkbox" id="sfSkipSmooth"> Skip imported meshes (성능)
+            <input type="checkbox" id="sfSkipSmooth"> Skip imported meshes (Performance)
           </label>
         </div>
       </div>
@@ -1397,7 +1397,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         </div>
         <div style="display:flex; gap:4px; align-items:center; margin-bottom:4px;">
           <label style="flex:1; font-size:10px;">
-            <input type="checkbox" id="cam2pt" style="vertical-align:middle;"> 2점 투시
+            <input type="checkbox" id="cam2pt" style="vertical-align:middle;"> 2-point perspective
           </label>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -1432,12 +1432,12 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         </div>
         <hr style="border:none; border-top:1px solid #ddd; margin:4px 0;">
         <div style="display:flex; gap:4px; align-items:center; margin-bottom:4px;">
-          <label style="width:50px; font-size:10px;" title="밝은 면(태양 받는 면) 최종 밝기">Light</label>
+          <label style="width:50px; font-size:10px;" title="Bright side(Sun-facing side) Final brightness">Light</label>
           <input type="range" id="shLight2" min="0" max="300" value="175" style="flex:1; height:14px;">
           <span id="shLight2Val" style="width:22px; text-align:right; font-size:10px;">175</span>
         </div>
         <div style="display:flex; gap:4px; align-items:center; margin-bottom:4px;">
-          <label style="width:50px; font-size:10px;" title="어두운 면(그늘 면) 최종 밝기">Dark</label>
+          <label style="width:50px; font-size:10px;" title="Dark side(Shaded side) Final brightness">Dark</label>
           <input type="range" id="shDark2" min="0" max="200" value="100" style="flex:1; height:14px;">
           <span id="shDark2Val" style="width:22px; text-align:right; font-size:10px;">100</span>
         </div>
@@ -1449,13 +1449,13 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         </div>
         <hr style="border:none; border-top:1px solid #ddd; margin:4px 0;">
         <label style="display:flex; align-items:center; gap:4px; font-size:10px; margin-bottom:4px;">
-          <input type="checkbox" id="shSunPath"> 태양 경로 표시
+          <input type="checkbox" id="shSunPath"> Show sun path
         </label>
         <label style="display:flex; align-items:center; gap:4px; font-size:10px; margin-bottom:4px;">
-          <input type="checkbox" id="shSunShade" checked> 그림자 없이 태양 명암 적용
+          <input type="checkbox" id="shSunShade" checked> Sun shading without shadows
         </label>
         <div style="display:flex; gap:4px; align-items:center; margin-bottom:4px;">
-          <label style="width:50px; font-size:10px;">품질</label>
+          <label style="width:50px; font-size:10px;">Quality</label>
           <select id="shQuality" style="flex:1; font-size:10px; padding:1px 2px;">
             <option value="low">Low (1k)</option>
             <option value="med" selected>Medium (2k)</option>
@@ -1464,7 +1464,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
           </select>
         </div>
         <div style="display:flex; gap:4px; align-items:center;">
-          <label style="width:50px; font-size:10px;">부드러움</label>
+          <label style="width:50px; font-size:10px;">Softness</label>
           <input type="range" id="shSoftness" min="0" max="20" step="1" value="4" style="flex:1; height:14px;">
           <span id="shSoftnessVal" style="width:22px; text-align:right; font-size:10px;">4</span>
         </div>
@@ -2592,14 +2592,14 @@ function refreshDimLayerSelector() {
   sel.innerHTML = '';
   for (const L of (Model.layers || [])) {
     const o = document.createElement('option');
-    o.value = L.id; o.textContent = L.name + (L.visible === false ? ' (숨김)' : '');
+    o.value = L.id; o.textContent = L.name + (L.visible === false ? ' (Hidden)' : '');
     sel.appendChild(o);
   }
   const ids = Model.selectedDimIds && Model.selectedDimIds.size
     ? [...Model.selectedDimIds] : [];
   if (!ids.length) {
     sel.disabled = true;
-    if (hint) hint.textContent = '선택된 치수가 없습니다';
+    if (hint) hint.textContent = 'No dimensions selected';
     return;
   }
   const dims = Model.dimensions.filter(d => Model.selectedDimIds.has(d.id));
@@ -2607,13 +2607,13 @@ function refreshDimLayerSelector() {
   sel.disabled = false;
   if (layerIds.size === 1) {
     sel.value = [...layerIds][0];
-    if (hint) hint.textContent = `${dims.length}개 치수 선택됨`;
+    if (hint) hint.textContent = `${dims.length} dimensions selected`;
   } else {
     // Mixed — add a placeholder option
     const ph = document.createElement('option');
-    ph.value = '__mixed'; ph.textContent = '— 혼합 —'; ph.selected = true;
+    ph.value = '__mixed'; ph.textContent = '— Mixed —'; ph.selected = true;
     sel.insertBefore(ph, sel.firstChild);
-    if (hint) hint.textContent = `${dims.length}개 치수 (서로 다른 레이어)`;
+    if (hint) hint.textContent = `${dims.length} dimensions (Different layers)`;
   }
 }
 
@@ -2653,11 +2653,11 @@ function renderHistoryList() {
   // then future (most recent redo first → next redo at the bottom).
   const items = [];
   for (let i = 0; i < History.past.length; i++) {
-    items.push({ kind: 'past', idx: i, label: History.past[i].label || '편집' });
+    items.push({ kind: 'past', idx: i, label: History.past[i].label || 'Edit' });
   }
-  items.push({ kind: 'current', label: '— 현재 —' });
+  items.push({ kind: 'current', label: '— Current —' });
   for (let i = History.future.length - 1; i >= 0; i--) {
-    items.push({ kind: 'future', idx: i, label: History.future[i].label || '재실행' });
+    items.push({ kind: 'future', idx: i, label: History.future[i].label || 'Redo' });
   }
   for (const it of items) {
     const row = document.createElement('div');
@@ -2694,7 +2694,7 @@ function renderComponentList() {
   list.innerHTML = '';
   const comps = Model.components || [];
   if (!comps.length) {
-    list.innerHTML = '<div style="font-size:10px;color:#aaa;font-style:italic;padding:4px;">컴포넌트 없음</div>';
+    list.innerHTML = '<div style="font-size:10px;color:#aaa;font-style:italic;padding:4px;">No components</div>';
     return;
   }
   for (const c of comps) {
@@ -2704,7 +2704,7 @@ function renderComponentList() {
     const name = document.createElement('span');
     name.style.cssText = 'flex:1;cursor:pointer;';
     name.textContent = c.name;
-    name.title = '클릭으로 인스턴스 삽입 (카메라 중심 위치)';
+    name.title = 'Click to insert instance (Camera target position)';
     name.onclick = () => {
       const at = (controls && controls.target) ? controls.target.clone() : new THREE.Vector3();
       const so = placeComponentInstance(c.id, at);
@@ -2716,17 +2716,17 @@ function renderComponentList() {
     const save = document.createElement('span');
     save.style.cssText = 'color:#0a84ff;cursor:pointer;padding:0 4px;font-size:12px;';
     save.textContent = '⭐';
-    save.title = '라이브러리에 저장';
+    save.title = 'Save to library';
     save.onclick = (e) => {
       e.stopPropagation();
       ComponentLibrary.add(c);
-      setStatus('msg', `"${c.name}"을 라이브러리에 저장했습니다.`);
+      setStatus('msg', `"${c.name}" saved to the library.`);
       renderComponentLibrary();
     };
     const del = document.createElement('span');
     del.style.cssText = 'color:#c44;cursor:pointer;padding:0 4px;opacity:0.6;';
     del.textContent = '×';
-    del.title = '컴포넌트 정의 삭제 (인스턴스는 일반 객체로 남음)';
+    del.title = 'Delete component definition (instances remain as plain objects)';
     del.onclick = (e) => {
       e.stopPropagation();
       Model.components = Model.components.filter(x => x.id !== c.id);
@@ -2767,7 +2767,7 @@ function renderComponentLibrary() {
   list.innerHTML = '';
   const items = ComponentLibrary.load();
   if (!items.length) {
-    list.innerHTML = '<div style="font-size:10px;color:#aaa;font-style:italic;padding:4px;">저장된 컴포넌트 없음</div>';
+    list.innerHTML = '<div style="font-size:10px;color:#aaa;font-style:italic;padding:4px;">No saved components</div>';
     return;
   }
   for (const c of items) {
@@ -2776,7 +2776,7 @@ function renderComponentLibrary() {
     const name = document.createElement('span');
     name.style.cssText = 'flex:1;cursor:pointer;';
     name.textContent = c.name;
-    name.title = '클릭으로 현재 문서에 삽입';
+    name.title = 'Click to insert into the current document';
     name.onclick = () => {
       // Add definition into current Model.components if not present, then place
       if (!Model.components) Model.components = [];
@@ -2790,7 +2790,7 @@ function renderComponentLibrary() {
     const del = document.createElement('span');
     del.style.cssText = 'color:#c44;cursor:pointer;padding:0 4px;opacity:0.6;';
     del.textContent = '×';
-    del.title = '라이브러리에서 제거';
+    del.title = 'Remove from library';
     del.onclick = (e) => {
       e.stopPropagation();
       ComponentLibrary.remove(c.id);
@@ -3033,12 +3033,12 @@ const Turntable = {
   start() {
     if (this.active) return;
     this.active = true;
-    setStatus('msg', 'Turntable: 활성화 (마우스 드래그로 방향 변경, Esc 중지)');
+    setStatus('msg', 'Turntable: Activate (Drag to change direction, Esc Stop)');
   },
   stop() {
     if (!this.active) return;
     this.active = false;
-    setStatus('msg', 'Turntable: 중지');
+    setStatus('msg', 'Turntable: Stop');
   },
   toggle() { this.active ? this.stop() : this.start(); },
   // Called once per frame.
@@ -3174,7 +3174,7 @@ function animate() {
             }
           } catch (_) {}
         }
-        try { setStatus && setStatus('msg', '⚠️ 렌더 오류 — 손상된 객체를 숨겼습니다. Cmd+Z로 복원하세요.'); } catch (_) {}
+        try { setStatus && setStatus('msg', '⚠️ Render error — Hid corrupted objects. Cmd+Z to restore.'); } catch (_) {}
       } catch (_) {}
     }
   }
@@ -3300,7 +3300,7 @@ function addScene(name) {
   const state = _captureCameraState();
   const sceneEntry = {
     id,
-    name: name || ('장면 ' + (Model.scenes.length + 1)),
+    name: name || ('Scene ' + (Model.scenes.length + 1)),
     ...state,
   };
   Model.scenes.push(sceneEntry);
@@ -3377,29 +3377,29 @@ function renderSceneTabs() {
     label.onclick = () => activateScene(s.id);
     label.ondblclick = (e) => {
       e.stopPropagation();
-      const n = prompt('장면 이름', s.name);
+      const n = prompt('Scene name', s.name);
       if (n != null && n.trim()) renameScene(s.id, n.trim());
     };
     t.appendChild(label);
     const close = document.createElement('span');
     close.className = 'close';
     close.textContent = '×';
-    close.title = '장면 삭제';
+    close.title = 'Delete scene';
     close.onclick = (e) => {
       e.stopPropagation();
-      if (confirm('이 장면을 삭제할까요?')) deleteScene(s.id);
+      if (confirm('Delete this scene??')) deleteScene(s.id);
     };
     t.appendChild(close);
     // Middle-click or Alt+click updates the scene to current view
     t.oncontextmenu = (e) => {
       e.preventDefault();
-      if (confirm('이 장면을 현재 뷰로 덮어쓸까요?')) updateScene(s.id);
+      if (confirm('Overwrite this scene with the current view??')) updateScene(s.id);
     };
     host.appendChild(t);
   }
 }
 
-// Wire up the "+ 장면 추가" button once DOM is ready
+// Wire up the "+ Add scene" button once DOM is ready
 (function wireSceneAddButton() {
   const btn = document.getElementById('btnAddScene');
   if (btn) btn.onclick = () => addScene();
@@ -4978,14 +4978,22 @@ class EditableMesh {
     }
     // For d<0 free-standing: original already faces opposite to the cap, no flip needed.
 
-    // Cap: keep original winding for d>0, reverse for d<0 so the new cap
-    //      points outward from the extruded prism.
-    const cap = d >= 0 ? newIdx.slice() : newIdx.slice().reverse();
+    // Cap winding:
+    //  - Free-standing prism: the cap is the FAR end, so for d<0 it must face
+    //    opposite the (kept) original face → reverse.
+    //  - Non-free-standing (a recess/protrusion into existing geometry; the
+    //    original face is removed): the cap is the SAME surface translated
+    //    along the normal, so it must KEEP the original facing for both push
+    //    directions. Reversing it here is what flipped a face with a hole when
+    //    pushed inward — holed faces always take this fallback path (they can't
+    //    use the fast in-place translate), so the flip showed up only for them.
+    const reverseCap = (d < 0) && isFreeStanding;
+    const cap = reverseCap ? newIdx.slice().reverse() : newIdx.slice();
     const capFace = this.addFace(cap, face.color, face.layerId);
-    // Hole loops travel with the cap. For d<0 the cap is reversed, so the
-    // hole loops must be reversed too to preserve their opposite winding.
+    // Hole loops travel with the cap (same reversal so their winding stays
+    // opposite to the outer loop).
     if (newHoles.length) {
-      capFace.holes = newHoles.map(h => d >= 0 ? h.slice() : h.slice().reverse());
+      capFace.holes = newHoles.map(h => reverseCap ? h.slice().reverse() : h.slice());
     }
 
     // Side walls only for edges that did NOT get notched into an adjacent face
@@ -5224,7 +5232,14 @@ class EditableMesh {
     const c = a.clone().addScaledVector(u, du).addScaledVector(v, dv);
     const e = a.clone().addScaledVector(v, dv);
     const ia = em.addVertex(a), ib = em.addVertex(b), ic = em.addVertex(c), ie = em.addVertex(e);
-    em.addFace([ia, ib, ic, ie], color, layerId);
+    const f = em.addFace([ia, ib, ic, ie], color, layerId);
+    // Deterministic orientation: the winding (hence normal) otherwise depends
+    // on the drag direction (signs of du/dv), so a floor rectangle came out
+    // white-up or white-down at random. Force a near-horizontal face to read
+    // white (front) UP (+Y); any other face faces the +normal side it was
+    // drawn from.
+    const want = (Math.abs(n.y) > 0.9) ? new THREE.Vector3(0, 1, 0) : n;
+    if (f.normal.dot(want) < 0) { f.verts.reverse(); em.computeFaceNormal(f); }
     return em;
   }
 
@@ -5964,6 +5979,28 @@ class HalfEdgeMesh {
 }
 window.HalfEdgeMesh = HalfEdgeMesh;
 
+/* ── Back-face shading (SketchUp-style, always on) ────────────────────────
+   Tints the BACK side of every face a cool blue so reversed / interior faces
+   are easy to tell apart from outside faces while modeling. A tiny
+   gl_FrontFacing injection into each face material's fragment shader — a
+   single-pass, single-mesh draw with no extra geometry. */
+const BackFace = {
+  color: new THREE.Color(0x4f7cad),   // cool steel-blue, clearly distinct from a light front face
+  strength: 0.75,                      // how strongly the back color overrides the lit color (0..1)
+};
+function applyBackFaceTint(mat) {
+  if (!mat || mat._backFaceTinted) return;
+  mat._backFaceTinted = true;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uBackColor = { value: BackFace.color };
+    shader.uniforms.uBackStrength = { value: BackFace.strength };
+    shader.fragmentShader = shader.fragmentShader
+      .replace('void main() {', 'uniform vec3 uBackColor;\nuniform float uBackStrength;\nvoid main() {')
+      .replace('#include <dithering_fragment>',
+        '#include <dithering_fragment>\n\tif (!gl_FrontFacing) { gl_FragColor.rgb = mix(gl_FragColor.rgb, uBackColor, uBackStrength); }');
+  };
+}
+
 /* A SketchObject wraps an EditableMesh with its rendered Three.js Mesh + edges. */
 class SketchObject {
   constructor(em, name, opts) {
@@ -5986,6 +6023,8 @@ class SketchObject {
     // shadows properly onto itself or its neighbours. Force DoubleSide in
     // the shadow pass so both faces contribute.
     this.mat.shadowSide = THREE.DoubleSide;
+    // SketchUp-style back-face shading: tint inward-facing sides a cool blue.
+    applyBackFaceTint(this.mat);
     this.edgeMat = new THREE.LineBasicMaterial({ color: 0x333333 });
     this.mesh  = new THREE.Mesh(new THREE.BufferGeometry(), this.mat);
     this.mesh.castShadow = true;
@@ -6559,11 +6598,11 @@ function _updateIsolateBanner() {
     b = document.createElement('div');
     b.id = '_isolateBanner';
     b.style.cssText = 'position:fixed;top:44px;left:50%;transform:translateX(-50%);background:#fff3cd;border:1px solid #f0c36d;color:#7a5a00;padding:6px 14px;border-radius:16px;font:12px -apple-system,sans-serif;z-index:9998;box-shadow:0 2px 8px rgba(0,0,0,0.15);cursor:pointer;';
-    b.title = '클릭하면 격리 해제됩니다';
+    b.title = 'Click to exit isolation';
     b.onclick = () => { Model.isolatedObjects = null; applyLayerVisibility(); };
     document.body.appendChild(b);
   }
-  b.textContent = `🔒 격리 표시 중 (${Model.isolatedObjects.size}개) — 클릭 또는 N으로 해제`;
+  b.textContent = `🔒 Showing isolated (${Model.isolatedObjects.size}) — Click or N to release`;
 }
 // Resting (i.e. not-selected) edge color for an object. When "lines by layer"
 // is on, edges take their layer's color; otherwise the object's own base edge
@@ -6783,14 +6822,14 @@ function toggleGroupSolo() {
     // Un-isolate: restore all
     Model.isolatedObjects = null;
     applyLayerVisibility();
-    setStatus('msg', '모든 객체 표시');
+    setStatus('msg', 'Show all objects');
     return;
   }
   // 1) If objects are selected, isolate those
   if (Selection.objects.size > 0) {
     Model.isolatedObjects = new Set(Selection.objects);
     applyLayerVisibility();
-    setStatus('msg', '선택 객체만 표시 (N: 해제)');
+    setStatus('msg', 'Show selected only (N: Release)');
     return;
   }
   // 2) Otherwise, if a layer was chosen in the layers panel, isolate that layer
@@ -6800,11 +6839,11 @@ function toggleGroupSolo() {
     if (members.length > 0) {
       Model.isolatedObjects = new Set(members);
       applyLayerVisibility();
-      setStatus('msg', `레이어 "${L ? L.name : Model.activeLayerId}"만 표시 (N: 해제)`);
+      setStatus('msg', `Layer "${L ? L.name : Model.activeLayerId}"show only (N: Release)`);
       return;
     }
   }
-  setStatus('msg', '객체나 레이어를 먼저 선택하세요');
+  setStatus('msg', 'Select an object or layer first');
 }
 // Track whether the layer panel was the most recently interacted widget,
 // so "N" knows whether to isolate by selection or by active layer.
@@ -7262,67 +7301,67 @@ const Units = {
    array is metadata only (not rendered separately) — but persists with the
    wall so tagged build-ups can drive section-style hatch later. */
 const WallTypeLibrary = [
-  { id: 'ext_brick',  label: '외벽 (벽돌+단열)',
+  { id: 'ext_brick',  label: 'Exterior wall (Brick+Insulation)',
     thickness: 0.30, height: 2.7, color: '#c0a896',
     layers: [
-      { name: '벽돌 외장', t: 0.09, mat: 'brick' },
-      { name: '단열재',    t: 0.10, mat: 'insulation' },
-      { name: '콘크리트',  t: 0.10, mat: 'concrete' },
-      { name: '석고+페인트', t: 0.01, mat: 'paint_white' },
+      { name: 'Brick cladding', t: 0.09, mat: 'brick' },
+      { name: 'Insulation',    t: 0.10, mat: 'insulation' },
+      { name: 'Concrete',  t: 0.10, mat: 'concrete' },
+      { name: 'Gypsum+Paint', t: 0.01, mat: 'paint_white' },
     ]
   },
-  { id: 'ext_concrete', label: '외벽 (노출 콘크리트)',
+  { id: 'ext_concrete', label: 'Exterior wall (Exposed concrete)',
     thickness: 0.25, height: 2.7, color: '#a6a098',
     layers: [
-      { name: '노출 콘크리트', t: 0.20, mat: 'concrete_raw' },
-      { name: '단열재',        t: 0.05, mat: 'insulation' },
+      { name: 'Exposed concrete', t: 0.20, mat: 'concrete_raw' },
+      { name: 'Insulation',        t: 0.05, mat: 'insulation' },
     ]
   },
-  { id: 'int_stud',   label: '내벽 (경량 스터드)',
+  { id: 'int_stud',   label: 'Interior wall (Light stud)',
     thickness: 0.10, height: 2.7, color: '#f0eee8',
     layers: [
-      { name: '석고보드', t: 0.0125, mat: 'paint_white' },
-      { name: '스터드+공기층', t: 0.075, mat: null },
-      { name: '석고보드', t: 0.0125, mat: 'paint_white' },
+      { name: 'Gypsum board', t: 0.0125, mat: 'paint_white' },
+      { name: 'Stud+Air gap', t: 0.075, mat: null },
+      { name: 'Gypsum board', t: 0.0125, mat: 'paint_white' },
     ]
   },
-  { id: 'int_concrete', label: '내벽 (콘크리트)',
+  { id: 'int_concrete', label: 'Interior wall (Concrete)',
     thickness: 0.15, height: 2.7, color: '#cfcdc8',
     layers: [
-      { name: '콘크리트', t: 0.15, mat: 'concrete' },
+      { name: 'Concrete', t: 0.15, mat: 'concrete' },
     ]
   },
-  { id: 'fire_wall',  label: '방화벽',
+  { id: 'fire_wall',  label: 'Fire wall',
     thickness: 0.20, height: 2.7, color: '#909088',
     layers: [
-      { name: '내화 콘크리트', t: 0.20, mat: 'concrete' },
+      { name: 'Fire-rated concrete', t: 0.20, mat: 'concrete' },
     ]
   },
 ];
 
 const SlabTypeLibrary = [
-  { id: 'slab_concrete', label: '바닥 슬래브',
+  { id: 'slab_concrete', label: 'Floor slab',
     thickness: 0.20, color: '#c8b9a6',
     layers: [
-      { name: '마감재',     t: 0.02, mat: 'wood' },
-      { name: '몰탈+우레탄', t: 0.06, mat: 'cement' },
-      { name: '콘크리트',   t: 0.12, mat: 'concrete' },
+      { name: 'Finish',     t: 0.02, mat: 'wood' },
+      { name: 'Mortar+Urethane', t: 0.06, mat: 'cement' },
+      { name: 'Concrete',   t: 0.12, mat: 'concrete' },
     ]
   },
-  { id: 'slab_thin', label: '메자닌 / 데크',
+  { id: 'slab_thin', label: 'Mezzanine / Deck',
     thickness: 0.12, color: '#b8a890',
     layers: [
-      { name: '마감재',     t: 0.02, mat: 'wood' },
-      { name: '콘크리트',   t: 0.10, mat: 'concrete' },
+      { name: 'Finish',     t: 0.02, mat: 'wood' },
+      { name: 'Concrete',   t: 0.10, mat: 'concrete' },
     ]
   },
-  { id: 'roof_flat', label: '평지붕',
+  { id: 'roof_flat', label: 'Flat roof',
     thickness: 0.30, color: '#8a8a85',
     layers: [
-      { name: '방수',       t: 0.01, mat: null },
-      { name: '단열재',     t: 0.10, mat: 'insulation' },
-      { name: '콘크리트',   t: 0.18, mat: 'concrete' },
-      { name: '천장 마감',  t: 0.01, mat: 'paint_white' },
+      { name: 'Waterproofing',       t: 0.01, mat: null },
+      { name: 'Insulation',     t: 0.10, mat: 'insulation' },
+      { name: 'Concrete',   t: 0.18, mat: 'concrete' },
+      { name: 'Ceiling finish',  t: 0.01, mat: 'paint_white' },
     ]
   },
 ];
@@ -7331,25 +7370,25 @@ const SlabTypeLibrary = [
 const ActiveBuildUp = {
   wall: null,  // ref to a WallTypeLibrary entry
   slab: null,  // ref to a SlabTypeLibrary entry
-  setWall(p) { this.wall = p; setStatus && setStatus('msg', '활성 벽 타입: ' + (p ? p.label : '없음')); },
-  setSlab(p) { this.slab = p; setStatus && setStatus('msg', '활성 슬래브 타입: ' + (p ? p.label : '없음')); },
+  setWall(p) { this.wall = p; setStatus && setStatus('msg', 'Active wall type: ' + (p ? p.label : 'None')); },
+  setSlab(p) { this.slab = p; setStatus && setStatus('msg', 'Active slab type: ' + (p ? p.label : 'None')); },
 };
 
 /* Window / Door preset library. Each entry can be inserted into a BIM wall
    via the "Insert Opening" tool below. */
 const OpeningLibrary = [
   // Doors
-  { id: 'door_single',    label: '단여닫이 문',     type: 'door',   width: 0.9,  height: 2.1, sill: 0 },
-  { id: 'door_double',    label: '쌍여닫이 문',     type: 'door',   width: 1.6,  height: 2.1, sill: 0 },
-  { id: 'door_sliding',   label: '미닫이 문',       type: 'door',   width: 1.8,  height: 2.1, sill: 0 },
-  { id: 'door_main',      label: '현관문',          type: 'door',   width: 1.0,  height: 2.4, sill: 0 },
+  { id: 'door_single',    label: 'Single door',     type: 'door',   width: 0.9,  height: 2.1, sill: 0 },
+  { id: 'door_double',    label: 'Double door',     type: 'door',   width: 1.6,  height: 2.1, sill: 0 },
+  { id: 'door_sliding',   label: 'Sliding door',       type: 'door',   width: 1.8,  height: 2.1, sill: 0 },
+  { id: 'door_main',      label: 'Entrance door',          type: 'door',   width: 1.0,  height: 2.4, sill: 0 },
   // Windows
-  { id: 'win_small',      label: '소형 창',         type: 'window', width: 0.6,  height: 0.9, sill: 1.2 },
-  { id: 'win_med',        label: '일반 창',         type: 'window', width: 1.2,  height: 1.5, sill: 0.9 },
-  { id: 'win_picture',    label: '픽처 창',         type: 'window', width: 2.4,  height: 1.8, sill: 0.7 },
-  { id: 'win_full',       label: '전면 창',         type: 'window', width: 3.0,  height: 2.4, sill: 0.1 },
-  { id: 'win_clerestory', label: '하이사이드 창',   type: 'window', width: 1.8,  height: 0.5, sill: 2.0 },
-  { id: 'win_bath',       label: '욕실 창',         type: 'window', width: 0.9,  height: 0.6, sill: 1.6 },
+  { id: 'win_small',      label: 'Small window',         type: 'window', width: 0.6,  height: 0.9, sill: 1.2 },
+  { id: 'win_med',        label: 'Standard window',         type: 'window', width: 1.2,  height: 1.5, sill: 0.9 },
+  { id: 'win_picture',    label: 'Picture window',         type: 'window', width: 2.4,  height: 1.8, sill: 0.7 },
+  { id: 'win_full',       label: 'Full-height window',         type: 'window', width: 3.0,  height: 2.4, sill: 0.1 },
+  { id: 'win_clerestory', label: 'Clerestory window',   type: 'window', width: 1.8,  height: 0.5, sill: 2.0 },
+  { id: 'win_bath',       label: 'Bathroom window',         type: 'window', width: 0.9,  height: 0.6, sill: 1.6 },
 ];
 
 /* Title block / drawing metadata for SVG / PDF export. */
@@ -9082,6 +9121,18 @@ function createFaceFromCycle(em, cycle, color=0xffffff, layerId='Layer0') {
     if (f.verts.length === cycle.length && sameCycleVerts(f.verts, cycle)) return null;
   }
   const newFace = em.addFace(cycle, color, layerId);
+
+  // Consistent orientation for a freshly drawn face: a HORIZONTAL face should
+  // read white (front) UP and blue (back) DOWN — not random per draw direction.
+  // Newell's normal follows the winding (CW vs CCW), so a floor face came out
+  // flipped depending on which way the user drew. Force a near-horizontal
+  // face's normal to point +Y. (If this face turns out to sit inside a
+  // container, the block just below re-aligns it to the container's normal,
+  // so this only governs standalone new faces — e.g. drawn on the ground.)
+  if (newFace.normal.y < -0.9) {
+    newFace.verts.reverse();
+    em.computeFaceNormal(newFace);
+  }
 
   const container = findContainingCoplanarFace(em, newFace);
   if (container) {
@@ -10982,7 +11033,7 @@ function refreshSelectionVisuals() {
     }
     if (!_selVisualsLite && (_doSilhouette || _doStandalone)) {
       o.group.updateMatrixWorld(true);
-      const tubeRadius = Math.max(0.0003, controls.spherical.radius * 0.00025);
+      const tubeRadius = Math.max(0.00015, controls.spherical.radius * 0.000125);
       const tubeMat = new THREE.MeshBasicMaterial({
         color: 0x0066ff, depthTest: true, transparent: true, opacity: 0.95,
       });
@@ -11148,10 +11199,10 @@ const Tools = {};
 Tools.insertOpening = {
   name: 'insertOpening', label: 'Insert Opening', cursor: 'crosshair',
   _preset: null,
-  setPreset(preset) { this._preset = preset; ToolMgr.set('insertOpening'); setStatus('msg', `${preset.label}: 벽을 클릭하여 삽입`); },
+  setPreset(preset) { this._preset = preset; ToolMgr.set('insertOpening'); setStatus('msg', `${preset.label}: Click a wall to insert`); },
   onActivate() {
-    if (!this._preset) setStatus('msg', '오프닝 라이브러리에서 프리셋을 선택하세요');
-    else setStatus('msg', `${this._preset.label}: 벽을 클릭하여 삽입`);
+    if (!this._preset) setStatus('msg', 'Pick a preset from the opening library');
+    else setStatus('msg', `${this._preset.label}: Click a wall to insert`);
   },
   onDeactivate() {},
   onPointerDown(e) {
@@ -11163,7 +11214,7 @@ Tools.insertOpening = {
       if (!so) continue;
       if (so.bim && so.bim.type === 'wall') { wallObj = so; wallHitPoint = h.point; break; }
     }
-    if (!wallObj) { setStatus('msg', '벽을 클릭해주세요 (BIM 벽만 가능)'); return; }
+    if (!wallObj) { setStatus('msg', 'Please click a wall (BIM walls only)'); return; }
     const wallId = wallObj.bim.id;
     let pos = 0.5;
     try {
@@ -11185,10 +11236,10 @@ Tools.insertOpening = {
       });
       if (typeof BIM.rebuild === 'function') BIM.rebuild();
       pushHistory('Insert ' + this._preset.label);
-      setStatus('msg', this._preset.label + ' 삽입 완료. 다른 위치를 클릭하거나 도구를 변경하세요.');
+      setStatus('msg', this._preset.label + ' Inserted. Click elsewhere or switch tools.');
     } catch (err) {
       console.error(err);
-      setStatus('msg', '오프닝 삽입 실패: ' + err.message);
+      setStatus('msg', 'Failed to insert opening: ' + err.message);
     }
   },
   onPointerMove() {},
@@ -11213,7 +11264,7 @@ Tools.select = {
       if (Model.activeComponentId) {
         Model.activeComponentId = null;
         Model.activeComponentSource = null;
-        setStatus('msg', '컴포넌트 편집 모드 종료');
+        setStatus('msg', 'Exit component edit mode');
       }
     }
   },
@@ -11402,8 +11453,8 @@ Tools.select = {
     const n = matches.length;
     const label = targetMat
       ? (typeof MATERIALS !== 'undefined' ? (MATERIALS.find(m=>m.id===targetMat)||{name:targetMat}).name : targetMat)
-      : '색상';
-    setStatus('msg', `같은 재질(${label}) 객체 ${n}개 선택됨.`);
+      : 'Color';
+    setStatus('msg', `Same material(${label}) Object ${n} selected.`);
   },
 
   /* Triple-click while INSIDE a group (the group was entered via double-click):
@@ -11434,7 +11485,7 @@ Tools.select = {
     }
     refreshSelectionVisuals();
     renderEntityInfo();
-    setStatus('msg', `그룹 전체 선택 (${members.length}개 객체).`);
+    setStatus('msg', `Select entire group (${members.length} objects).`);
   },
 
   /* Triple-click (no Shift): flood-fill connected objects by shared vertex
@@ -11833,9 +11884,9 @@ Tools.select = {
           const ln = new THREE.Line(g, mat); ln.computeLineDistances();
           ln.renderOrder = 999;
           helperRoot.add(ln);
-          setStatus('msg', '치수선 이동 — ' + r.snapAxis.name + (r.snapAxis.name === 'Edge' ? ' 모서리 정렬' : '축 정렬'));
+          setStatus('msg', 'Move dimension — ' + r.snapAxis.name + (r.snapAxis.name === 'Edge' ? ' Align edges' : 'Align axis'));
         } else {
-          setStatus('msg', '치수선 이동');
+          setStatus('msg', 'Move dimension');
         }
         drawOverlay();
       }
@@ -11994,7 +12045,7 @@ Tools.select = {
     // Annotation hit → edit its text
     const annHit = _hitTestAnnotation(e.offsetX, e.offsetY, 6);
     if (annHit) {
-      showPromptModal('주석 텍스트', annHit.text || '').then(next => {
+      showPromptModal('Annotation text', annHit.text || '').then(next => {
         if (next == null) return;
         annHit.text = next;
         drawOverlay();
@@ -12008,7 +12059,7 @@ Tools.select = {
       const dist = dimHit.a.distanceTo(dimHit.b);
       const current = dimHit.textOverride != null ? String(dimHit.textOverride)
                     : Units.formatDim(dist);
-      showPromptModal('치수 텍스트 (빈 값 → 자동 길이로 복원)', current).then(next => {
+      showPromptModal('Dimension text (Empty value → Restore to auto length)', current).then(next => {
         if (next === null) return;
         dimHit.textOverride = (next.trim() === '') ? null : next;
         drawOverlay();
@@ -12027,7 +12078,7 @@ Tools.select = {
       Selection.objects.add(resolved.obj);
       refreshSelectionVisuals();
       renderEntityInfo();
-      setStatus('msg', '컴포넌트 편집 모드 — Esc로 종료');
+      setStatus('msg', 'Component edit mode — Esc to exit');
       return;
     }
     // Group enter on double-click of empty space exits the active group
@@ -12903,6 +12954,30 @@ Tools.move = {
       const t2 = this.origin.clone().sub(raycaster.ray.origin).dot(camDir) / denom2;
       if (!isFinite(t2)) return;
       snapPoint = raycaster.ray.origin.clone().addScaledVector(raycaster.ray.direction, t2);
+    }
+    // AXIS-LOCK destination: when an axis is explicitly locked (X/Y/Z), the
+    // destination must slide ALONG that axis line through the origin — found by
+    // the cursor ray's closest approach to that line. Without this, the snap
+    // above (e.g. an On-Ground / On-Face snap) pins the destination to the
+    // ground plane, so a face drawn on the floor can't be dragged UP: delta.y
+    // stays 0 even with Y locked. Projecting onto the locked axis makes the
+    // drag track the cursor along that axis regardless of what's underneath.
+    if (this.axisLock) {
+      const axisDir = this.axisLock === 'y' ? new THREE.Vector3(0, 1, 0)
+                    : this.axisLock === 'x' ? new THREE.Vector3(1, 0, 0)
+                    :                          new THREE.Vector3(0, 0, 1);
+      ndc(e);
+      raycaster.setFromCamera(pointer, camera);
+      const Rd = raycaster.ray.direction, R0 = raycaster.ray.origin;
+      const w0 = this.origin.clone().sub(R0);
+      const b = axisDir.dot(Rd), cc = Rd.dot(Rd);
+      const dd = axisDir.dot(w0), ee = Rd.dot(w0);
+      const denomA = cc - b * b;                 // a = axisDir·axisDir = 1
+      if (Math.abs(denomA) > 1e-9) {
+        const s = (b * ee - cc * dd) / denomA;   // param along the locked axis
+        snapPoint = this.origin.clone().addScaledVector(axisDir, s);
+        snap = null;                             // axis projection supersedes snap
+      }
     }
     let delta = snapPoint.clone().sub(this.origin);
     // Remember the raw (unconstrained) delta so a later arrow-key or X/Y/Z
@@ -14019,7 +14094,7 @@ Tools.rotate = {
       const ring = new THREE.Line(ringGeo, ringMat);
       ring.renderOrder = 999;
       helperRoot.add(ring);
-      setStatus('msg', `Rotate axis: ${active.name} (← → 키로 변경, 클릭으로 확정)`);
+      setStatus('msg', `Rotate axis: ${active.name} (← →  key to change, Click to confirm)`);
       // Skip the legacy single-axis line/dot below
       return;
       // eslint-disable-next-line no-unreachable
@@ -15542,13 +15617,13 @@ Tools.followMe = {
       // Try to rebuild from current selection (in case user selected after activating)
       this.pathPoints = this._chainSelectedEdges();
       if (!this.pathPoints || this.pathPoints.length < 2) {
-        setStatus('msg', '먼저 Select 도구로 경로 엣지를 선택하세요.');
+        setStatus('msg', 'first Select Select the path edge with the tool.');
         return;
       }
     }
     // Pick profile face
     const hits = raycastObjects(e, { skipOuterGroups: true });
-    if (!hits.length) { setStatus('msg', '면(프로필)을 클릭하세요.'); return; }
+    if (!hits.length) { setStatus('msg', 'Face(Profile) — click.'); return; }
     const obj = hits[0].object.userData.sketchObject;
     const fi = obj.mesh.geometry.userData.faceIdxMap[hits[0].faceIndex];
     const face = obj.em.faces[fi];
@@ -15623,7 +15698,7 @@ Tools.wall = {
   onActivate() {
     this._points = [];
     helperRoot.clear();
-    setStatus('msg', '벽: 첫 번째 점 클릭 (Esc/Enter로 마무리)');
+    setStatus('msg', 'Wall: Click the first point (Esc/Enter to finish)');
   },
   onDeactivate() {
     this._finalizeWall(); // commit any pending polyline before leaving the tool
@@ -15636,7 +15711,7 @@ Tools.wall = {
       this._finalizeWall();
       this._points = [];
       helperRoot.clear();
-      setStatus('msg', '벽: 첫 번째 점 클릭');
+      setStatus('msg', 'Wall: Click the first point');
     }
   },
 
@@ -15785,15 +15860,15 @@ Tools.wall = {
       const len = last.distanceTo(p);
       // Cache direction so VCB length input can extrude along it
       if (len > 1e-6) this._lastDir = p.clone().sub(last).normalize();
-      const snapTag = wallEnd ? ' • 벽 끝점' : '';
-      const closeTag = previewClosed ? ' • 닫힘' : '';
-      setStatus('msg', `벽 다음 점 — ${Units.format(len)}${snapTag}${closeTag} (Esc/Enter 마무리)`);
+      const snapTag = wallEnd ? ' • Wall endpoint' : '';
+      const closeTag = previewClosed ? ' • Closed' : '';
+      setStatus('msg', `Next wall point — ${Units.format(len)}${snapTag}${closeTag} (Esc/Enter Finish)`);
       VCB.set(Units.format(len, { noSuffix: true }));
     } else if (wallEnd) {
-      setStatus('msg', '벽 시작점 — 기존 벽 끝점에 스냅됨');
+      setStatus('msg', 'Wall start point — Snapped to existing wall endpoint');
     } else if (this._points && this._points.length === 0) {
       const wpCount = (Model.objects || []).filter(o => o.wallPolyline && o.wallPolyline.length).length;
-      setStatus('msg', `벽: 첫 번째 점 클릭 (스냅 가능 벽: ${wpCount}개)`);
+      setStatus('msg', `Wall: Click the first point (Snappable wall: ${wpCount})`);
     }
     drawOverlay();
   },
@@ -16112,7 +16187,7 @@ Tools.wall = {
     addObject(so);
     so.rebuild();
     pushHistory('Add Wall');
-    setStatus('msg', '벽 생성됨. 다음 벽 시작점 클릭.');
+    setStatus('msg', 'Wall created. Click the next wall start point.');
     this._points = [];
   },
 
@@ -16168,7 +16243,7 @@ Tools.wall = {
       }
     }
     this._points.push(p);
-    setStatus('msg', `벽 다음 점 클릭 (${this._points.length}점) — Esc/Enter 마무리, 첫 점 다시 찍으면 닫힘`);
+    setStatus('msg', `Click the next wall point (${this._points.length} pts) — Esc/Enter Finish, Click the first point again to close`);
   },
   /* Numeric entry. Three formats:
        "3m"        bare length → next vertex along current cursor direction.
@@ -16188,7 +16263,7 @@ Tools.wall = {
         const dx = Units.parse(parts[0]), dz = Units.parse(parts[1]);
         if (isFinite(dx) && isFinite(dz)) {
           this._points.push(new THREE.Vector3(last.x + dx, baseY, last.z + dz));
-          setStatus('msg', `벽 다음 점 (${this._points.length}점) — @${parts[0]},${parts[1]}`);
+          setStatus('msg', `Next wall point (${this._points.length} pts) — @${parts[0]},${parts[1]}`);
           return;
         }
       }
@@ -16202,7 +16277,7 @@ Tools.wall = {
         const z = parts.length === 3 ? Units.parse(parts[2]) : Units.parse(parts[1]);
         if (isFinite(x) && isFinite(y) && isFinite(z)) {
           this._points.push(new THREE.Vector3(x, y, z));
-          setStatus('msg', `벽 다음 점 (${this._points.length}점) — (${parts.join(',')})`);
+          setStatus('msg', `Next wall point (${this._points.length} pts) — (${parts.join(',')})`);
           return;
         }
       }
@@ -16213,11 +16288,11 @@ Tools.wall = {
       if (isFinite(d) && d > 1e-6) {
         const newPt = last.clone().addScaledVector(this._lastDir, d);
         this._points.push(newPt);
-        setStatus('msg', `벽 다음 점 (${this._points.length}점) — ${Units.format(d)}`);
+        setStatus('msg', `Next wall point (${this._points.length} pts) — ${Units.format(d)}`);
         return;
       }
     }
-    setStatus('msg', '입력 형식: "3m" / "@2,3" / "5,4"');
+    setStatus('msg', 'Input format: "3m" / "@2,3" / "5,4"');
   },
   onPointerUp() {},
 };
@@ -16436,7 +16511,7 @@ Tools.line = {
     // in the target mesh. At each crossing, insert a new vertex and split
     // both the new line AND the crossed edge, so subsequent draws/selects
     // see the crossing as an actual topological junction. (User requested:
-    // "교차해서 선이 그어지면 그 선은 교차점에서 나눠져야해".)
+    // "A line crossing another should split at the intersection".)
     const crossings = findEdgeCrossings(target.em, p1, p2);
     const cutIndices = [];
     for (const c of crossings) {
@@ -16557,9 +16632,9 @@ Tools.line = {
     helperRoot.add(line);
     const len = this.firstPoint.distanceTo(p2);
     VCB.set(Units.format(len, { noSuffix: true }));
-    const axisTag = axis ? (axis.locked ? ` · ${axis.name}축 고정` : ` · ${axis.name}축`)
+    const axisTag = axis ? (axis.locked ? ` · ${axis.name} axis locked` : ` · ${axis.name} axis`)
                   : (snap.axis ? ' · ' + snap.axis : '');
-    setStatus('msg', 'Length: ' + Units.format(len) + axisTag + '   (←↑→ 축고정 · Esc 종료)');
+    setStatus('msg', 'Length: ' + Units.format(len) + axisTag + '   (←↑→ Axis lock · Esc Exit)');
     // Cache the live direction so onVCB works even if the user types before moving
     if (len > 1e-6) this.lastDir = p2.clone().sub(this.firstPoint).normalize();
   },
@@ -16604,8 +16679,8 @@ Tools.line = {
     if (!this.firstPoint) return;
     const setLock = (ax) => {
       this.axisLock = (this.axisLock === ax) ? null : ax;
-      const tag = this.axisLock ? `${this.axisLock.toUpperCase()}축 고정` : '축 고정 해제';
-      setStatus('msg', `${tag}   (←↑→ 축고정 · Esc 종료)`);
+      const tag = this.axisLock ? `${this.axisLock.toUpperCase()} axis locked` : 'Unlock axis';
+      setStatus('msg', `${tag}   (←↑→ Axis lock · Esc Exit)`);
       // Re-run the preview at the last cursor position so the lock shows
       // immediately, without waiting for the next mouse move.
       if (_lastPointerEvt) { try { this.onPointerMove(_lastPointerEvt); } catch (_) {} }
@@ -16615,7 +16690,7 @@ Tools.line = {
     if (k === 'arrowleft'  || k === 'z') { setLock('z'); return; }
     if (k === 'arrowdown') {
       this.axisLock = null;
-      setStatus('msg', '축 고정 해제   (←↑→ 축고정 · Esc 종료)');
+      setStatus('msg', 'Unlock axis   (←↑→ Axis lock · Esc Exit)');
       if (_lastPointerEvt) { try { this.onPointerMove(_lastPointerEvt); } catch (_) {} }
       return;
     }
@@ -16872,7 +16947,7 @@ Tools.rect = {
     const dx = Math.abs(p2.x - this.firstPoint.x);
     const dz = Math.abs(p2.z - this.firstPoint.z);
     VCB.set(Units.format(dx, { noSuffix: true }) + ',' + Units.format(dz, { noSuffix: true }));
-    setStatus('msg', `Rect: ${Units.format(dx)} × ${Units.format(dz)}` + (snap.axis ? ' · ' + snap.axis + '축' : ''));
+    setStatus('msg', `Rect: ${Units.format(dx)} × ${Units.format(dz)}` + (snap.axis ? ' · ' + snap.axis + 'Axis' : ''));
   },
   onVCB(val) {
     if (!this.firstPoint) return;
@@ -17650,7 +17725,7 @@ Tools.tape = {
     const g = new THREE.BufferGeometry().setFromPoints([this.a, snap.point]);
     const line = new THREE.Line(g, new THREE.LineDashedMaterial({ color: 0x00cccc, dashSize:0.15, gapSize:0.1 }));
     line.computeLineDistances(); helperRoot.add(line);
-    setStatus('msg', 'Distance: ' + Units.format(this.a.distanceTo(snap.point)) + (snap.axis ? ' · ' + snap.axis + '축' : ''));
+    setStatus('msg', 'Distance: ' + Units.format(this.a.distanceTo(snap.point)) + (snap.axis ? ' · ' + snap.axis + 'Axis' : ''));
   },
   onPointerUp(){},
 };
@@ -17737,7 +17812,7 @@ function computeDimOffsetWithSnap(A, B, e) {
     if (bestExisting) {
       return {
         offsetVec: bestExisting.offsetVec.clone(),
-        snapAxis: { name: '기존 치수', color: 0x00aaff },
+        snapAxis: { name: 'Existing dimension', color: 0x00aaff },
       };
     }
   } catch (_) {}
@@ -17758,7 +17833,7 @@ Tools.dim = {
       this._state = 'idle'; this._a = null; this._b = null;
       this._offsetVec = null; this._previewMouse = null;
       helperRoot.clear();
-      setStatus('msg', '치수선: 첫 번째 점 클릭');
+      setStatus('msg', 'Dimension line: Click the first point');
     }
   },
 
@@ -17766,7 +17841,7 @@ Tools.dim = {
     this._state = 'idle'; this._a = null; this._b = null;
     this._offsetVec = null; this._previewMouse = null;
     this._lastMoveT = 0;
-    setStatus('msg', '치수선: 첫 번째 점 클릭');
+    setStatus('msg', 'Dimension line: Click the first point');
     helperRoot.clear();
   },
   onDeactivate() {
@@ -17798,9 +17873,9 @@ Tools.dim = {
       const snap = computeSnap(e, { skipOuterGroups: true, endpointOnly: true });
       if (snap) {
         drawInferenceHelper(snap);
-        setStatus('msg', '치수선: 첫 번째 점 클릭 — ' + (snap.type || ''));
+        setStatus('msg', 'Dimension line: Click the first point — ' + (snap.type || ''));
       } else {
-        setStatus('msg', '치수선: 첫 번째 점 클릭');
+        setStatus('msg', 'Dimension line: Click the first point');
       }
       drawOverlay();
     } else if (this._state === 'pickB') {
@@ -17813,7 +17888,7 @@ Tools.dim = {
         const ln = new THREE.Line(g, mat); ln.computeLineDistances();
         ln.renderOrder = 999;
         helperRoot.add(ln);
-        setStatus('msg', '두 번째 점 클릭 — ' + Units.format(this._a.distanceTo(snap.point), { noSuffix: true }));
+        setStatus('msg', 'Click the second point — ' + Units.format(this._a.distanceTo(snap.point), { noSuffix: true }));
       }
       drawOverlay();
     } else if (this._state === 'pickOffset') {
@@ -17831,9 +17906,9 @@ Tools.dim = {
         const ln = new THREE.Line(g, mat); ln.computeLineDistances();
         ln.renderOrder = 999;
         helperRoot.add(ln);
-        setStatus('msg', '치수선 위치 — ' + this._snapAxis.name + '축 정렬');
+        setStatus('msg', 'Dimension position — ' + this._snapAxis.name + 'Align axis');
       } else {
-        setStatus('msg', '마우스를 움직여 치수선 위치 결정 후 클릭');
+        setStatus('msg', 'Move to place the dimension line, then click');
       }
       drawOverlay();
     }
@@ -17874,7 +17949,7 @@ Tools.dim = {
       if (!snap) return;
       this._a = snap.point.clone();
       this._state = 'pickB';
-      setStatus('msg', '두 번째 점 클릭');
+      setStatus('msg', 'Click the second point');
     } else if (this._state === 'pickB') {
       const snap = computeSnap(e, { skipOuterGroups: true, endpointOnly: true, from: this._a });
       if (!snap) return;
@@ -17896,13 +17971,13 @@ Tools.dim = {
         this._a = newB; this._b = null;
         this._state = 'pickB';
         helperRoot.clear();
-        setStatus('msg', '체인: 다음 끝점 클릭 (Esc로 종료)');
+        setStatus('msg', 'Chain: Click the next endpoint (Esc to exit)');
         return;
       }
       this._state = 'pickOffset';
       helperRoot.clear();
       currentSnap = null; snapCandidates = [];
-      setStatus('msg', '마우스를 움직여 치수선 위치 결정 후 클릭');
+      setStatus('msg', 'Move to place the dimension line, then click');
     } else if (this._state === 'pickOffset') {
       const ov = this._mouseToOffsetVec(e);
       const prevB = this._b.clone();
@@ -17921,11 +17996,11 @@ Tools.dim = {
         this._b = null;
         this._offsetVec = ov.clone(); // preserved for live preview & next push
         this._state = 'pickB';
-        setStatus('msg', '체인: 다음 끝점 클릭 (Esc로 종료)');
+        setStatus('msg', 'Chain: Click the next endpoint (Esc to exit)');
       } else {
         this._state = 'idle'; this._a = null; this._b = null;
         this._offsetVec = null; this._previewMouse = null;
-        setStatus('msg', '치수선 추가됨. 계속하려면 첫 번째 점 클릭.');
+        setStatus('msg', 'Dimension added. Click the first point to continue.');
       }
     }
   },
@@ -17943,7 +18018,7 @@ Tools.dimAngle = {
 
   onActivate() {
     this._state = 'idle'; this._v = null; this._p1 = null; this._p2 = null; this._radius = 0;
-    setStatus('msg', '각도 치수: 꼭지점(중심) 클릭');
+    setStatus('msg', 'Angle dimension: Vertex(Center) Click');
     helperRoot.clear();
   },
   onDeactivate() {
@@ -18001,14 +18076,14 @@ Tools.dimAngle = {
       if (!snap) return;
       this._v = snap.point.clone();
       this._state = 'pickP1';
-      setStatus('msg', '각도 치수: 첫 번째 변 끝점 클릭');
+      setStatus('msg', 'Angle dimension: Click the first edge endpoint');
     } else if (this._state === 'pickP1') {
       const snap = computeSnap(e, { skipOuterGroups: true, endpointOnly: true, from: this._v });
       if (!snap) return;
       if (snap.point.distanceTo(this._v) < 1e-6) return;
       this._p1 = snap.point.clone();
       this._state = 'pickP2';
-      setStatus('msg', '각도 치수: 두 번째 변 끝점 클릭');
+      setStatus('msg', 'Angle dimension: Click the second edge endpoint');
     } else if (this._state === 'pickP2') {
       const snap = computeSnap(e, { skipOuterGroups: true, endpointOnly: true, from: this._v });
       if (!snap) return;
@@ -18016,7 +18091,7 @@ Tools.dimAngle = {
       this._p2 = snap.point.clone();
       this._state = 'pickRadius';
       this._radius = Math.min(this._v.distanceTo(this._p1), this._v.distanceTo(this._p2)) * 0.6;
-      setStatus('msg', '각도 치수: 호 반경 클릭');
+      setStatus('msg', 'Angle dimension: Click the arc radius');
     } else if (this._state === 'pickRadius') {
       Model.dimensions.push({
         id: 'dim_' + Date.now(),
@@ -18031,7 +18106,7 @@ Tools.dimAngle = {
       this._state = 'idle';
       this._v = null; this._p1 = null; this._p2 = null; this._radius = 0;
       helperRoot.clear();
-      setStatus('msg', '각도 치수 추가됨. 다음 꼭지점 클릭.');
+      setStatus('msg', 'Angle dimension added. Click the next vertex.');
     }
   },
   onPointerUp() {},
@@ -18042,7 +18117,7 @@ Tools.dimAngle = {
 Tools.polygon = Object.assign(Object.create(Tools.circle), {
   name: 'polygon', label: 'Polygon',
   segments: 6,
-  onActivate() { setStatus('msg', 'Polygon: 중심 클릭 (변 수: ' + this.segments + 's). 숫자+S 입력으로 변경'); },
+  onActivate() { setStatus('msg', 'Polygon: Click center (Sides: ' + this.segments + 's). Number+S set by typing'); },
 });
 
 /* ───── Freehand Tool — drag to sketch a freeform polyline / closed loop. */
@@ -18055,7 +18130,7 @@ Tools.freehand = {
   _hostObj: null,
   _MIN_PX: 4,        // minimum screen distance between samples
 
-  onActivate() { setStatus('msg', 'Freehand: 드래그하여 자유곡선 그리기'); helperRoot.clear(); },
+  onActivate() { setStatus('msg', 'Freehand: Drag to draw freehand'); helperRoot.clear(); },
   onDeactivate() {
     this._pts = null; this._lastScreen = null;
     this._planeNormal = null; this._planeOrigin = null; this._hostObj = null;
@@ -18149,7 +18224,7 @@ Tools.freehand = {
 /* ───── Text Annotation Tool — single click places a label at the snap point. */
 Tools.text = {
   name: 'text', label: 'Text', cursor: 'draw',
-  onActivate() { setStatus('msg', '텍스트: 위치 클릭'); },
+  onActivate() { setStatus('msg', 'Text: Click position'); },
   onDeactivate() { helperRoot.clear(); currentSnap = null; snapCandidates = []; },
   onPointerMove(e) {
     helperRoot.clear();
@@ -18162,7 +18237,7 @@ Tools.text = {
     const snap = computeSnap(e, { skipOuterGroups: true });
     if (!snap) return;
     const at = snap.point.clone();
-    showPromptModal('텍스트 입력', '').then(text => {
+    showPromptModal('Enter text', '').then(text => {
       if (text == null || text.trim() === '') return;
       Model.annotations.push({
         id: 'ann_' + Date.now(),
@@ -18182,13 +18257,13 @@ Tools.text = {
 Tools.callout = {
   name: 'callout', label: 'Callout', cursor: 'draw',
   _state: 'idle', _anchor: null,
-  onActivate() { this._state = 'idle'; this._anchor = null; setStatus('msg', '콜아웃: 가리킬 점 클릭'); },
+  onActivate() { this._state = 'idle'; this._anchor = null; setStatus('msg', 'Callout: Click the target point'); },
   onDeactivate() {
     this._state = 'idle'; this._anchor = null;
     helperRoot.clear(); currentSnap = null; snapCandidates = [];
   },
   onKey(k) {
-    if (k === 'escape') { this._state = 'idle'; this._anchor = null; helperRoot.clear(); setStatus('msg', '콜아웃: 가리킬 점 클릭'); }
+    if (k === 'escape') { this._state = 'idle'; this._anchor = null; helperRoot.clear(); setStatus('msg', 'Callout: Click the target point'); }
   },
   onPointerMove(e) {
     helperRoot.clear();
@@ -18216,14 +18291,14 @@ Tools.callout = {
       if (!snap) return;
       this._anchor = snap.point.clone();
       this._state = 'pickLabel';
-      setStatus('msg', '콜아웃: 라벨 위치 클릭');
+      setStatus('msg', 'Callout: Click the label position');
     } else if (this._state === 'pickLabel') {
       const snap = computeSnap(e, { skipOuterGroups: true, from: this._anchor });
       if (!snap) return;
       const labelPos = snap.point.clone();
       const anchor = this._anchor.clone();
       this._state = 'idle'; this._anchor = null; helperRoot.clear();
-      showPromptModal('콜아웃 텍스트', '').then(text => {
+      showPromptModal('Callout text', '').then(text => {
         if (text == null || text.trim() === '') return;
         Model.annotations.push({
           id: 'ann_' + Date.now(),
@@ -18243,13 +18318,13 @@ Tools.callout = {
 Tools.matSpec = {
   name: 'matSpec', label: 'Material Spec', cursor: 'draw',
   _state: 'idle', _anchor: null,
-  onActivate() { this._state = 'idle'; this._anchor = null; setStatus('msg', '재료 표시: 가리킬 점 클릭'); },
+  onActivate() { this._state = 'idle'; this._anchor = null; setStatus('msg', 'Show materials: Click the target point'); },
   onDeactivate() {
     this._state = 'idle'; this._anchor = null;
     helperRoot.clear(); currentSnap = null; snapCandidates = [];
   },
   onKey(k) {
-    if (k === 'escape') { this._state = 'idle'; this._anchor = null; helperRoot.clear(); setStatus('msg', '재료 표시: 가리킬 점 클릭'); }
+    if (k === 'escape') { this._state = 'idle'; this._anchor = null; helperRoot.clear(); setStatus('msg', 'Show materials: Click the target point'); }
   },
   onPointerMove(e) {
     helperRoot.clear();
@@ -18277,14 +18352,14 @@ Tools.matSpec = {
       if (!snap) return;
       this._anchor = snap.point.clone();
       this._state = 'pickLabel';
-      setStatus('msg', '재료 표시: 라벨 위치 클릭');
+      setStatus('msg', 'Show materials: Click the label position');
     } else if (this._state === 'pickLabel') {
       const snap = computeSnap(e, { skipOuterGroups: true, from: this._anchor });
       if (!snap) return;
       const labelPos = snap.point.clone();
       const anchor = this._anchor.clone();
       this._state = 'idle'; this._anchor = null; helperRoot.clear();
-      showPromptTextarea('재료 사양 (여러 줄 가능)', '', '예: 시멘트 블록 200x100x65\n외장: 적벽돌 SS-100').then(text => {
+      showPromptTextarea('Material spec (multiple lines allowed)', '', 'Yes: Cement block 200x100x65\nCladding: Red brick SS-100').then(text => {
         if (text == null || text.trim() === '') return;
         Model.annotations.push({
           id: 'ann_' + Date.now(),
@@ -18306,7 +18381,7 @@ Tools.level = {
   _anchorX: null, _anchorZ: null,
   onActivate() {
     this._anchorX = null; this._anchorZ = null;
-    setStatus('msg', 'Click: 레벨 마커 추가 · 우클릭/Alt-클릭: 제거 · Esc: 종료');
+    setStatus('msg', 'Click: Add level marker · Right-click/Alt-Click: Remove · Esc: Exit');
   },
   onDeactivate() { helperRoot.clear(); this._anchorX = null; this._anchorZ = null; this._preview = null; },
   onPointerDown(e) {
@@ -18337,7 +18412,7 @@ Tools.level = {
     const id = 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
     Model.levels.push({ id, pos });
     pushHistory('Add Level');
-    setStatus('msg', 'Level ' + _formatLevel(py) + ' placed. (클릭으로 다음 층 추가)');
+    setStatus('msg', 'Level ' + _formatLevel(py) + ' placed. (Click to add the next floor)');
   },
   onPointerMove(e) {
     const snap = computeSnap(e, { skipOuterGroups: true });
@@ -18439,9 +18514,9 @@ const WallLayer = {
 
   // Layer definitions [{name, thickness(m), hatch, color}]
   layers: [
-    { name: '마감재', thickness: 0.02, hatch: 'poche_solid',      color: '#cccccc' },
-    { name: '단열재', thickness: 0.10, hatch: 'insulation_rigid',  color: '#ffe8a0' },
-    { name: '구조체', thickness: 0.20, hatch: 'concrete_exposed',  color: '#b0b8c8' },
+    { name: 'Finish', thickness: 0.02, hatch: 'poche_solid',      color: '#cccccc' },
+    { name: 'Insulation', thickness: 0.10, hatch: 'insulation_rigid',  color: '#ffe8a0' },
+    { name: 'Structure', thickness: 0.20, hatch: 'concrete_exposed',  color: '#b0b8c8' },
   ],
 
   /* ---------- geometry helpers ---------- */
@@ -18536,7 +18611,7 @@ const WallLayer = {
       pushHistory('Wall Layer Offset');
       rebuildSectionFills();
       try { renderer && renderer.render(scene, camera); } catch (_) {}
-      setStatus('msg', `벽체 레이어 ${newObjs.length}개 생성됨`);
+      setStatus('msg', `Wall layer ${newObjs.length} created`);
     }
   },
 
@@ -18584,7 +18659,7 @@ const WallLayer = {
       pickBtn.textContent = '⊙ Picking…';
     };
     if (addBtn) addBtn.onclick = () => {
-      this.layers.push({ name: '레이어' + (this.layers.length + 1), thickness: 0.05, hatch: null, color: '#dddddd' });
+      this.layers.push({ name: 'Layer' + (this.layers.length + 1), thickness: 0.05, hatch: null, color: '#dddddd' });
       this.renderPanel();
     };
     if (applyBtn) applyBtn.onclick = () => this.apply();
@@ -18593,28 +18668,28 @@ const WallLayer = {
       btn.onclick = () => {
         const p = btn.dataset.preset;
         if (p === 'rc') this.layers = [
-          { name: '내부마감', thickness: 0.02, hatch: 'poche_solid',      color: '#cccccc' },
-          { name: '단열재',   thickness: 0.08, hatch: 'insulation_rigid',  color: '#ffe8a0' },
-          { name: 'RC벽체',   thickness: 0.20, hatch: 'concrete_exposed',  color: '#b0b8c8' },
-          { name: '외부마감', thickness: 0.03, hatch: 'poche_solid',       color: '#d0d0d0' },
+          { name: 'Interior finish', thickness: 0.02, hatch: 'poche_solid',      color: '#cccccc' },
+          { name: 'Insulation',   thickness: 0.08, hatch: 'insulation_rigid',  color: '#ffe8a0' },
+          { name: 'RCWall',   thickness: 0.20, hatch: 'concrete_exposed',  color: '#b0b8c8' },
+          { name: 'Exterior finish', thickness: 0.03, hatch: 'poche_solid',       color: '#d0d0d0' },
         ];
         else if (p === 'brick') this.layers = [
-          { name: '내부마감', thickness: 0.015, hatch: 'poche_solid', color: '#cccccc' },
-          { name: '조적벽',   thickness: 0.19,  hatch: 'brick',       color: '#c8a080' },
-          { name: '외부마감', thickness: 0.02,  hatch: 'poche_solid', color: '#d0c0b0' },
+          { name: 'Interior finish', thickness: 0.015, hatch: 'poche_solid', color: '#cccccc' },
+          { name: 'Masonry wall',   thickness: 0.19,  hatch: 'brick',       color: '#c8a080' },
+          { name: 'Exterior finish', thickness: 0.02,  hatch: 'poche_solid', color: '#d0c0b0' },
         ];
         else if (p === 'insulated') this.layers = [
-          { name: '내부마감', thickness: 0.012, hatch: 'poche_solid',      color: '#cccccc' },
-          { name: '단열재',   thickness: 0.10,  hatch: 'insulation_rigid',  color: '#ffe8a0' },
-          { name: '구조체',   thickness: 0.18,  hatch: 'concrete_exposed',  color: '#b0b8c8' },
-          { name: '외단열',   thickness: 0.10,  hatch: 'insulation_rigid',  color: '#ffe8a0' },
-          { name: '외부마감', thickness: 0.03,  hatch: 'poche_solid',       color: '#d0d0d0' },
+          { name: 'Interior finish', thickness: 0.012, hatch: 'poche_solid',      color: '#cccccc' },
+          { name: 'Insulation',   thickness: 0.10,  hatch: 'insulation_rigid',  color: '#ffe8a0' },
+          { name: 'Structure',   thickness: 0.18,  hatch: 'concrete_exposed',  color: '#b0b8c8' },
+          { name: 'Exterior insulation',   thickness: 0.10,  hatch: 'insulation_rigid',  color: '#ffe8a0' },
+          { name: 'Exterior finish', thickness: 0.03,  hatch: 'poche_solid',       color: '#d0d0d0' },
         ];
         else if (p === 'curtain') this.layers = [
-          { name: '유리',      thickness: 0.012, hatch: 'none',   color: '#a0d0e8' },
-          { name: '에어층',    thickness: 0.016, hatch: 'none',   color: '#e8f4ff' },
-          { name: '유리',      thickness: 0.006, hatch: 'none',   color: '#a0d0e8' },
-          { name: '뮬리언',    thickness: 0.05,  hatch: 'metal',  color: '#888888' },
+          { name: 'Glass',      thickness: 0.012, hatch: 'none',   color: '#a0d0e8' },
+          { name: 'Air gap',    thickness: 0.016, hatch: 'none',   color: '#e8f4ff' },
+          { name: 'Glass',      thickness: 0.006, hatch: 'none',   color: '#a0d0e8' },
+          { name: 'Mullion',    thickness: 0.05,  hatch: 'metal',  color: '#888888' },
         ];
         this.renderPanel();
       };
@@ -18711,7 +18786,7 @@ Tools.erase = {
   brushRadius: 22,            // CSS pixels — size of the visible cursor ring
   _dragging: false,
   onActivate() {
-    setStatus('msg', '드래그하면 커서 범위 안의 모서리를 지웁니다. 더블클릭: 객체 전체 지우기.');
+    setStatus('msg', 'Drag to erase edges within the cursor radius. Double-click: Erase entire object.');
     this._ensureRing();
   },
   onDeactivate() {
@@ -19306,11 +19381,11 @@ Tools.paint = {
     const btn = document.querySelector('#toolbar [data-tool="paint"]');
     if (btn) btn.style.outline = on ? '2px solid #007aff' : '';
     setStatus('msg', on
-      ? '🔍 스포이드 모드 — 클릭하여 색상/재질 추출 (Cmd 놓으면 해제)'
-      : '면을 클릭하여 페인트. Cmd+클릭으로 색상/재질 추출.');
+      ? '🔍 Eyedropper mode — Click to pick a color/Pick material (Cmd release to drop)'
+      : 'Click a face to paint. Cmd+Click for color/Pick material.');
   },
   onActivate() {
-    setStatus('msg', '면을 클릭하여 페인트. Cmd+클릭으로 색상/재질 추출. 팔레트에서 재질/색상 선택.');
+    setStatus('msg', 'Click a face to paint. Cmd+Click for color/Pick material. Material from palette/Pick color.');
     showPalette();
     this._eyedropMode = false;
     this._boundKeyDown = (e) => { if ((e.key === 'Meta' || e.key === 'Control') && !this._eyedropMode) this._setEyedropMode(true); };
@@ -19334,9 +19409,14 @@ Tools.paint = {
       // Cmd (Mac Meta) or Alt = eyedropper: sample color AND material from face
       if (e.metaKey || e.altKey || this._eyedropMode) {
         const face = obj.em.faces[fi];
-        // Pick up material if the object has one (materialId → look up in MATERIALS)
-        if (obj.materialId && typeof MATERIALS !== 'undefined') {
-          const matDef = MATERIALS.find(m => m.id === obj.materialId);
+        // Pick up the object's material. Search BOTH built-in MATERIALS and
+        // ImportedMaterials (OBJ/MTL + textures applied via "Apply Texture…").
+        // The eyedropper previously only searched MATERIALS, so a face painted
+        // with an imported/textured material fell through to color-only — the
+        // reported "color picks but material doesn't" bug.
+        if (obj.materialId) {
+          let matDef = (typeof MATERIALS !== 'undefined') ? MATERIALS.find(m => m.id === obj.materialId) : null;
+          if (!matDef && typeof ImportedMaterials !== 'undefined') matDef = ImportedMaterials.find(m => m.id === obj.materialId);
           if (matDef) {
             this.currentMaterial = matDef;
             this.currentOpacity  = matDef.opacity ?? 1.0;
@@ -19345,7 +19425,7 @@ Tools.paint = {
             document.querySelectorAll('.mat-swatch').forEach(s => {
               s.classList.toggle('selected', s.dataset.id === matDef.id);
             });
-            setStatus('msg', `✅ 재질 "${matDef.name}" 추출됨 — 클릭하여 적용하세요.`);
+            setStatus('msg', `✅ Material "${matDef.name}" picked — click to apply.`);
             return;
           }
         }
@@ -19361,7 +19441,7 @@ Tools.paint = {
         if (picker) picker.value = hex;
         // Deselect any material swatches
         document.querySelectorAll('.mat-swatch').forEach(s => s.classList.remove('selected'));
-        setStatus('msg', '✅ 색상 추출됨 — 클릭하여 적용하세요.');
+        setStatus('msg', '✅ Color picked — Click to apply.');
         return;
       } else if (this.currentMaterial) {
         const matDef = { ...this.currentMaterial, opacity: this.currentOpacity };
@@ -19388,7 +19468,7 @@ Tools.paint = {
           }
         }
         pushHistory('Paint Material');
-        setStatus('msg', matDef.name + ' 재질 적용됨');
+        setStatus('msg', matDef.name + ' Material applied');
       } else {
         // Plain color painting
         // First clear any material texture
@@ -19794,7 +19874,7 @@ function toggleSectionPlaneActive(sp) {
   updateClippingPlanes();
   try {
     const active = Model.sectionPlanes.filter(s => s.enabled).map(s => s.name).join(', ');
-    setStatus && setStatus('msg', active ? '활성 단면: ' + active : '활성 단면 없음');
+    setStatus && setStatus('msg', active ? 'Active section: ' + active : 'No active section');
   } catch (_) {}
 }
 
@@ -19967,7 +20047,7 @@ Tools.section = {
     this._clearPreview();
     this.hoverFace = null; this.hoverObj = null;
     if (typeof _askName === 'function') {
-      _askName('단면 이름', defName, proceed);
+      _askName('Section name', defName, proceed);
     } else {
       proceed(defName);
     }
@@ -20910,7 +20990,7 @@ function parseDXF(text) {
 }
 
 /* ========================================================================== */
-/*  CADASTRAL IMPORT — VWorld 지적선 by address                                 */
+/*  CADASTRAL IMPORT — VWorld Cadastral lines by address                                 */
 /* ========================================================================== */
 /* Fetches parcel boundaries from VWorld open API for the given address and
  * draws them as flat polygons on the ground plane (y=0). The user supplies
@@ -20928,19 +21008,19 @@ function _cadastralModal() {
     const box = document.createElement('div');
     box.style.cssText = 'background:#fff;border-radius:10px;padding:18px 20px;min-width:520px;box-shadow:0 10px 40px rgba(0,0,0,0.25);font:13px -apple-system,sans-serif;';
     box.innerHTML = `
-      <div style="font-weight:600;font-size:14px;margin-bottom:10px;">지적선 가져오기 (VWorld)</div>
-      <div style="margin-bottom:6px;color:#444;font-weight:500;">주소</div>
-      <input id="_cdAddr" type="text" style="width:100%;padding:8px 10px;border:1px solid #d2d2d7;border-radius:6px;margin-bottom:12px;" placeholder="예: 서울특별시 강남구 역삼동 736">
+      <div style="font-weight:600;font-size:14px;margin-bottom:10px;">Import cadastral lines (VWorld)</div>
+      <div style="margin-bottom:6px;color:#444;font-weight:500;">Address</div>
+      <input id="_cdAddr" type="text" style="width:100%;padding:8px 10px;border:1px solid #d2d2d7;border-radius:6px;margin-bottom:12px;" placeholder="Yes: Yeoksam-dong, Gangnam-gu, Seoul 736">
       <div style="display:flex;gap:10px;margin-bottom:12px;">
-        <label style="flex:1;">반경(m)<input id="_cdRadius" type="number" value="150" min="30" max="1000" style="width:100%;padding:6px;border:1px solid #d2d2d7;border-radius:6px;margin-top:4px;"></label>
-        <label style="flex:1;">최대 개수<input id="_cdSize" type="number" value="300" min="1" max="1000" style="width:100%;padding:6px;border:1px solid #d2d2d7;border-radius:6px;margin-top:4px;"></label>
+        <label style="flex:1;">Radius(m)<input id="_cdRadius" type="number" value="150" min="30" max="1000" style="width:100%;padding:6px;border:1px solid #d2d2d7;border-radius:6px;margin-top:4px;"></label>
+        <label style="flex:1;">Max count<input id="_cdSize" type="number" value="300" min="1" max="1000" style="width:100%;padding:6px;border:1px solid #d2d2d7;border-radius:6px;margin-top:4px;"></label>
       </div>
-      <div style="margin-bottom:6px;color:#444;font-weight:500;">VWorld API 키</div>
-      <div style="color:#6e6e73;margin-bottom:6px;font-size:12px;">api.vworld.kr 에서 무료 발급 (Data API 권한)</div>
+      <div style="margin-bottom:6px;color:#444;font-weight:500;">VWorld API Key</div>
+      <div style="color:#6e6e73;margin-bottom:6px;font-size:12px;">api.vworld.kr  — issued free at (Data API Permission)</div>
       <input id="_cdKey" type="password" style="width:100%;padding:8px 10px;border:1px solid #d2d2d7;border-radius:6px;font:13px monospace;">
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
-        <button id="_cdCancel" style="padding:6px 14px;border:1px solid #d2d2d7;border-radius:6px;background:#fff;cursor:pointer;">취소</button>
-        <button id="_cdGo" style="padding:6px 14px;border:1px solid #0a84ff;border-radius:6px;background:#0a84ff;color:#fff;cursor:pointer;">가져오기</button>
+        <button id="_cdCancel" style="padding:6px 14px;border:1px solid #d2d2d7;border-radius:6px;background:#fff;cursor:pointer;">Cancel</button>
+        <button id="_cdGo" style="padding:6px 14px;border:1px solid #0a84ff;border-radius:6px;background:#0a84ff;color:#fff;cursor:pointer;">Import</button>
       </div>`;
     back.appendChild(box);
     document.body.appendChild(back);
@@ -20996,7 +21076,7 @@ async function _vworldGeocode(address, key) {
     }
     errs.push('Nominatim: no result');
   } catch (e) { errs.push('Nominatim net: ' + e.message); }
-  throw new Error('주소를 찾을 수 없습니다. [' + errs.join(' | ') + ']');
+  throw new Error('Address not found. [' + errs.join(' | ') + ']');
 }
 
 async function _vworldParcels(lon, lat, radiusM, size, key) {
@@ -21081,15 +21161,15 @@ function _addParcelPolygon(ring, lon0, lat0, layerId, props) {
 async function importCadastralFlow() {
   const params = await _cadastralModal();
   if (!params) return;
-  if (!params.address || !params.key) { showError('주소와 VWorld 키가 모두 필요합니다.'); return; }
+  if (!params.address || !params.key) { showError('Address and VWorld all keys are required.'); return; }
   _cadastralSetKey(params.key);
-  setStatus('msg', '지오코딩 중...');
+  setStatus('msg', 'Geocoding…...');
   document.getElementById('loading').style.display = 'block';
   try {
     const { lon, lat } = await _vworldGeocode(params.address, params.key);
-    setStatus('msg', `지적선 조회 중... (${lat.toFixed(5)}, ${lon.toFixed(5)})`);
+    setStatus('msg', `Looking up cadastral lines... (${lat.toFixed(5)}, ${lon.toFixed(5)})`);
     const features = await _vworldParcels(lon, lat, params.radius, params.size, params.key);
-    if (!features.length) { showError('해당 영역에 지적선이 없습니다.'); return; }
+    if (!features.length) { showError('No cadastral lines in this area.'); return; }
     const layer = _cadastralLayer();
     let count = 0;
     for (const f of features) {
@@ -21108,10 +21188,10 @@ async function importCadastralFlow() {
     }
     pushHistory('Import Cadastral');
     if (typeof zoomAll === 'function') zoomAll();
-    setStatus('msg', `지적선 ${count}필지 가져옴 (${params.address})`);
+    setStatus('msg', `Cadastral lines: ${count} parcels imported (${params.address})`);
   } catch (err) {
     console.error(err);
-    showError('지적선 가져오기 실패: ' + err.message);
+    showError('Failed to import cadastral lines: ' + err.message);
   } finally {
     document.getElementById('loading').style.display = 'none';
   }
@@ -21243,10 +21323,10 @@ function importDXF(text, filename) {
         if (_dxfLastImportInfo && _dxfLastImportInfo.recentered) {
           const s = _dxfLastImportInfo.scale;
           extra = s !== 1
-            ? ` — 단위 보정(×${s}) 후 원점으로 이동, 그리드 위에 배치`
-            : ` — 원점으로 이동해 그리드 위에 배치`;
+            ? ` — Unit calibration(×${s})  then move to origin, Place on grid`
+            : ` — Move to origin and place on the grid`;
         }
-        setStatus('msg', `${filename}에서 ${n}개 객체 임포트${extra}`);
+        setStatus('msg', `${filename}: ${n} objects imported${extra}`);
       } catch (err) {
         console.error(err);
         showError('DXF import failed: ' + err.message);
@@ -21861,7 +21941,7 @@ async function export3DM() {
     setStatus('msg', 'Loading rhino3dm…');
     rhino = await _ensureRhinoLib();
   } catch (e) {
-    showError('rhino3dm 라이브러리 로드 실패: ' + e.message);
+    showError('rhino3dm Failed to load library: ' + e.message);
     return;
   }
   const file3dm = new rhino.File3dm();
@@ -22000,18 +22080,18 @@ function matchBuiltinMaterial(mtlName, mtlData) {
     return MATERIALS.find(m => m.id === 'glass') || null;
   }
   const keywordMap = [
-    ['glass',    ['glass','유리','window','창','투명']],
-    ['concrete', ['concrete','콘크리트','cement','시멘트']],
-    ['wood',     ['wood','목재','timber','나무','원목','plywood','oak','pine']],
-    ['brick',    ['brick','벽돌']],
-    ['metal',    ['metal','금속','steel','철','aluminum','iron','alu','스틸']],
-    ['marble',   ['marble','대리석']],
-    ['asphalt',  ['asphalt','아스팔트','road','도로']],
-    ['grass',    ['grass','잔디','lawn','turf']],
-    ['water',    ['water','물','pool']],
-    ['tile',     ['tile','타일']],
-    ['stone',    ['stone','돌','석재','granite','rock']],
-    ['roof',     ['roof','지붕','shingle','기와']],
+    ['glass',    ['glass','Glass','window','Window','Transparent']],
+    ['concrete', ['concrete','Concrete','cement','Cement']],
+    ['wood',     ['wood','Wood','timber','Wood','Solid wood','plywood','oak','pine']],
+    ['brick',    ['brick','Brick']],
+    ['metal',    ['metal','Metal','steel','Steel','aluminum','iron','alu','Steel']],
+    ['marble',   ['marble','Marble']],
+    ['asphalt',  ['asphalt','Asphalt','road','Road']],
+    ['grass',    ['grass','Grass','lawn','turf']],
+    ['water',    ['water','Water','pool']],
+    ['tile',     ['tile','Tile']],
+    ['stone',    ['stone','Stone','Stone','granite','rock']],
+    ['roof',     ['roof','Roof','shingle','Roof tile']],
   ];
   for (const [id, keys] of keywordMap) {
     for (const k of keys) {
@@ -23864,7 +23944,7 @@ window.addEventListener('DOMContentLoaded', () => {
 /* --- Collapsible right-panel sections ---
    Click any .panel-header with data-toggle="bodyId" to toggle visibility.
    Ignore clicks on buttons / inputs inside the header so action buttons
-   (+ Add, Show All, ON/OFF, + 추가) keep working.
+   (+ Add, Show All, ON/OFF, + Add) keep working.
    ALL sections start collapsed every session. */
 function _wirePanelHeader(h) {
   if (h._wired) return;
@@ -24045,6 +24125,45 @@ function handleAction(act) {
 }
 function _handleActionImpl(act) {
   switch (act) {
+    case 'reverse-faces': {
+      // Flip face orientation (front/back) — reverses winding + normal, and
+      // reverses any hole loops to keep their opposite winding.
+      const reverseFace = (em, f) => {
+        if (!f) return;
+        f.verts.reverse();
+        if (f.holes && f.holes.length) f.holes = f.holes.map(h => h.slice().reverse());
+        em.computeFaceNormal(f);
+      };
+      const affected = new Set();
+      let did = false;
+      // 1) Whole-object selections → flip every face of the object.
+      for (const o of Selection.objects) {
+        for (const f of o.em.faces) reverseFace(o.em, f);
+        affected.add(o); did = true;
+      }
+      // 2) Individually-selected faces on objects NOT wholly selected
+      //    (skip wholly-selected ones to avoid a double-flip = no-op).
+      for (const [o, set] of Selection.faces) {
+        if (Selection.objects.has(o)) continue;
+        for (const fi of set) reverseFace(o.em, o.em.faces[fi]);
+        affected.add(o); did = true;
+      }
+      // 3) Nothing selected → flip the right-clicked face (or its whole object).
+      if (!did && _ctxObj) {
+        if (_ctxFaceIdx >= 0 && _ctxObj.em.faces[_ctxFaceIdx]) reverseFace(_ctxObj.em, _ctxObj.em.faces[_ctxFaceIdx]);
+        else for (const f of _ctxObj.em.faces) reverseFace(_ctxObj.em, f);
+        affected.add(_ctxObj); did = true;
+      }
+      if (did) {
+        for (const o of affected) o.rebuild();
+        try { refreshSelectionVisuals(); } catch (_) {}
+        pushHistory('Reverse Faces');
+        setStatus('msg', 'Faces reversed.');
+      } else {
+        setStatus('msg', 'No face to reverse — select a face/object first, or right-click on a face.');
+      }
+      break;
+    }
     case 'new': {
       const doNew = () => {
         for (const o of Model.objects.slice()) removeObject(o);
@@ -24062,11 +24181,11 @@ function _handleActionImpl(act) {
         const box = document.createElement('div');
         box.style.cssText = 'background:#fff;border-radius:10px;padding:18px 22px;min-width:340px;box-shadow:0 10px 40px rgba(0,0,0,0.25);font:13px -apple-system,sans-serif;';
         box.innerHTML = `
-          <div style="font-weight:600;font-size:14px;margin-bottom:8px;">새로 만들기</div>
-          <div style="color:#444;margin-bottom:14px;">현재 씬을 지우고 새로 시작합니다. 저장되지 않은 내용은 사라집니다.</div>
+          <div style="font-weight:600;font-size:14px;margin-bottom:8px;">New</div>
+          <div style="color:#444;margin-bottom:14px;">Clear the current scene and start new. Unsaved changes will be lost.</div>
           <div style="display:flex;gap:8px;justify-content:flex-end;">
-            <button id="_newCancel" style="padding:6px 14px;border:1px solid #d2d2d7;border-radius:6px;background:#fff;cursor:pointer;">취소</button>
-            <button id="_newOK" style="padding:6px 14px;border:1px solid #d0312d;border-radius:6px;background:#d0312d;color:#fff;cursor:pointer;">새로 만들기</button>
+            <button id="_newCancel" style="padding:6px 14px;border:1px solid #d2d2d7;border-radius:6px;background:#fff;cursor:pointer;">Cancel</button>
+            <button id="_newOK" style="padding:6px 14px;border:1px solid #d0312d;border-radius:6px;background:#d0312d;color:#fff;cursor:pointer;">New</button>
           </div>`;
         back.appendChild(box);
         document.body.appendChild(back);
@@ -24368,16 +24487,16 @@ function _handleActionImpl(act) {
     case 'title-block': openTitleBlockDialog(); break;
     case 'make-component': {
       const sel = [...Selection.objects];
-      if (!sel.length) { setStatus('msg', '컴포넌트로 만들 객체를 선택하세요'); break; }
+      if (!sel.length) { setStatus('msg', 'Select objects to make a component'); break; }
       const target = sel[0];
-      showPromptModal('컴포넌트 이름', target.name || 'Component').then(name => {
+      showPromptModal('Component name', target.name || 'Component').then(name => {
         if (name === null) return;
         const def = makeComponentFromObject(target, name || target.name);
         if (def) {
           renderOutliner();
           if (typeof renderComponentList === 'function') renderComponentList();
           pushHistory('Make Component');
-          setStatus('msg', `컴포넌트 "${def.name}" 생성됨`);
+          setStatus('msg', `Component "${def.name}" Created`);
         }
       });
       break;
@@ -24463,12 +24582,12 @@ function _handleActionImpl(act) {
       Model.lineColorByLayer = !Model.lineColorByLayer;
       applyLayerVisibility();
       try { refreshSelectionVisuals(); } catch (_) {}
-      setStatus('msg', '선색을 레이어 색으로: ' + (Model.lineColorByLayer ? 'on' : 'off'));
+      setStatus('msg', 'Lines by layer color: ' + (Model.lineColorByLayer ? 'on' : 'off'));
       break;
     case 'toggle-darkbg':
       Model.darkBackground = !Model.darkBackground;
       applyBackgroundMode();
-      setStatus('msg', '검정 배경: ' + (Model.darkBackground ? 'on' : 'off'));
+      setStatus('msg', 'Dark background: ' + (Model.darkBackground ? 'on' : 'off'));
       break;
     case 'toggle-sectionfill':
       Model.sectionFills = !Model.sectionFills;
@@ -24478,19 +24597,19 @@ function _handleActionImpl(act) {
     case 'toggle-shadows': toggleShadowPanel(); break;
     case 'toggle-snap-underlay': {
       const n = (Model.objects || []).filter(o => o.isUnderlay).length;
-      if (!n) { setStatus('msg', '언더레이(DXF)가 없습니다.'); break; }
+      if (!n) { setStatus('msg', 'Underlay(DXF) not found.'); break; }
       Model.snapToUnderlay = !Model.snapToUnderlay;
       currentSnap = null; snapCandidates = [];
       setStatus('msg', Model.snapToUnderlay
-        ? '언더레이 전체 스냅(보조선·중간점 포함) 켜짐 — 무거우면 다시 꺼주세요. (기본은 모서리·선 스냅 항상 켜짐)'
-        : '언더레이 전체 스냅 꺼짐 — 모서리·선 스냅은 그대로 동작합니다.');
+        ? 'Full snap to underlay(Guide line·Include midpoint) on — Turn it off again if heavy. (default is edge·Line snap always on)'
+        : 'Full snap to underlay: off — Edge·Line snap still works.');
       break;
     }
     case 'toggle-pick-underlay': {
       const n = (Model.objects || []).filter(o => o.isUnderlay).length;
-      if (!n) { setStatus('msg', '언더레이(DXF)가 없습니다.'); break; }
+      if (!n) { setStatus('msg', 'Underlay(DXF) not found.'); break; }
       Model.pickUnderlay = !Model.pickUnderlay;
-      setStatus('msg', '언더레이 선택: ' + (Model.pickUnderlay ? '켜짐' : '꺼짐'));
+      setStatus('msg', 'Select underlay: ' + (Model.pickUnderlay ? 'on' : 'off'));
       break;
     }
     case 'tool-select': ToolMgr.set('select'); break;
@@ -24511,7 +24630,7 @@ function _handleActionImpl(act) {
     case 'toggle-dim-chain': {
       Tools.dim._chainMode = !Tools.dim._chainMode;
       try { localStorage.setItem('turtle_dim_chain', Tools.dim._chainMode ? '1' : '0'); } catch (_) {}
-      setStatus('msg', '체인 치수 모드: ' + (Tools.dim._chainMode ? 'ON' : 'OFF'));
+      setStatus('msg', 'Chain dimension mode: ' + (Tools.dim._chainMode ? 'ON' : 'OFF'));
       break;
     }
     case 'align-dims': {
@@ -24520,10 +24639,10 @@ function _handleActionImpl(act) {
       // signed perpendicular distance among the group (so all align to the
       // outermost dim line, which is the visually expected behavior).
       if (!Model.selectedDimIds || !Model.selectedDimIds.size) {
-        setStatus('msg', '정렬할 치수를 먼저 선택하세요'); break;
+        setStatus('msg', 'Select dimensions to align first'); break;
       }
       const sel = (Model.dimensions || []).filter(d => Model.selectedDimIds.has(d.id) && d.kind !== 'angle');
-      if (sel.length < 2) { setStatus('msg', '2개 이상 선택해야 정렬됩니다'); break; }
+      if (sel.length < 2) { setStatus('msg', '2 or more must be selected to align'); break; }
       // Group by parallel AB direction (allowing flipped)
       const groups = [];
       for (const d of sel) {
@@ -24547,7 +24666,7 @@ function _handleActionImpl(act) {
       }
       drawOverlay();
       pushHistory('Align Dimensions');
-      setStatus('msg', `${aligned}개 치수 정렬됨`);
+      setStatus('msg', `${aligned} dimensions aligned`);
       break;
     }
     case 'tool-level':     ToolMgr.set('level'); break;
@@ -24758,7 +24877,7 @@ function enterLookMode() {
   CAN.addEventListener('pointerup',   _lookMode._onUp,   true);
   window.addEventListener('keydown',  _lookMode._onKey,  true);
   window.addEventListener('keyup',    _lookMode._onKeyUp, true);
-  setStatus('msg', 'Look mode: 마우스 드래그로 시점, WASD로 이동, Q/E 위/아래, Shift 빠르게, Esc 종료');
+  setStatus('msg', 'Look mode: Drag to orbit the view, WASD to move, Q/E Up/down, Shift Fast, Esc Exit');
 }
 
 /* Step the walk camera each animation frame using held WASD/QE keys. */
@@ -24937,15 +25056,15 @@ function renderLayers() {
     const totalMembers = memberCount + dimCount;
     const expanded = !!L._expanded;
     row.innerHTML = `
-      <span class="lyr-arrow" title="속성 펼치기" style="cursor:pointer; color:#888; width:10px; display:inline-block; user-select:none;">${expanded ? '▾' : '▸'}</span>
+      <span class="lyr-arrow" title="Expand properties" style="cursor:pointer; color:#888; width:10px; display:inline-block; user-select:none;">${expanded ? '▾' : '▸'}</span>
       <span class="eye" title="Toggle Visibility">${L.visible ? '👁' : '—'}</span>
       <span class="lock" title="Lock">${L.locked ? '🔒' : '🔓'}</span>
       <input type="color" class="swatch-input" value="${(L.color && L.color.length === 4)
           ? '#' + L.color.slice(1).split('').map(x => x + x).join('') : (L.color || '#888888')}"
-        title="레이어 색상 변경" style="width:22px; height:18px; padding:0; border:1px solid #999; border-radius:3px; background:none; cursor:pointer;">
+        title="Change layer color" style="width:22px; height:18px; padding:0; border:1px solid #999; border-radius:3px; background:none; cursor:pointer;">
       <span class="name" style="flex:1;">${L.name}</span>
-      <span class="count" title="멤버 수 (객체+치수)" style="color:#888; font-size:9px; min-width:20px; text-align:right;">${totalMembers}</span>
-      <span class="del" title="레이어 삭제" style="color:#c44; padding:0 4px; cursor:pointer; opacity:0.6;">×</span>`;
+      <span class="count" title="Members (Object+Dimension)" style="color:#888; font-size:9px; min-width:20px; text-align:right;">${totalMembers}</span>
+      <span class="del" title="Delete layer" style="color:#c44; padding:0 4px; cursor:pointer; opacity:0.6;">×</span>`;
     row.querySelector('.lyr-arrow').onclick = (e) => {
       e.stopPropagation();
       L._expanded = !L._expanded;
@@ -24973,7 +25092,7 @@ function renderLayers() {
     };
     row.querySelector('.del').onclick = (e) => {
       e.stopPropagation();
-      if (Model.layers.length <= 1) { setStatus('msg', '마지막 레이어는 삭제할 수 없습니다'); return; }
+      if (Model.layers.length <= 1) { setStatus('msg', 'The last layer cannot be deleted'); return; }
       const moveTo = Model.layers.find(x => x.id !== L.id).id;
       // Move members to first remaining layer, then remove
       for (const o of Model.objects) if (o.layerId === L.id) o.layerId = moveTo;
@@ -25021,7 +25140,7 @@ function renderLayers() {
       const curLW = L.lineWeight != null ? L.lineWeight : 0.25;
       const lwHTML = lwOptions.map(w =>
         `<option value="${w}" ${Math.abs(w - curLW) < 1e-9 ? 'selected' : ''}>${w < 0.01 ? w.toFixed(4) : w.toFixed(2)}</option>`).join('');
-      let hatchHTML = '<option value="">없음</option>';
+      let hatchHTML = '<option value="">None</option>';
       if (typeof AD !== 'undefined' && AD.Hatch && AD.Hatch.PATTERNS) {
         for (const p of AD.Hatch.PATTERNS) {
           hatchHTML += `<option value="${p.id}" ${L.cutHatch === p.id ? 'selected' : ''}>${p.label}</option>`;
@@ -25029,12 +25148,12 @@ function renderLayers() {
       }
       sub.innerHTML = `
         <div style="display:flex; align-items:center; gap:6px;">
-          <span style="color:#666; min-width:48px;">선두께</span>
+          <span style="color:#666; min-width:48px;">Line weight</span>
           <select class="lyr-lw" style="flex:1; padding:1px 4px; border:1px solid #ccc; border-radius:3px; font-size:11px;">${lwHTML}</select>
           <span style="color:#888;">mm</span>
         </div>
         <div style="display:flex; align-items:center; gap:6px;">
-          <span style="color:#666; min-width:48px;">해치</span>
+          <span style="color:#666; min-width:48px;">Hatch</span>
           <select class="lyr-hatch" style="flex:1; padding:1px 4px; border:1px solid #ccc; border-radius:3px; font-size:11px;">${hatchHTML}</select>
         </div>`;
       const lwSel = sub.querySelector('.lyr-lw');
@@ -25055,7 +25174,7 @@ function renderLayers() {
 }
 document.getElementById('btnAddLayer').onclick = () => {
   const defName = 'Layer' + (Model.layers.length);
-  _askName('새 레이어 이름', defName, (n) => { if (n) addLayer(n); });
+  _askName('New layer name', defName, (n) => { if (n) addLayer(n); });
 };
 
 // Simple custom modal prompt (Electron blocks window.prompt).
@@ -25068,8 +25187,8 @@ function _askName(title, defVal, cb) {
     <div style="font-weight:600;margin-bottom:10px;">${title}</div>
     <input type="text" id="_askInput" style="width:100%;padding:5px 8px;border:1.5px solid #2d2a28;border-radius:4px;margin-bottom:12px;" />
     <div style="display:flex;gap:8px;justify-content:flex-end;">
-      <button id="_askCancel" style="padding:4px 12px;border:1.5px solid #2d2a28;border-radius:4px;background:#fff;cursor:pointer;">취소</button>
-      <button id="_askOK" style="padding:4px 12px;border:1.5px solid #2d2a28;border-radius:4px;background:#0a84ff;color:#fff;cursor:pointer;">확인</button>
+      <button id="_askCancel" style="padding:4px 12px;border:1.5px solid #2d2a28;border-radius:4px;background:#fff;cursor:pointer;">Cancel</button>
+      <button id="_askOK" style="padding:4px 12px;border:1.5px solid #2d2a28;border-radius:4px;background:#0a84ff;color:#fff;cursor:pointer;">OK</button>
     </div>`;
   back.appendChild(box);
   document.body.appendChild(back);
@@ -25402,7 +25521,7 @@ function renderEntityInfo() {
     <div class="row"><label>Name</label><input id="eiName" value="${o.name}"/></div>
     <div class="row"><label>Layer</label><select id="eiLayer">${layerOpts}</select></div>
     <div class="row"><label>Size</label><span>${Units.formatSize(s.x, s.y, s.z)}</span></div>
-    <div class="row"><label>Area</label><span>${_formatArea(_objectSurfaceArea(o))} (선택 면적: ${_formatArea(_selectedFacesArea(o))})</span></div>
+    <div class="row"><label>Area</label><span>${_formatArea(_objectSurfaceArea(o))} (Selected area: ${_formatArea(_selectedFacesArea(o))})</span></div>
     <div class="row"><label>Vol</label><span>${_formatVolume(_objectVolume(o))}</span></div>
     <div class="row"><label>Faces</label><span>${o.em.faces.length}${selFaces?' ('+selFaces.size+' sel)':''}</span></div>
     <div class="row"><label>Verts</label><span>${o.em.vertices.length}</span></div>
@@ -25418,10 +25537,10 @@ function renderEntityInfo() {
     </div>
     <div class="row"><label>Lock</label>
       <input type="checkbox" id="eiImgLock" ${o.locked ? 'checked' : ''}/>
-      <span style="color:#8a8a8f;font-size:11px">선택·이동 잠금</span>
+      <span style="color:#8a8a8f;font-size:11px">Select·Move lock</span>
     </div>
     <div class="row"><label></label>
-      <button id="eiImgGround" style="font-size:11px;padding:3px 8px;">바닥(Y=0)으로 이동</button>
+      <button id="eiImgGround" style="font-size:11px;padding:3px 8px;">Floor(Y=0) to move</button>
     </div>` : ''}
   `;
   document.getElementById('eiName').onchange = (e) => { o.name = e.target.value; renderOutliner(); };
@@ -25837,7 +25956,7 @@ function _booleanObjects(op /* 'union'|'subtract'|'intersect' */) {
   }
   const objs = Array.from(Selection.objects);
   if (objs.length < 2) {
-    if (typeof showError === 'function') showError('두 개 이상의 객체를 선택하세요.');
+    if (typeof showError === 'function') showError('Select two or more objects.');
     return;
   }
   let result = null;
@@ -25879,7 +25998,7 @@ function _booleanObjects(op /* 'union'|'subtract'|'intersect' */) {
    stray triangles or unshared chord vertices behind. */
 function cleanupSelectedMeshes() {
   const objs = Array.from(Selection.objects);
-  if (!objs.length) { showError('정리할 객체를 선택하세요.'); return; }
+  if (!objs.length) { showError('Select objects to clean up.'); return; }
   let total = 0;
   for (const o of objs) {
     const before = o.em.faces.length;
@@ -25905,7 +26024,7 @@ function cleanupSelectedMeshes() {
 function intersectSelectedFaces() {
   const objs = Array.from(Selection.objects);
   if (objs.length < 2) {
-    if (typeof showError === 'function') showError('두 개 이상의 객체를 선택하세요.');
+    if (typeof showError === 'function') showError('Select two or more objects.');
     return;
   }
   // ---- geometry helpers ------------------------------------------------
@@ -27009,10 +27128,10 @@ function clearMaterialFromObject(obj) {
   opSlider.type = 'range'; opSlider.min = '5'; opSlider.max = '100'; opSlider.value = '50';
   opSlider.style.cssText = 'width:120px;height:16px;';
   const opLabel = document.createElement('span');
-  opLabel.textContent = '투명도 50%';
+  opLabel.textContent = 'Opacity 50%';
   opSlider.addEventListener('input', () => {
     const v = parseInt(opSlider.value);
-    opLabel.textContent = '투명도 ' + v + '%';
+    opLabel.textContent = 'Opacity ' + v + '%';
     Tools.paint.currentOpacity = v / 100;
   });
   opacityRow.appendChild(opSlider);
@@ -27027,7 +27146,7 @@ function clearMaterialFromObject(obj) {
     if (m.transparent) {
       opacityRow.style.display = 'flex';
       opSlider.value = Math.round(m.opacity * 100);
-      opLabel.textContent = '투명도 ' + Math.round(m.opacity * 100) + '%';
+      opLabel.textContent = 'Opacity ' + Math.round(m.opacity * 100) + '%';
     } else {
       opacityRow.style.display = 'none';
     }
@@ -27045,12 +27164,12 @@ function clearMaterialFromObject(obj) {
   matSec.className = 'palette-section';
   const matLabel = document.createElement('div');
   matLabel.className = 'palette-label';
-  matLabel.textContent = '재질';
+  matLabel.textContent = 'Material';
   matSec.appendChild(matLabel);
-  // Group by category. Materials without a `cat` field land in '기타'.
+  // Group by category. Materials without a `cat` field land in 'Other'.
   const byCat = new Map();
   for (const m of MATERIALS) {
-    const cat = m.cat || '기타';
+    const cat = m.cat || 'Other';
     if (!byCat.has(cat)) byCat.set(cat, []);
     byCat.get(cat).push(m);
   }
@@ -27508,7 +27627,7 @@ function _handleImageDrop(files, clientX, clientY) {
             baseRadius: 80, // pixels — distance equal to baseRadius => 1x scale
           };
           if (typeof setStatus === 'function') {
-            setStatus('msg', '마우스 이동으로 크기 조절 · 클릭으로 확정 · Esc 취소');
+            setStatus('msg', 'Move the mouse to resize · Click to confirm · Esc Cancel');
           }
         }
         idx++;
@@ -27518,7 +27637,7 @@ function _handleImageDrop(files, clientX, clientY) {
       }
     }
     if (idx > 0 && typeof setStatus === 'function') {
-      setStatus('msg', `${idx}개 이미지 객체를 추가했습니다.`);
+      setStatus('msg', `${idx} image objects added.`);
     }
   })();
 }
@@ -27549,6 +27668,11 @@ CAN.addEventListener('pointerdown', e => {
     // Capture the object under the cursor for texture-scale menu
     const _hits = raycastObjects(e);
     _ctxObj = _hits.length ? _hits[0].object.userData.sketchObject : null;
+    // Map the picked triangle → EditableMesh face index so "Reverse Faces" can
+    // flip exactly the face under the cursor when nothing is selected.
+    _ctxFaceIdx = (_hits.length && _hits[0].object.geometry &&
+                   _hits[0].object.geometry.userData.faceIdxMap && _hits[0].faceIndex != null)
+      ? _hits[0].object.geometry.userData.faceIdxMap[_hits[0].faceIndex] : -1;
     showContextMenu(e);
   }
 });
@@ -27614,21 +27738,21 @@ CAN.addEventListener('dblclick', e => {
 async function showRotatePlaneDialog(sp) {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
-    <div style="font-size:11px; color:#666; margin-bottom:8px;">현재 평면을 평면을 지나는 선을 축으로 회전합니다.</div>
+    <div style="font-size:11px; color:#666; margin-bottom:8px;">Rotate about a line passing through the plane.</div>
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>회전축</span>
+      <span>Rotation axis</span>
       <select id="_rp_axis" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
-        <option value="x">X (수평)</option>
-        <option value="y">Y (수직)</option>
-        <option value="z">Z (깊이)</option>
+        <option value="x">X (horizontal)</option>
+        <option value="y">Y (vertical)</option>
+        <option value="z">Z (depth)</option>
       </select>
     </label>
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>각도 (°)</span>
+      <span>Angle (°)</span>
       <input id="_rp_deg" type="number" step="5" value="90" style="width:80px;padding:4px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
     </label>
   `;
-  const ok = await showModal('단면 평면 회전', wrap);
+  const ok = await showModal('Rotate Section Plane', wrap);
   if (!ok) return;
   const axName = wrap.querySelector('#_rp_axis').value;
   const deg = parseFloat(wrap.querySelector('#_rp_deg').value);
@@ -27675,7 +27799,7 @@ function showSectionPlaneMenu(e, sp) {
       else if (it.act === 'toggle-active') toggleSectionPlaneActive(sp);
       else if (it.act === 'toggle-visible') setSectionPlaneVisible(sp, !sp.visible);
       else if (it.act === 'rename') {
-        _askName('단면 이름 변경', sp.name, (n) => {
+        _askName('Rename Section', sp.name, (n) => {
           if (!n) return;
           sp.name = n;
           // Rebuild the visual with the new label
@@ -27780,6 +27904,7 @@ function updateSnapTooltip(e) {
 
 /* --- Context menu --- */
 let _ctxObj = null;
+let _ctxFaceIdx = -1;  // em-face index under the right-click cursor (for Reverse Faces)
 function showContextMenu(e) {
   const m = document.getElementById('contextMenu');
   const hasSel = Selection.objects.size > 0 || Selection.faces.size > 0 || Selection.edges.size > 0;
@@ -27794,11 +27919,13 @@ function showContextMenu(e) {
     { label: 'Boolean: Subtract',  act: 'bool-subtract', disabled: Selection.objects.size < 2 },
     { label: 'Boolean: Intersect', act: 'bool-intersect',disabled: Selection.objects.size < 2 },
     { label: '---' },
+    { label: 'Reverse Faces', act: 'reverse-faces', disabled: !(hasSel || _ctxObj) },
+    { label: '---' },
     { label: 'Hide', act: 'hide', disabled: !hasSel },
     { label: 'Unhide All', act: 'unhide-all', disabled: !hasHidden },
     { label: '---' },
-    { label: '텍스처 적용...', act: 'tex-apply', disabled: !_ctxObj },
-    { label: '텍스처 크기 조정...', act: 'tex-scale', disabled: !hasTex },
+    { label: 'Apply Texture...', act: 'tex-apply', disabled: !_ctxObj },
+    { label: 'Scale Texture...', act: 'tex-scale', disabled: !hasTex },
     { label: '---' },
     { label: 'Delete', act: 'delete' },
     { label: 'Undo', act: 'undo' },
@@ -27878,8 +28005,8 @@ function showTextureApplyPanel(e, obj) {
     }
     panel.appendChild(grid);
   };
-  makeSection('내장 재질', MATERIALS, false);
-  makeSection('가져온 재질', ImportedMaterials, true);
+  makeSection('Built-in materials', MATERIALS, false);
+  makeSection('Imported materials', ImportedMaterials, true);
   document.body.appendChild(panel);
   setTimeout(() => {
     const off = (ev) => {
@@ -27911,15 +28038,15 @@ function showTextureScalePanel(e, obj) {
     min-width: 220px;
   `;
   panel.innerHTML = `
-    <div style="font-weight:600;margin-bottom:8px;">텍스처 크기</div>
+    <div style="font-weight:600;margin-bottom:8px;">Texture size</div>
     <div style="display:flex;align-items:center;gap:8px;">
-      <span>작게</span>
+      <span>Smaller</span>
       <input id="texScaleSlider" type="range" min="-200" max="200" value="0" style="flex:1;">
-      <span>크게</span>
+      <span>Larger</span>
     </div>
     <div style="display:flex;justify-content:space-between;margin-top:6px;">
       <span id="texScaleLabel">1.00×</span>
-      <button id="texScaleClose" style="font-size:11px;padding:2px 8px;">닫기</button>
+      <button id="texScaleClose" style="font-size:11px;padding:2px 8px;">Close</button>
     </div>
   `;
   document.body.appendChild(panel);
@@ -27929,7 +28056,7 @@ function showTextureScalePanel(e, obj) {
     // Logarithmic mapping: -200..200 → 0.1×..10×
     const t = parseFloat(slider.value) / 200;
     const factor = Math.pow(10, t); // 0.1 .. 10
-    // Larger "크기" = larger pattern = SMALLER repeat count
+    // Larger "Size" = larger pattern = SMALLER repeat count
     const newRepeat = baseRepeat / factor;
     obj.mat.map.repeat.set(newRepeat, newRepeat);
     obj.mat.map.needsUpdate = true;
@@ -28067,7 +28194,7 @@ _Shortcuts.load();
 
 /* Generic modal: title + body element + OK/Cancel. Returns a Promise that
    resolves with true on OK, false on Cancel. */
-function showModal(title, bodyEl, { okLabel = 'OK', cancelLabel = '취소' } = {}) {
+function showModal(title, bodyEl, { okLabel = 'OK', cancelLabel = 'Cancel' } = {}) {
   return new Promise((resolve) => {
     const back = document.createElement('div');
     back.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:99999;display:flex;align-items:center;justify-content:center;font-family:-apple-system,"SF Pro Text",sans-serif;';
@@ -28134,7 +28261,7 @@ async function showPromptTextarea(title, defaultValue = '', placeholder = '') {
    so its own bbox edge / center matches the reference. */
 function alignSelected(axis, mode) {
   const sel = [...Selection.objects];
-  if (sel.length < 2) { setStatus('msg', '2개 이상 객체를 선택하세요'); return; }
+  if (sel.length < 2) { setStatus('msg', '2 or more objects must be selected'); return; }
   const bboxOf = (o) => {
     const b = new THREE.Box3();
     for (const v of o.em.vertices) b.expandByPoint(v);
@@ -28157,14 +28284,14 @@ function alignSelected(axis, mode) {
     o.rebuild();
   }
   pushHistory(`Align ${axis.toUpperCase()} ${mode}`);
-  setStatus('msg', `${sel.length}개 객체를 ${axis.toUpperCase()}축 ${mode}로 정렬`);
+  setStatus('msg', `Aligned ${sel.length} objects on ${axis.toUpperCase()} axis (${mode})`);
 }
 
 /* Distribute selected objects evenly along an axis. Endpoints stay put;
    intermediates move so center-to-center spacing is uniform. */
 function distributeSelected(axis) {
   const sel = [...Selection.objects];
-  if (sel.length < 3) { setStatus('msg', '3개 이상 객체를 선택해야 분배됩니다'); return; }
+  if (sel.length < 3) { setStatus('msg', '3 or more objects are needed to distribute'); return; }
   const bboxOf = (o) => {
     const b = new THREE.Box3();
     for (const v of o.em.vertices) b.expandByPoint(v);
@@ -28183,7 +28310,7 @@ function distributeSelected(axis) {
     items[i].o.rebuild();
   }
   pushHistory(`Distribute ${axis.toUpperCase()}`);
-  setStatus('msg', `${N}개 객체를 ${axis.toUpperCase()}축으로 균등 분배`);
+  setStatus('msg', `Distributed ${N} objects evenly along ${axis.toUpperCase()} axis`);
 }
 
 /* 3D Text — load a helvetiker typeface once, then build a TextGeometry,
@@ -28207,31 +28334,31 @@ async function open3DTextDialog() {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
-      <span style="width:80px;font-size:12px;">텍스트</span>
+      <span style="width:80px;font-size:12px;">Text</span>
       <input id="_t3_text" type="text" value="TEXT" style="flex:1;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
     </label>
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
-      <span style="width:80px;font-size:12px;">크기 (m)</span>
+      <span style="width:80px;font-size:12px;">Size (m)</span>
       <input id="_t3_size" type="number" value="0.3" step="0.05" min="0.01" style="width:80px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
     </label>
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
-      <span style="width:80px;font-size:12px;">두께 (m)</span>
+      <span style="width:80px;font-size:12px;">Thickness (m)</span>
       <input id="_t3_depth" type="number" value="0.05" step="0.01" min="0" style="width:80px;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
     </label>
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
-      <span style="width:80px;font-size:12px;">색상</span>
+      <span style="width:80px;font-size:12px;">Color</span>
       <input id="_t3_col" type="color" value="#1a1a1a" style="width:48px;height:28px;border:1px solid #ccc;border-radius:6px;background:none;">
     </label>
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
-      <span style="width:80px;font-size:12px;">방향</span>
+      <span style="width:80px;font-size:12px;">Direction</span>
       <select id="_t3_dir" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
-        <option value="z">전면 (Z) — 벽에 붙이기</option>
-        <option value="y">바닥 (Y) — 지면에 눕히기</option>
+        <option value="z">Front (Z) — Snap to wall</option>
+        <option value="y">Floor (Y) — Lay flat on ground</option>
       </select>
     </label>
-    <div style="font-size:10px;color:#888;margin-top:8px;">한글은 helvetiker 폰트로 렌더되지 않을 수 있습니다.</div>
+    <div style="font-size:10px;color:#888;margin-top:8px;">Korean helvetiker may not render with this font.</div>
   `;
-  const ok = await showModal('3D 텍스트 추가', wrap);
+  const ok = await showModal('3D Add text', wrap);
   if (!ok) return;
   const text = wrap.querySelector('#_t3_text').value || 'TEXT';
   const size = parseFloat(wrap.querySelector('#_t3_size').value) || 0.3;
@@ -28240,7 +28367,7 @@ async function open3DTextDialog() {
   const dir = wrap.querySelector('#_t3_dir').value;
   let font;
   try { font = await _loadHelvetikerFont(); }
-  catch (err) { showError('폰트 로드 실패: ' + err.message); return; }
+  catch (err) { showError('Failed to load font: ' + err.message); return; }
   let geo;
   try {
     geo = new THREE.TextGeometry(text, {
@@ -28251,7 +28378,7 @@ async function open3DTextDialog() {
       bevelEnabled: false,
     });
   } catch (err) {
-    showError('TextGeometry 생성 실패: ' + err.message);
+    showError('TextGeometry Failed to create: ' + err.message);
     return;
   }
   geo.center();
@@ -28266,7 +28393,7 @@ async function open3DTextDialog() {
   // Reuse the GLB import pipeline to convert into a SketchObject
   const root = new THREE.Group(); root.add(mesh);
   _importMeshTreeIntoScene(root, '3D Text', 1);
-  setStatus('msg', '3D 텍스트 추가됨. Move 도구로 위치 조정하세요.');
+  setStatus('msg', '3D Text added. Move Adjust the position with the tool.');
 }
 
 async function openTitleBlockDialog() {
@@ -28278,18 +28405,18 @@ async function openTitleBlockDialog() {
     </label>`;
   wrap.innerHTML = `
     <label style="display:flex;align-items:center;gap:8px;margin:0 0 8px;">
-      <input type="checkbox" id="_tb_on"> <span>도면 export에 표시</span>
+      <input type="checkbox" id="_tb_on"> <span>Drawing export show on</span>
     </label>
-    ${row('회사', '_tb_company',  TitleBlock.company)}
-    ${row('프로젝트','_tb_project', TitleBlock.project)}
-    ${row('도면명','_tb_drawing', TitleBlock.drawingName)}
-    ${row('도면번호','_tb_number', TitleBlock.number)}
-    ${row('축척','_tb_scale',     TitleBlock.scale)}
-    ${row('날짜','_tb_date',      TitleBlock.date)}
-    ${row('작성자','_tb_author',  TitleBlock.author)}
+    ${row('Company', '_tb_company',  TitleBlock.company)}
+    ${row('Project','_tb_project', TitleBlock.project)}
+    ${row('Drawing name','_tb_drawing', TitleBlock.drawingName)}
+    ${row('Drawing number','_tb_number', TitleBlock.number)}
+    ${row('Scale','_tb_scale',     TitleBlock.scale)}
+    ${row('Date','_tb_date',      TitleBlock.date)}
+    ${row('Author','_tb_author',  TitleBlock.author)}
   `;
   wrap.querySelector('#_tb_on').checked = !!TitleBlock.enabled;
-  const ok = await showModal('Title Block 설정', wrap);
+  const ok = await showModal('Title Block Settings', wrap);
   if (!ok) return;
   TitleBlock.set({
     enabled:    wrap.querySelector('#_tb_on').checked,
@@ -28301,34 +28428,34 @@ async function openTitleBlockDialog() {
     date:       wrap.querySelector('#_tb_date').value,
     author:     wrap.querySelector('#_tb_author').value,
   });
-  setStatus('msg', 'Title Block 저장됨');
+  setStatus('msg', 'Title Block Saved');
 }
 
 async function openDimStyleDialog() {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>글자 크기 (px)</span>
+      <span>Font size (px)</span>
       <input id="_ds_text" type="number" min="6" max="48" style="width:80px;padding:4px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
     </label>
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>선 두께 (px)</span>
+      <span>Line weight (px)</span>
       <input id="_ds_lw" type="number" min="0.5" max="8" step="0.1" style="width:80px;padding:4px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
     </label>
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>선 색상</span>
+      <span>Line color</span>
       <input id="_ds_col" type="color" style="width:48px;height:28px;border:1px solid #ccc;border-radius:6px;background:none;">
     </label>
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>화살표 크기 (px)</span>
+      <span>Arrow size (px)</span>
       <input id="_ds_as" type="number" min="3" max="30" style="width:80px;padding:4px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
     </label>
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>화살표 모양</span>
+      <span>Arrow style</span>
       <select id="_ds_at" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
-        <option value="filled">채운 삼각형</option>
-        <option value="open">열린 V</option>
-        <option value="tick">사선(/) Tick</option>
+        <option value="filled">Filled triangle</option>
+        <option value="open">Open V</option>
+        <option value="tick">Diagonal(/) Tick</option>
       </select>
     </label>
   `;
@@ -28342,7 +28469,7 @@ async function openDimStyleDialog() {
   })(DimStyle.lineColor);
   wrap.querySelector('#_ds_as').value   = DimStyle.arrowSize;
   wrap.querySelector('#_ds_at').value   = DimStyle.arrowStyle;
-  const ok = await showModal('치수 스타일 설정', wrap);
+  const ok = await showModal('Dimension style settings', wrap);
   if (!ok) return;
   DimStyle.set({
     textSize:   parseInt(wrap.querySelector('#_ds_text').value, 10),
@@ -28351,14 +28478,14 @@ async function openDimStyleDialog() {
     arrowSize:  parseInt(wrap.querySelector('#_ds_as').value, 10),
     arrowStyle: wrap.querySelector('#_ds_at').value,
   });
-  setStatus('msg', '치수 스타일 적용됨');
+  setStatus('msg', 'Dimension style applied');
 }
 
 async function openDimUnitsDialog() {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>단위</span>
+      <span>Unit</span>
       <select id="_du_unit" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
         <option value="mm">mm</option>
         <option value="cm">cm</option>
@@ -28368,13 +28495,13 @@ async function openDimUnitsDialog() {
       </select>
     </label>
     <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;">
-      <span>소수 자릿수</span>
+      <span>Decimal places</span>
       <select id="_du_prec" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option>
       </select>
     </label>
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
-      <input type="checkbox" id="_du_suf"> <span>단위 접미사 표시 (예: 1500mm)</span>
+      <input type="checkbox" id="_du_suf"> <span>Show unit suffix (Yes: 1500mm)</span>
     </label>
   `;
   const sel = wrap.querySelector('#_du_unit');
@@ -28383,10 +28510,10 @@ async function openDimUnitsDialog() {
   sel.value = Units.dimUnit;
   prec.value = String(Units.dimPrecision);
   suf.checked = Units.dimSuffix;
-  const ok = await showModal('치수 단위 설정', wrap);
+  const ok = await showModal('Dimension unit settings', wrap);
   if (!ok) return;
   Units.setDimOptions({ unit: sel.value, precision: parseInt(prec.value, 10), suffix: suf.checked });
-  setStatus('msg', `치수 단위: ${sel.value}, 소수 ${prec.value}자리`);
+  setStatus('msg', `Dimension unit: ${sel.value}, ${prec.value} decimal places`);
 }
 
 function openShortcutsModal() {
@@ -28404,11 +28531,11 @@ function openShortcutsModal() {
     max-height: 78vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.25);`;
   wrap.appendChild(panel);
   const title = document.createElement('h3');
-  title.textContent = '단축키 설정';
+  title.textContent = 'Shortcut settings';
   title.style.cssText = 'margin:0 0 10px 0;font-size:15px;font-weight:600;';
   panel.appendChild(title);
   const hint = document.createElement('div');
-  hint.textContent = '단축키를 클릭하고 새 키를 눌러 변경하세요. Esc 로 취소, Delete 로 해제.';
+  hint.textContent = 'Click a shortcut, then press a new key to change it. Esc  to cancel, Delete  to release.';
   hint.style.cssText = 'color:#666;font-size:11px;margin-bottom:10px;';
   panel.appendChild(hint);
   let capturingId = null;
@@ -28424,7 +28551,7 @@ function openShortcutsModal() {
       lbl.style.cssText = 'flex:1;font-size:13px;';
       const btn = document.createElement('button');
       const k = _Shortcuts.keyFor(a.id);
-      btn.textContent = capturingId === a.id ? '키를 누르세요...' : (k || '(없음)');
+      btn.textContent = capturingId === a.id ? 'Press a key...' : (k || '(None)');
       btn.style.cssText = `
         min-width: 120px; padding: 4px 10px; border: 0.5px solid rgba(0,0,0,0.2);
         border-radius: 6px; font-family: monospace; font-size: 12px;
@@ -28437,7 +28564,7 @@ function openShortcutsModal() {
   };
   render();
   const close = document.createElement('button');
-  close.textContent = '닫기';
+  close.textContent = 'Close';
   close.style.cssText = 'margin-top:14px;padding:6px 14px;border-radius:6px;border:0.5px solid rgba(0,0,0,0.2);background:#0a84ff;color:#fff;cursor:pointer;';
   close.onclick = () => wrap.remove();
   panel.appendChild(close);
@@ -28881,7 +29008,7 @@ animate();
       zIndex: 99999, minWidth: '200px',
     });
     const item = document.createElement('div');
-    item.textContent = '도구 막대 사용자화…';
+    item.textContent = 'Customize toolbar…';
     Object.assign(item.style, { padding: '6px 14px', cursor: 'pointer' });
     item.onmouseenter = () => { item.style.background = '#0a84ff'; item.style.color = '#fff'; };
     item.onmouseleave = () => { item.style.background = ''; item.style.color = ''; };
@@ -29098,9 +29225,9 @@ animate();
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     });
     const ttl = document.createElement('div');
-    ttl.innerHTML = '<b>도구 막대 사용자화</b><div style="font-size:10px;color:#666;margin-top:2px">아이콘을 끌어 도구막대로 가져다 놓으세요. 도구막대 밖으로 끌어 빼낼 수 있습니다.</div>';
+    ttl.innerHTML = '<b>Customize toolbar</b><div style="font-size:10px;color:#666;margin-top:2px">Drag an icon onto the toolbar. You can drag it out of the toolbar.</div>';
     const done = document.createElement('button');
-    done.textContent = '완료';
+    done.textContent = 'Done';
     Object.assign(done.style, {
       padding: '5px 14px', border: '0.5px solid #0a84ff', borderRadius: '5px',
       background: '#0a84ff', color: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: '600',
@@ -29128,7 +29255,7 @@ animate();
     palette.appendChild(body);
 
     const reset = document.createElement('button');
-    reset.textContent = '기본값으로 복원';
+    reset.textContent = 'Restore defaults';
     Object.assign(reset.style, {
       padding: '4px 10px', fontSize: '11px',
       border: '0.5px solid rgba(0,0,0,0.18)', borderRadius: '5px',
@@ -29174,7 +29301,7 @@ animate();
       c.addEventListener('pointerdown', (e) => onPaletteChipDown(e, id));
       return c;
     }
-    grid.appendChild(chip('|', '구분선', '<div style="width:2px;height:20px;background:#888"></div>'));
+    grid.appendChild(chip('|', 'Separator', '<div style="width:2px;height:20px;background:#888"></div>'));
     for (const [k, reg] of registry) {
       if (inToolbar.has(k)) continue;
       grid.appendChild(chip(k, reg.label, reg.html));
@@ -29586,7 +29713,7 @@ function renderInModelMaterials() {
   });
   cnt.textContent = items.length + ' material' + (items.length === 1 ? '' : 's');
   if (!items.length) {
-    grid.innerHTML = '<div style="grid-column:1/-1; font-size:11px; color:#888; text-align:center; padding:12px 0;">모델에 사용된 재질이 없습니다.</div>';
+    grid.innerHTML = '<div style="grid-column:1/-1; font-size:11px; color:#888; text-align:center; padding:12px 0;">No materials used in the model.</div>';
     return;
   }
   for (const it of items) {
@@ -29642,7 +29769,7 @@ function renderHeavyList() {
   const heavies = Model.objects.filter(o => o._heavy);
   list.innerHTML = '';
   if (!heavies.length) {
-    list.innerHTML = '<div style="font-size:10px; color:#888; text-align:center; padding:8px 0;">무거운 객체 없음</div>';
+    list.innerHTML = '<div style="font-size:10px; color:#888; text-align:center; padding:8px 0;">No heavy objects</div>';
     if (btn) btn.textContent = 'Hide All';
     return;
   }
@@ -29667,7 +29794,7 @@ function renderHeavyList() {
     const eye = document.createElement('span');
     eye.textContent = o._lowDetail ? '▦' : '◼';
     eye.style.cssText = 'cursor:pointer; width:14px; text-align:center;';
-    eye.title = o._lowDetail ? '풀 메시 보기' : 'bbox 로 축소';
+    eye.title = o._lowDetail ? 'Full mesh view' : 'bbox  to collapse';
     eye.onclick = (ev) => { ev.stopPropagation(); try { o.setLowDetail(!o._lowDetail); } catch (_) {} renderHeavyList(); try { renderOutliner && renderOutliner(); } catch (_) {} };
     const name = document.createElement('span');
     name.textContent = o.name;
@@ -29766,8 +29893,8 @@ document.addEventListener('click', (e) => {
     renderHeavyList();
   } else if (e.target && e.target.id === 'heavyDeleteBtn') {
     e.stopPropagation();
-    if (!_heavySelected.size) { setStatus && setStatus('msg', '선택된 무거운 객체 없음'); return; }
-    if (!confirm(_heavySelected.size + '개의 객체를 삭제할까요?')) return;
+    if (!_heavySelected.size) { setStatus && setStatus('msg', 'No heavy objects selected'); return; }
+    if (!confirm(_heavySelected.size + ' objects — delete them??')) return;
     for (const o of Array.from(_heavySelected)) {
       try { removeObject(o); } catch (err) { console.warn(err); }
     }
