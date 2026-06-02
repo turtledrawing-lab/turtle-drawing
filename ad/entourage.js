@@ -18,17 +18,139 @@
 
   /* People — 21 built-in poses loaded from local SVG files. */
   const PEOPLE_IDS = Array.from({ length: 21 }, (_, i) => 'person_A' + (i + 1));
+
+  /* Built-in extras — plants and additional people, bundled as SVG
+     line-art assets under ad/entourage_plants/ and ad/entourage_people/.
+     (Recovered from earlier in-app uploads and made permanent, so they
+     ship in every build and no longer depend on localStorage.)
+     Tuple = [id, category, label, heightMetres]. */
+  const EXTRA = [
+    ["custom_mpkftl3l_8s3l", "plants", "p_A-8", 3],
+    ["custom_mpkftu9n_wcvi", "plants", "p_A-7", 3],
+    ["custom_mpkftxw6_ywmn", "plants", "p_A-6", 3],
+    ["custom_mpkfu0ob_g8q8", "plants", "p_A-5", 3],
+    ["custom_mpkfu65i_r9z4", "plants", "p_A-4", 3],
+    ["custom_mpkfub7d_urli", "plants", "p_A-3", 3],
+    ["custom_mpkfue5b_ifkp", "plants", "p_A-2", 3],
+    ["custom_mpkfuheh_26w2", "plants", "p_A-1", 3],
+    ["custom_mpkfv6sg_e10z", "plants", "p_B-8", 3],
+    ["custom_mpkfv9w5_2ure", "plants", "p_B-7", 3],
+    ["custom_mpkfvdb5_3x5f", "plants", "p_B-6", 3],
+    ["custom_mpkfvgy5_yb9h", "plants", "p_B-5", 3],
+    ["custom_mpkfvkie_9rmj", "plants", "p_B-4", 3],
+    ["custom_mpkfvt6l_pkmg", "plants", "p_B-3", 3],
+    ["custom_mpkfvw4o_7yzp", "plants", "p_B-2", 3],
+    ["custom_mpkfvz7y_ipns", "plants", "p_B-1", 3],
+    ["custom_mpkfwu5n_z3nu", "plants", "p_C-14", 3],
+    ["custom_mpkfwzfb_g0ap", "plants", "p_C-13", 3],
+    ["custom_mpkfx23k_x0su", "plants", "p_C-12", 3],
+    ["custom_mpkfx5cs_e9v9", "plants", "p_C-11", 3],
+    ["custom_mpkfx86n_sq3g", "plants", "p_C-10", 3],
+    ["custom_mpkfxb0z_e400", "plants", "p_C-9", 3],
+    ["custom_mpkfxe63_acew", "plants", "p_C-8", 3],
+    ["custom_mpkfxhra_uv62", "plants", "p_C-7", 3],
+    ["custom_mpkfxkp3_klf8", "plants", "p_C-6", 3],
+    ["custom_mpkfxnat_1mpk", "plants", "p_C-5", 3],
+    ["custom_mpkfxq56_c09y", "plants", "p_C-4", 3],
+    ["custom_mpkfxtm5_qi8m", "plants", "p_C-3", 3],
+    ["custom_mpkfxw6p_vdc6", "plants", "p_C-2", 3],
+    ["custom_mpkfxzfl_6jlb", "plants", "p_C-1", 3],
+    ["custom_mpkfz3to_a2qp", "plants", "p_D-18", 0.4],
+    ["custom_mpkfzbpv_dqkw", "plants", "p_D-17", 0.4],
+    ["custom_mpkfzp4z_z5vw", "plants", "p_D-16", 0.6],
+    ["custom_mpkfzzb0_w8si", "plants", "p_D-15", 0.6],
+    ["custom_mpkg0555_5cmq", "plants", "p_D-14", 0.6],
+    ["custom_mpkg0get_36i7", "plants", "p_D-13", 0.6],
+    ["custom_mpkg0lt8_bp16", "plants", "p_D-12", 0.4],
+    ["custom_mpkg0utw_0jxy", "plants", "p_D-11", 0.4],
+    ["custom_mpkg123t_ogpt", "plants", "p_D-10", 0.5],
+    ["custom_mpkg18n2_je3l", "plants", "p_D-9", 0.5],
+    ["custom_mpkg1fsc_e8u0", "plants", "p_D-8", 0.4],
+    ["custom_mpkg1nxy_x0xh", "plants", "p_D-7", 0.4],
+    ["custom_mpkg1uz3_xlvj", "plants", "p_D-6", 0.4],
+    ["custom_mpkg22jl_f818", "plants", "p_D-5", 0.6],
+    ["custom_mpkg2a3d_orid", "plants", "p_D-4", 0.6],
+    ["custom_mpkg2kco_jdqg", "plants", "p_D-3", 0.4],
+    ["custom_mpkg2v94_77w6", "plants", "p_D-2", 0.3],
+    ["custom_mpkg334j_8c0l", "plants", "p_D-1", 0.4],
+    ["custom_mpksus8x_x8ub", "people", "C-37", 0.6],
+    ["custom_mpksuy64_5k3g", "people", "C-36", 0.6],
+    ["custom_mpksvi50_qvkg", "people", "C-35", 1],
+    ["custom_mpksvt2j_y7bd", "people", "C-34", 1.5],
+    ["custom_mpksw03p_kus9", "people", "C-33", 1.5],
+    ["custom_mpksw8rb_b45j", "people", "C-32", 1.5],
+    ["custom_mpkswhra_vka2", "people", "C-31", 0.9],
+    ["custom_mpkswqgl_ex32", "people", "C-30", 1.7],
+    ["custom_mpkswwk2_2xw0", "people", "C-29", 1.8],
+    ["custom_mpksx2ed_ukvs", "people", "C-28", 1.8],
+    ["custom_mpksxa4l_op6n", "people", "C-27", 1.8],
+    ["custom_mpksxe2i_f85l", "people", "C-26", 1.7],
+    ["custom_mpksxp70_o33t", "people", "C-25", 0.6],
+    ["custom_mpksxuwu_r6fa", "people", "C-24", 0.6],
+    ["custom_mpksy9s7_onzo", "people", "C-23", 1.2],
+    ["custom_mpksygcx_qrso", "people", "C-22", 1.1],
+    ["custom_mpksynw2_mot9", "people", "C-21", 1.2],
+    ["custom_mpksytj0_1bol", "people", "C-20", 1.2],
+    ["custom_mpksz0fw_6t68", "people", "C-19", 1.2],
+    ["custom_mpkszaq0_raad", "people", "C-18", 1.7],
+    ["custom_mpkszffo_oyga", "people", "C-17", 1.7],
+    ["custom_mpkszpgk_urhp", "people", "C-16", 1.8],
+    ["custom_mpkszwu9_5q5c", "people", "C-15", 1.7],
+    ["custom_mpkt03n0_s99n", "people", "C-14", 1.7],
+    ["custom_mpkt0cby_j6cp", "people", "C-13", 1.8],
+    ["custom_mpkt0hp7_k0p2", "people", "C-12", 1.7],
+    ["custom_mpkt0ofe_9rn6", "people", "C-11", 1.8],
+    ["custom_mpkt0ylt_ctjq", "people", "C-10", 1.8],
+    ["custom_mpkt14o0_4und", "people", "C-9", 1.8],
+    ["custom_mpkt1ans_bs4h", "people", "C-8", 1.7],
+    ["custom_mpkt1lt7_6nsz", "people", "C-7", 1.8],
+    ["custom_mpkt1r59_ee9c", "people", "C-6", 1.8],
+    ["custom_mpkt1ur4_153l", "people", "C-5", 1.7],
+    ["custom_mpkt22ax_kotm", "people", "C-4", 1.8],
+    ["custom_mpkt2atu_ksre", "people", "C-3", 1.8],
+    ["custom_mpkt2i7l_as5f", "people", "C-2", 1.8],
+    ["custom_mpkt2qwk_sdv4", "people", "C-1", 1.7],
+    ["custom_mpkt32yb_f63w", "people", "B-29", 1.2],
+    ["custom_mpkt3d3t_bpnk", "people", "B-28", 1.5],
+    ["custom_mpkt3ji5_atq1", "people", "B-27", 1.8],
+    ["custom_mpkt3q20_n7er", "people", "B-26", 1.8],
+    ["custom_mpkt3w3o_g6qq", "people", "B-25", 1.7],
+    ["custom_mpkt43ns_ramx", "people", "B-24", 1.5],
+    ["custom_mpkt49dr_kuuy", "people", "B-23", 1.4],
+    ["custom_mpkt4mzj_ie43", "people", "B-22", 1.6],
+    ["custom_mpkt4tif_vfws", "people", "B-21", 1.8],
+    ["custom_mpkt50ar_qnkt", "people", "B-20", 1.7],
+    ["custom_mpkt551e_75kz", "people", "B-19", 1.7],
+    ["custom_mpkt5g1z_dsbs", "people", "B-18", 1.5],
+    ["custom_mpkt5m6p_76pu", "people", "B-17", 1.5],
+    ["custom_mpkt5tum_8w9j", "people", "B-16", 1.8],
+    ["custom_mpkt6084_rxpw", "people", "B-15", 1.8],
+    ["custom_mpkt64ej_j9mf", "people", "B-14", 1.7],
+    ["custom_mpkt6ajd_ujm0", "people", "B-13", 1.7],
+    ["custom_mpkt6hkk_ie1f", "people", "B-12", 1.7],
+    ["custom_mpkt6y22_2np9", "people", "B-11", 1.6],
+    ["custom_mpkt7860_f9jg", "people", "B-10", 1.65],
+    ["custom_mpkt7e80_z6zn", "people", "B-9", 1.6],
+    ["custom_mpkt7jzw_znvd", "people", "B-8", 1.45],
+    ["custom_mpkt7p2r_cbx1", "people", "B-7", 1.7],
+    ["custom_mpkt7v4d_g7bh", "people", "B-6", 1.6],
+    ["custom_mpkt7ydq_qoqz", "people", "B-5", 1.7],
+    ["custom_mpkt81br_8qii", "people", "B-4", 1.7],
+    ["custom_mpkt8488_s1ia", "people", "B-3", 1.7],
+    ["custom_mpkt8ce4_m433", "people", "B-2", 1.7],
+    ["custom_mpkt8f90_13fk", "people", "B-1", 1.7],
+  ].map(([id, cat, label, height]) => ({
+    id, cat, label, height,
+    svgUrl: 'ad/entourage_' + (cat === 'plants' ? 'plants' : 'people')
+            + '/' + label + '.svg',
+  }));
+
   const ITEMS = PEOPLE_IDS.map((id, i) => ({
     id, cat: 'people',
     label: 'A-' + (i + 1),
     height: 1.70,
     svgUrl: 'ad/entourage_people/A-' + (i + 1) + '.svg',
-  })).concat([
-    /* Default plants, furniture and vehicles were removed —
-       upload your own via the panel's "Upload" button. The uploaded
-       items become permanent (built-in) and can't be deleted by
-       accident, matching the look of your own illustrations. */
-  ]);
+  })).concat(EXTRA);
 
   // ----- Custom items (persisted) ---------------------------------------
   function _loadCustom() {
@@ -60,8 +182,10 @@
     ITEMS,
     CUSTOM,
     byCategory(cat) {
+      // Dedupe: if an item was promoted to a built-in (same id now in
+      // ITEMS), don't also show the leftover localStorage copy.
       return ITEMS.filter(i => i.cat === cat)
-        .concat(CUSTOM.filter(i => i.cat === cat));
+        .concat(CUSTOM.filter(i => i.cat === cat && !ITEMS.some(b => b.id === i.id)));
     },
     byId(id) {
       return ITEMS.find(i => i.id === id) || CUSTOM.find(i => i.id === id) || null;

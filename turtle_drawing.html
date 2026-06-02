@@ -1583,8 +1583,16 @@ const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 5000);
 camera.position.set(10, 8, 10);
 camera.up.set(0, 1, 0);
 
-const renderer = new THREE.WebGLRenderer({ canvas: CAN, antialias: true, alpha: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(window.devicePixelRatio);
+// preserveDrawingBuffer:false lets the GPU discard the framebuffer after
+// compositing (faster, less memory bandwidth — matters with the continuous
+// render loop). Safe here: PNG/print export renders to an OFFSCREEN target and
+// reads it via readRenderTargetPixels (ad/export.js), and no code captures the
+// main canvas (CAN) via toDataURL/toBlob — so nothing reads this buffer late.
+const renderer = new THREE.WebGLRenderer({ canvas: CAN, antialias: true, alpha: true, preserveDrawingBuffer: false });
+// Cap device-pixel-ratio at 2. On a Retina laptop dpr is already 2 (no-op),
+// but external 4K/5K or scaled displays report 2.5–3, which renders 6–9× the
+// pixels of a 1× buffer for no visible gain. 2 keeps text/edges crisp.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.localClippingEnabled = true;
 renderer.setClearColor(0x000000, 0);
 // Shadow mapping
@@ -1629,8 +1637,12 @@ scene.add(ambientLight);
 const sun = new THREE.DirectionalLight(0xffffff, 0.75);
 sun.position.set(5, 10, 7);
 sun.castShadow = true;
-sun.shadow.mapSize.width = 8192;
-sun.shadow.mapSize.height = 8192;
+// Init to the 'med' preset (2048²) to match ShadowSettings.shadowQuality's
+// default. The old 8192² init allocated a ~268 MB depth texture the instant
+// shadows were enabled, before the quality dropdown ever ran. Users can still
+// pick high (4096) / ultra (8192) from the shadow panel.
+sun.shadow.mapSize.width = 2048;
+sun.shadow.mapSize.height = 2048;
 sun.shadow.bias = -0.00005;
 sun.shadow.normalBias = 0.02;
 // Shadow camera frustum — will be updated dynamically
@@ -3406,7 +3418,10 @@ class OrbitController {
     this.camera = camera; this.dom = domElement;
     this.target = new THREE.Vector3(0, 0, 0);
     this.spherical = new THREE.Spherical();
-    this.minDistance = 0.5; this.maxDistance = 1000;
+    // min > camera.near (0.1) so we don't clip into the near plane when
+    // zoomed in close. Lowered from 0.5 — with zoom-to-cursor the target
+    // tracks the surface, so 0.15 lets you get right up to fine detail.
+    this.minDistance = 0.15; this.maxDistance = 1000;
     this.enabled = true;
     this._fromCamera();
     this.state = 'none';
@@ -3466,9 +3481,68 @@ class OrbitController {
   onWheel(e) {
     if (!this.enabled) return;
     e.preventDefault();
+    // Zoom factor: <1 zooms in (camera-to-target distance shrinks), >1 out.
     const factor = Math.pow(0.95, -e.deltaY * 0.01);
-    this.spherical.radius = Math.max(this.minDistance,
-      Math.min(this.maxDistance, this.spherical.radius * factor));
+
+    // 2-point perspective builds a custom asymmetric frustum keyed off
+    // target.y, so translating the target toward a cursor point would shift
+    // the frame vertically mid-zoom. Keep plain zoom-toward-target there.
+    if (_twoPtPerspective) {
+      this.spherical.radius = Math.max(this.minDistance,
+        Math.min(this.maxDistance, this.spherical.radius * factor));
+      return;
+    }
+
+    // Zoom toward the cursor (SketchUp-style). Find the world point P under
+    // the cursor, then scale BOTH the camera offset and the (target→P) vector
+    // about P by the zoom ratio. The camera then moves along the cursor's own
+    // view ray (camera and P stay colinear) with its orientation unchanged, so
+    // the point under the cursor stays fixed on screen.
+    const P = this._zoomFocus(e);
+    const oldR = this.spherical.radius;
+    const newR = Math.max(this.minDistance,
+      Math.min(this.maxDistance, oldR * factor));
+    const f = oldR > 1e-6 ? newR / oldR : 1;   // real ratio after clamping
+    // target' = P + (target - P) * f  (camera position recomputed in update())
+    const offToTarget = new THREE.Vector3().subVectors(this.target, P);
+    this.target.copy(P).addScaledVector(offToTarget, f);
+    this.spherical.radius = newR;
+  }
+  // World point under the cursor for zoom-to-cursor: prefer real geometry,
+  // else a plane through the current target facing the camera. Cached for a
+  // brief window so a rapid trackpad wheel burst at one spot doesn't raycast
+  // every tick (which would re-introduce the very lag we're removing).
+  _zoomFocus(e) {
+    const now = performance.now();
+    if (this._fpPt &&
+        Math.abs(e.clientX - this._fpX) < 4 &&
+        Math.abs(e.clientY - this._fpY) < 4 &&
+        (now - this._fpT) < 140) {
+      return this._fpPt;
+    }
+    let pt = null;
+    try {
+      const hits = raycastObjects(e, { frontFaceOnly: true });
+      if (hits && hits.length) pt = hits[0].point.clone();
+    } catch (_) {}
+    if (!pt) {
+      ndc(e);
+      raycaster.setFromCamera(pointer, camera);
+      const camDir = new THREE.Vector3();
+      camera.getWorldDirection(camDir);
+      const denom = raycaster.ray.direction.dot(camDir);
+      if (Math.abs(denom) > 1e-6) {
+        const t = new THREE.Vector3()
+          .subVectors(this.target, raycaster.ray.origin).dot(camDir) / denom;
+        if (isFinite(t) && t > 0) {
+          pt = raycaster.ray.origin.clone()
+            .addScaledVector(raycaster.ray.direction, t);
+        }
+      }
+    }
+    if (!pt) pt = this.target.clone();
+    this._fpPt = pt; this._fpX = e.clientX; this._fpY = e.clientY; this._fpT = now;
+    return pt;
   }
   update() {
     const offset = new THREE.Vector3().setFromSpherical(this.spherical);
@@ -4888,7 +4962,14 @@ class EditableMesh {
     // (that's how slant neighbours arose), so we must remove it even
     // though no perpendicular neighbour was notched. Skipping removal
     // would leave the old bottom layered on top of the new side walls.
-    const isFreeStanding = !isContained && !pullMode && notchedFaces.size === 0;
+    // A face that ate through one or more walls (eatenFaces) is, by definition,
+    // bound into an existing solid — the push traversed real geometry. Such a
+    // face must NOT be treated as free-standing even when nothing was notched:
+    // otherwise its original position is kept as a coplanar leftover (the
+    // "pushed half remains on the front" bug for zigzag/polyline splits, whose
+    // only perpendicular neighbour gets eaten rather than notched).
+    const isFreeStanding = !isContained && !pullMode &&
+                           notchedFaces.size === 0 && eatenFaces.size === 0;
     if (!isFreeStanding) {
       this.removeFace(face);
     } else if (d > 0) {
@@ -7520,6 +7601,10 @@ function splitFaceByPolyline(em, face, polyline) {
   const P1 = polyline[0], P2 = polyline[polyline.length - 1];
   const locA = findLocationOnFace(P1, face, em);
   if (locA.type === 'outside' || locA.type === 'interior') return null;
+  // ATOMIC: classify BOTH endpoints before any mutation so an invalid endpoint
+  // can never leave the face half-split (a stray inserted vertex) on return.
+  const locB0 = findLocationOnFace(P2, face, em);
+  if (locB0.type === 'outside' || locB0.type === 'interior') return null;
   let idx1;
   if (locA.type === 'vertex') idx1 = face.verts[locA.index];
   else                        idx1 = splitEdgeInFace(em, face, locA.index, P1);
@@ -7568,6 +7653,112 @@ function splitFaceByPolyline(em, face, polyline) {
   if (f1.normal.dot(origNormal) < 0) { f1.verts.reverse(); em.computeFaceNormal(f1); }
   if (f2.normal.dot(origNormal) < 0) { f2.verts.reverse(); em.computeFaceNormal(f2); }
   return [f1, f2];
+}
+
+/* Split faces along POLYLINE chains of standalone edges that lie on them.
+ *
+ * The per-segment unified split (in Tools.line._commitEdge) only fires when a
+ * single straight segment connects two boundary points of a face. When the
+ * user draws a multi-segment path ACROSS a face — boundary → interior →
+ * … → boundary — each segment dead-ends in the interior, so none of them
+ * trigger a split and the path is left as dangling edges. This pass closes
+ * that gap: for each face it gathers the standalone edges that lie on the
+ * face, reconstructs a path connecting two boundary points through interior
+ * vertices, and splits the face along that whole polyline (consuming the
+ * edges, which become the shared seam between the two new sub-faces).
+ *
+ * Returns true if any face was split. Safe to call after every line commit:
+ * a no-op (returns false fast) when there are no on-face standalone edges. */
+function splitFacesByOnFaceChains(em, EPS = 0.006) {
+  if (!em.edges || !em.edges.length) return false;
+  let anySplit = false;
+  let safety = 60;
+  let again = true;
+  while (again && safety-- > 0) {
+    again = false;
+    for (let fi = 0; fi < em.faces.length && !again; fi++) {
+      const f = em.faces[fi];
+      if (!f.normal || !f.verts || f.verts.length < 3) continue;
+      if (f.holes && f.holes.length) continue;        // skip holed faces for safety
+      const v0 = em.vertices[f.verts[0]];
+      const n = f.normal;
+      // Project a point onto f's exact plane so tiny snap drift doesn't make
+      // a genuinely-on-face vertex read as 'outside'.
+      const onPlane = (P) => { const d = P.clone().sub(v0).dot(n); return P.clone().addScaledVector(n, -d); };
+      // Gather standalone edges lying on/in this face; build a vertex adjacency.
+      const adj = new Map();
+      let edgeCount = 0;
+      for (const ed of em.edges) {
+        const RA = em.vertices[ed.a], RB = em.vertices[ed.b];
+        // GUARD: only consider this edge "on face f" if BOTH endpoints are
+        // genuinely near f's plane. Without this, an edge on one face whose
+        // endpoint is shared with an adjacent face gets projected onto that
+        // adjacent face's plane and can read as a bogus boundary split.
+        const dA = Math.abs(RA.clone().sub(v0).dot(n));
+        const dB = Math.abs(RB.clone().sub(v0).dot(n));
+        if (dA > 0.02 || dB > 0.02) continue;
+        const A = onPlane(RA), B = onPlane(RB);
+        const la = findLocationOnFace(A, f, em, EPS);
+        const lb = findLocationOnFace(B, f, em, EPS);
+        if (la.type === 'outside' || lb.type === 'outside') continue;
+        const mid = A.clone().add(B).multiplyScalar(0.5);
+        if (findLocationOnFace(mid, f, em, EPS).type === 'outside') continue;
+        // Ignore edges that are already a boundary edge of f.
+        if (la.type === 'vertex' && lb.type === 'vertex') {
+          const N = f.verts.length, pa = la.index, pb = lb.index;
+          if (f.verts[(pa + 1) % N] === f.verts[pb] || f.verts[(pa - 1 + N) % N] === f.verts[pb]) continue;
+        }
+        if (!adj.has(ed.a)) adj.set(ed.a, []);
+        if (!adj.has(ed.b)) adj.set(ed.b, []);
+        adj.get(ed.a).push(ed.b);
+        adj.get(ed.b).push(ed.a);
+        edgeCount++;
+      }
+      if (edgeCount === 0 || adj.size < 2) continue;
+      const locType = new Map();
+      for (const v of adj.keys()) locType.set(v, findLocationOnFace(onPlane(em.vertices[v]), f, em, EPS).type);
+      const isBoundary = (v) => locType.get(v) === 'vertex' || locType.get(v) === 'edge';
+      const boundaryVs = [...adj.keys()].filter(isBoundary);
+      if (boundaryVs.length < 2) continue;
+      // BFS from each boundary vertex to ANOTHER boundary vertex, traversing
+      // only through interior vertices (a boundary vertex can only be an
+      // endpoint of the chain, never an intermediate).
+      let path = null;
+      for (const start of boundaryVs) {
+        const prev = new Map([[start, -1]]);
+        const q = [start];
+        while (q.length) {
+          const cur = q.shift();
+          if (cur !== start && isBoundary(cur)) {
+            const p = []; let nn = cur;
+            while (nn !== -1) { p.push(nn); nn = prev.get(nn); }
+            p.reverse();
+            if (p.length >= 2 && p.slice(1, -1).every(v => locType.get(v) === 'interior')) { path = p; }
+            continue;                                   // don't expand past a boundary vertex
+          }
+          for (const nb of adj.get(cur)) if (!prev.has(nb)) { prev.set(nb, cur); q.push(nb); }
+        }
+        if (path) break;
+      }
+      if (!path) continue;
+      const pts = path.map(v => onPlane(em.vertices[v]));
+      let res = null;
+      try { res = splitFaceByPolyline(em, f, pts); } catch (_) { res = null; }
+      if (res) {
+        anySplit = true; again = true;
+        // Consume the standalone edges along the path — they're now the seam
+        // between the two new faces (matching single-segment split cleanup).
+        for (let k = 0; k < path.length - 1; k++) {
+          const a = path[k], b = path[k + 1];
+          for (let ei = em.edges.length - 1; ei >= 0; ei--) {
+            const ed = em.edges[ei];
+            if ((ed.a === a && ed.b === b) || (ed.a === b && ed.b === a)) { em.edges.splice(ei, 1); break; }
+          }
+        }
+      }
+    }
+  }
+  return anySplit;
 }
 
 /* Split a face into two sub-faces by a line segment P1..P2. Both endpoints
@@ -8508,9 +8699,30 @@ function mergeFacesAcrossEdge(em, fa, fb, vA, vB, iaHint, ibHint) {
   return merged;
 }
 
+/* True when a split between the two boundary locations would yield two
+   non-degenerate sub-faces (each with >=1 distinct boundary vertex between the
+   cut endpoints on either side). Guards against degenerate cuts that, after a
+   mutating splitEdgeInFace, would bail at polyA.length<3 and leave the face
+   corrupted with an accumulated stray vertex. */
+function _faceSplitNonDegenerate(face, locA, locB) {
+  const N = face.verts.length;
+  const bp = (loc) => loc.type === 'vertex' ? loc.index : (loc.index + (loc.t != null ? loc.t : 0.5));
+  const a = bp(locA), b = bp(locB);
+  if (Math.abs(a - b) < 1e-6) return false;
+  const between = (s, e) => { let c = 0; for (let k = Math.floor(s) + 1; k < e; k++) if (k > s + 1e-9 && k < e - 1e-9) c++; return c; };
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  return between(lo, hi) >= 1 && between(hi, lo + N) >= 1;
+}
+
 function splitFaceByLine(em, face, P1, P2) {
   const locA = findLocationOnFace(P1, face, em);
   if (locA.type === 'outside' || locA.type === 'interior') return null;
+  // ATOMIC: classify BOTH endpoints and validate non-degeneracy BEFORE any
+  // mutation. splitEdgeInFace mutates face.verts (and propagates to adjacent
+  // faces); if we mutated first and then bailed, the face would be corrupted.
+  const locB0 = findLocationOnFace(P2, face, em);
+  if (locB0.type === 'outside' || locB0.type === 'interior') return null;
+  if (!_faceSplitNonDegenerate(face, locA, locB0)) return null;
   // Insert P1 first
   let idx1;
   if (locA.type === 'vertex') idx1 = face.verts[locA.index];
@@ -9099,6 +9311,10 @@ function snapRadius() {
     Each: { point: Vector3, type: string, active: bool }. */
 let snapCandidates = [];
 let currentSnap = null;
+// The pointer event the most recent computeSnap() ran for. Lets
+// updateSnapTooltip() reuse a snap the active tool already computed for the
+// SAME event instead of running a second full-scene snap every frame.
+let _lastSnapEvt = null;
 
 /* Screen-space pixel thresholds for snap selection. These are constant in
    pixel space which means snapping feels consistent regardless of zoom. */
@@ -9146,6 +9362,7 @@ const _AXIS_DEFS = [
    Scans ALL visible objects (face vertices + standalone edge endpoints), so
    snapping to previously-drawn freestanding lines works correctly. */
 function computeSnap(e, opts = {}) {
+  _lastSnapEvt = e;
   ndc(e);
   raycaster.setFromCamera(pointer, camera);
   snapCandidates = [];
@@ -9176,13 +9393,16 @@ function computeSnap(e, opts = {}) {
   let _snapTotalFaces = 0;
   for (const oCount of Model.objects) {
     if (oCount && oCount.em && oCount.em.faces) _snapTotalFaces += oCount.em.faces.length;
-    if (_snapTotalFaces > 500) break;
+    if (_snapTotalFaces > 2500) break;   // early-out once we know _snapHeavy will trip
   }
-  // Lowered the threshold — occlusion raycasts on every snap candidate
-  // were the main source of view-angle-dependent lag even on light
-  // scenes (each angle exposed a different cluster of candidates).
-  // Front-face pre-filter already culls back-of-mesh verts.
-  const _snapHeavy = _snapTotalFaces > 500;
+  // Occlusion raycasts (hidden-point rejection) used to be disabled above 500
+  // faces, which is most real architectural scenes — so the cursor would
+  // happily snap to corners BEHIND a wall. Now that S1 only spends the
+  // occlusion budget on candidates already INSIDE the snap radius (a tiny
+  // handful per frame, not every vertex), the per-frame cost no longer scales
+  // with scene size, so we can keep occlusion on for mid-size models and raise
+  // the cutoff to 2500. Front-face pre-filter still culls back-of-mesh verts.
+  const _snapHeavy = _snapTotalFaces > 2500;
 
   // Snap-source object set. Background underlay (imported DXF) is excluded from
   // every snap scanner — endpoints, midpoints, edges, extensions, parallels,
@@ -9194,9 +9414,17 @@ function computeSnap(e, opts = {}) {
   // Editing tools (e.g. Move) can exclude the objects currently being dragged
   // so we don't waste time scanning a huge moving DXF underlay every mousemove.
   const _snapExclude = opts.excludeObjs || null;
+  // While a group is being edited, scope snapping to that group's own members,
+  // exactly like raycastObjects()/edge-picking already do. Without this, every
+  // mousemove scans the WHOLE model's vertices/edges/faces (endpoint, midpoint,
+  // intersection, parallel/perpendicular inference) even though only the active
+  // group is editable — which makes snapping inside a complex grouped model
+  // crawl. Press Esc to leave the group and snap against the rest again.
+  const _snapEditing = Model.activeGroupId != null;
   const _snapObjects = Model.objects.filter(o =>
     o.group.visible && !o.locked && (_snapUnderlayOK || !o.isUnderlay) &&
-    !(_snapExclude && _snapExclude.has(o))
+    !(_snapExclude && _snapExclude.has(o)) &&
+    (!_snapEditing || o.groupId === Model.activeGroupId)
   );
 
   // Screen-space proximity filter: many inference/extension scans should skip
@@ -9226,7 +9454,8 @@ function computeSnap(e, opts = {}) {
   const _occRayMain = new THREE.Raycaster();
   _occRayMain.params.Line = { threshold: 0 };
   const _occMeshesAll = Model.objects
-    .filter(o => o.group.visible && !o.locked)
+    .filter(o => o.group.visible && !o.locked &&
+                 (!_snapEditing || o.groupId === Model.activeGroupId))
     .map(o => o.mesh);
   const _camPosMain = camera.position;
   const _occDir = new THREE.Vector3();
@@ -9402,10 +9631,25 @@ function computeSnap(e, opts = {}) {
       seenEdgeKey.add(key);
       edgesToScan.push([a, b]);
     };
-    for (const fi of frontFaces) {
+    // Include edges from ALL faces (not only front-facing) plus their hole
+    // loops, so a back-facing face whose edge is nonetheless VISIBLE — e.g. an
+    // inner wall seen through a drilled-through hole — still contributes a
+    // midpoint candidate. Visibility is enforced per-point by the occlusion
+    // test in the scan loop below (selfOcc / _isOccludedEarly), which reliably
+    // culls genuinely-hidden midpoints. The previous front-faces-only set
+    // dropped inner hole-wall edges entirely, so their midpoints could never
+    // snap. On-Edge keeps its own _edgeVisibleOnObj gate, so this widening
+    // affects midpoints, not back-edge on-edge snapping. On heavy meshes stay
+    // front-only to preserve the scan-budget perf characteristic.
+    const _scanAllFaces = !_snapHeavy;
+    for (let fi = 0; fi < obj.em.faces.length; fi++) {
+      if (!_scanAllFaces && !frontFaces.has(fi)) continue;
       const f = obj.em.faces[fi];
       for (let i = 0; i < f.verts.length; i++) {
         addEdge(f.verts[i], f.verts[(i + 1) % f.verts.length]);
+      }
+      if (f.holes) for (const h of f.holes) {
+        for (let i = 0; i < h.length; i++) addEdge(h[i], h[(i + 1) % h.length]);
       }
     }
     for (const ed of obj.em.edges) addEdge(ed.a, ed.b);
@@ -9416,7 +9660,6 @@ function computeSnap(e, opts = {}) {
     // cursor (the cause of view-angle-dependent stutter).
     let _endpointBudget = _ulLight ? 6000 : 1200;
     for (const vi of vertIdxSet) {
-      if (--_endpointBudget < 0) break;
       const v = obj.em.vertices[vi];
       const sp = worldToScreen(v);
       if (sp.z > 1) continue;                // behind the camera
@@ -9425,6 +9668,12 @@ function computeSnap(e, opts = {}) {
       // Tighter radius in endpointOnly mode (fewer candidates → faster).
       const radMul = 1.0;   // exact: snap only when cursor is within radius
       if (d < SNAP_PX_END * radMul) {
+        // Budget caps the EXPENSIVE near-candidate work below (occlusion
+        // raycasts) — NOT raw vertex count. The cheap projection above runs
+        // for every vert, so a dense mesh can no longer drop the nearest
+        // corner just because it sorts late in the iteration order. Only
+        // in-radius candidates spend budget.
+        if (--_endpointBudget < 0) break;
         // Occlusion checks via raycasts are the worst offender on heavy
         // scenes — skip them past the cap and rely on the front-face
         // pre-filter that already excluded back-of-mesh verts.
@@ -9516,8 +9765,14 @@ function computeSnap(e, opts = {}) {
                   -((sA.y + dy * t) / cr.height) * 2 + 1
                 );
                 _r.setFromCamera(ndc2, camera);
-                const meshes2 = Model.objects.filter(o => o.group.visible && !o.locked).map(o => o.mesh);
-                const occH = _r.intersectObjects(meshes2, false);
+                // Reuse the occluder set built once above — do NOT rebuild the
+                // full-model list here. The old rebuild (a) ran a whole
+                // Model.objects filter+map for every near-cursor edge each frame
+                // (GC churn), and (b) while editing a group it let the dimmed
+                // SURROUNDING geometry occlude the group's OWN edges, so On-Edge
+                // snap failed inside groups. _occMeshesAll already drops
+                // non-members during group edit, matching raycast/pick scoping.
+                const occH = _r.intersectObjects(_occMeshesAll, false);
                 if (occH.length) {
                   const wDist = camera.position.distanceTo(worldPt);
                   const tol = Math.max(0.02, wDist * 0.03);
@@ -12626,8 +12881,17 @@ Tools.move = {
     // dragged would otherwise be re-scanned O(N) every mousemove (the lag the
     // user hit). Normal objects stay snap-scanned, so their behavior is intact.
     const _moveSet = this.copyMode ? this.copyObjs : this.objs;
-    const _exclUnderlay = (_moveSet || []).filter(o => o && o.isUnderlay);
-    let snap = computeSnap(e, _exclUnderlay.length ? { excludeObjs: new Set(_exclUnderlay) } : {});
+    // Exclude every WHOLE-object move target from snap scanning. Two reasons:
+    //   1) You never want to snap the thing you're dragging onto its own
+    //      (now-moving) points — that's self-snapping and feels broken.
+    //   2) Re-scanning a heavy mesh's verts/edges every mousemove is the main
+    //      drag-lag source (was previously fixed for underlay only).
+    // Partial edits (a selected face/edge → vertex mask) are NOT excluded, so
+    // the moving sub-geometry can still snap to the object's stationary parts.
+    const _exclMove = (_moveSet || []).filter(o =>
+      o && (o.isUnderlay || !this.origMaskByObj || !this.origMaskByObj.get(o))
+    );
+    let snap = computeSnap(e, _exclMove.length ? { excludeObjs: new Set(_exclMove) } : {});
     let snapPoint = snap ? snap.point : null;
     if (!snapPoint) {
       ndc(e);
@@ -12671,25 +12935,44 @@ Tools.move = {
     // rebuild) inside _applyMoveDelta — that's what keeps heavy DXF drags smooth.
     this._applyMoveDelta(delta);
 
-    // Draw a guide line from origin to destination
+    // Draw a guide line from origin to destination. The line + origin dot are
+    // persistent objects reused every frame: this handler fires ~once per frame
+    // during a drag, and recreating a BufferGeometry + LineDashedMaterial +
+    // SphereGeometry + MeshBasicMaterial each time churned the GC and leaked GPU
+    // buffers (helperRoot.clear() only detaches children — it never disposes).
+    // We update positions/colors in place and just re-attach after the clear().
     helperRoot.clear();
     if (delta.lengthSq() > 1e-8) {
+      if (!this._guideLine) {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position',     new THREE.BufferAttribute(new Float32Array(6), 3));
+        g.setAttribute('lineDistance', new THREE.BufferAttribute(new Float32Array(2), 1));
+        this._guideLine = new THREE.Line(g, new THREE.LineDashedMaterial({ dashSize: 0.3, gapSize: 0.15 }));
+        this._guideDot  = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), new THREE.MeshBasicMaterial());
+        // Positions are rewritten every frame, so the cached bounding sphere
+        // would go stale and frustum-cull the line at the wrong moments.
+        this._guideLine.frustumCulled = false;
+        this._guideDot.frustumCulled  = false;
+      }
       const dest = this.origin.clone().add(delta);
       const axColor = activeAxis === 'x' ? 0xff0000
                     : activeAxis === 'y' ? 0x00cc00
                     : activeAxis === 'z' ? 0x0000ff
                     : 0xff8800;
-      const guideGeo = new THREE.BufferGeometry().setFromPoints([this.origin, dest]);
-      const guideMat = new THREE.LineDashedMaterial({ color: axColor, dashSize: 0.3, gapSize: 0.15 });
-      const guideLine = new THREE.Line(guideGeo, guideMat);
-      guideLine.computeLineDistances();
-      helperRoot.add(guideLine);
-      // Small sphere at origin
-      const dotGeo = new THREE.SphereGeometry(0.06, 8, 8);
-      const dotMat = new THREE.MeshBasicMaterial({ color: axColor });
-      const dot = new THREE.Mesh(dotGeo, dotMat);
-      dot.position.copy(this.origin);
-      helperRoot.add(dot);
+      const pos = this._guideLine.geometry.attributes.position;
+      pos.setXYZ(0, this.origin.x, this.origin.y, this.origin.z);
+      pos.setXYZ(1, dest.x, dest.y, dest.z);
+      pos.needsUpdate = true;
+      // Dashed material needs a lineDistance attribute; for a 2-point segment
+      // it's simply [0, segmentLength] — cheaper than computeLineDistances(),
+      // which reallocates the attribute on every call.
+      const ld = this._guideLine.geometry.attributes.lineDistance;
+      ld.setX(0, 0); ld.setX(1, delta.length()); ld.needsUpdate = true;
+      this._guideLine.material.color.setHex(axColor);
+      this._guideDot.material.color.setHex(axColor);
+      this._guideDot.position.copy(this.origin);
+      helperRoot.add(this._guideLine);
+      helperRoot.add(this._guideDot);
     }
     const copyTag = this.copyMode ? ' [COPY]' : '';
     const axisTag = this.axisLock   ? ` [locked ${this.axisLock.toUpperCase()}]`
@@ -16108,25 +16391,6 @@ Tools.line = {
           candidates.push({ obj, face: f, a: cA, b: cB });
         }
       }
-      console.log('[line.split] p1=', p1.toArray().map(x=>x.toFixed(3)), 'p2=', p2.toArray().map(x=>x.toFixed(3)), 'candidates=', candidates.length);
-      if (!candidates.length) {
-        for (const obj of Model.objects) {
-          if (!obj.em) continue;
-          for (let fi = 0; fi < obj.em.faces.length; fi++) {
-            const f = obj.em.faces[fi];
-            if (!f.normal || !f.verts.length) continue;
-            const p0 = obj.em.vertices[f.verts[0]];
-            const d1 = Math.abs(p1.clone().sub(p0).dot(f.normal));
-            const d2 = Math.abs(p2.clone().sub(p0).dot(f.normal));
-            if (d1 < 0.5 && d2 < 0.5) {
-              const l1 = findLocationOnFace(p1, f, obj.em);
-              const l2 = findLocationOnFace(p2, f, obj.em);
-              const cr = findFaceBoundaryCrossings(obj.em, f, p1, p2);
-              console.log('  face',fi,'d1=',d1.toFixed(4),'d2=',d2.toFixed(4),'l1=',JSON.stringify(l1),'l2=',JSON.stringify(l2),'crossings=',cr.length);
-            }
-          }
-        }
-      }
       if (candidates.length) {
         let anySplit = false;
         let firstObj = null;
@@ -16137,7 +16401,7 @@ Tools.line = {
               anySplit = true;
               if (!firstObj) firstObj = c.obj;
             }
-          } catch (e) { console.warn('face-split failed:', e); }
+          } catch (_) {}
         }
         if (anySplit) {
           for (const c of candidates) c.obj.rebuild();
@@ -16222,9 +16486,16 @@ Tools.line = {
       }
       cycle = findShortestCycle(target.em, ia, ib, excludeVerts);
     }
+    // Polyline face split: the per-segment unified split above only fires for a
+    // single boundary→boundary segment. When the user draws a multi-segment
+    // path across a face (boundary → interior → … → boundary), those segments
+    // were just added as dangling edges; split the face along the whole chain.
+    let chainSplit = false;
+    try { chainSplit = splitFacesByOnFaceChains(target.em); } catch (_) {}
     target.rebuild();
-    pushHistory(facedCreated ? 'Close loop → Face' : 'Draw Line');
-    if (facedCreated) setStatus('msg', 'Closed loop! Face created.');
+    pushHistory(chainSplit ? 'Split Face' : (facedCreated ? 'Close loop → Face' : 'Draw Line'));
+    if (chainSplit)        setStatus('msg', 'Face split.');
+    else if (facedCreated) setStatus('msg', 'Closed loop! Face created.');
     return { obj: target, ib };
   },
 
@@ -27306,9 +27577,19 @@ CAN.addEventListener('pointermove', e => {
     S.so.rebuild();
     return;
   }
-  if (ToolMgr.active && ToolMgr.active.onPointerMove) ToolMgr.active.onPointerMove(e);
-  updateSnapTooltip(e);
-  try { if (window.HoverTracker) HoverTracker.update(e); } catch (_) {}
+  // While orbiting/panning the camera (middle-drag, or the Orbit/Pan tools),
+  // the cursor is steering the VIEW — not pointing at geometry. Running the
+  // active tool's preview, snap (computeSnap) and hover raycasts on every move
+  // event makes them compete with the camera re-render, so orbit stutters on
+  // heavy scenes / inside complex groups. Suspend all three while navigating;
+  // the preview just freezes in place (correct — like SketchUp) and everything
+  // resumes on the next non-navigation move.
+  const _navigating = !!(controls && controls.state && controls.state !== 'none');
+  if (!_navigating) {
+    if (ToolMgr.active && ToolMgr.active.onPointerMove) ToolMgr.active.onPointerMove(e);
+    updateSnapTooltip(e);
+    try { if (window.HoverTracker) HoverTracker.update(e); } catch (_) {}
+  }
 });
 CAN.addEventListener('pointerup', e => {
   if (window.BimHandles && BimHandles.onPointerUp(e)) return;
@@ -27474,7 +27755,15 @@ function updateSnapTooltip(e) {
     return;
   }
   const isDim = tool.name === 'dim' || tool.name === 'dimAngle';
-  const snap = computeSnap(e, isDim ? { endpointOnly: true } : {});
+  // Reuse the snap the active tool just computed for THIS same event — its
+  // onPointerMove ran immediately before us in the pointer dispatch and set
+  // currentSnap. Recomputing here would run a second full-scene computeSnap
+  // every frame (the dominant per-frame cost during a drag). Fall back to
+  // computing only when the tool didn't snap this event (e.g. hovering with
+  // the Move tool while not dragging).
+  const snap = (_lastSnapEvt === e)
+    ? currentSnap
+    : computeSnap(e, isDim ? { endpointOnly: true } : {});
   if (snap) {
     const style = SNAP_STYLES[snap.type];
     const color = style ? style.color : '#888';
