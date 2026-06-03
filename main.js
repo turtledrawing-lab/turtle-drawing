@@ -197,7 +197,7 @@ function createWindow(pendingDocJson) {
   if (_IS_DEV) {
     try {
       win.webContents.on('console-message', (_e, _l, message) => {
-        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0)) {
+        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0)) {
           process.stdout.write('[RENDERER] ' + message + '\n');
         }
       });

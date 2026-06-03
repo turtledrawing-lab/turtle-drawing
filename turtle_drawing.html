@@ -22784,15 +22784,29 @@ function importOBJ(text, filename, mtlText, imageMap) {
   // Bucket by (source OBJ group, material) so SketchUp groups survive import:
   // each `g`/`o` block stays separate (and is reassembled into one editable
   // group below) instead of being merged across the whole file by material.
+  // Memory safety: per-(group,material) bucketing can produce thousands of
+  // small objects, which OOMs the renderer. Past a hard cap, drop grouping and
+  // merge by material (few objects, like the legacy importer).
+  const GROUP_HARD_CAP = 2500;
+  const _gk = new Set();
+  for (const g of groups) if (g.faces.length) _gk.add((g.realGroup || 0) + '|' + (g.mtlName || '_nomtl_'));
+  const preserveGroups = _gk.size <= GROUP_HARD_CAP;
+  if (!preserveGroups) console.log('[OBJ Import] ' + _gk.size + ' source groups exceed cap — merging by material (groups not preserved) to avoid OOM.');
   const byKey = new Map();
   for (const g of groups) {
     if (!g.faces.length) continue;
-    const key = (g.realGroup || 0) + '|' + (g.mtlName || '_nomtl_');
-    if (!byKey.has(key)) byKey.set(key, { name: g.name, faces: [], mtlName: g.mtlName, realGroup: g.realGroup || 0 });
+    const key = preserveGroups ? ((g.realGroup || 0) + '|' + (g.mtlName || '_nomtl_')) : (g.mtlName || '_nomtl_');
+    if (!byKey.has(key)) byKey.set(key, { name: g.name, faces: [], mtlName: g.mtlName, realGroup: preserveGroups ? (g.realGroup || 0) : 0 });
     const b = byKey.get(key);
     for (const f of g.faces) b.faces.push(f);
   }
   const buckets = Array.from(byKey.values());
+  // Many small objects, each building edge/feature-edge geometry + coplanar
+  // merge, is the real memory hog of a grouped import — build them lightweight
+  // (render geometry only) past a threshold so it doesn't OOM. (Only triggers
+  // on grouped many-object imports; normal few-bucket imports are unchanged.)
+  const LIGHTWEIGHT = buckets.length > 1200;
+  console.log('[OBJ Import] buckets=' + buckets.length + ' preserveGroups=' + preserveGroups + ' lightweight=' + LIGHTWEIGHT);
 
   const pendingObjs = [];
   const bbox = new THREE.Box3();
@@ -22840,11 +22854,13 @@ function importOBJ(text, filename, mtlText, imageMap) {
     // Merge coplanar adjacent faces back into single polygonal faces. Skip
     // for very large meshes to avoid freezing the import.
     const beforeCount = em.faces.length;
-    if (beforeCount > SKIP_MERGE_FACES) {
+    if (LIGHTWEIGHT || beforeCount > SKIP_MERGE_FACES) {
       em._smoothShade = true;
       const so = new SketchObject(em, bucket.name || 'OBJ', { skipEdges: true });
       so._skipEdges = true;
-      if (em.faces.length < 30000) {
+      // Feature edges only when the object count is modest — each adds a
+      // separate edge geometry, and thousands of them OOM the renderer.
+      if (buckets.length <= 1200 && em.faces.length < 30000) {
         so._featureEdges = true;
         so.rebuild();
       }
