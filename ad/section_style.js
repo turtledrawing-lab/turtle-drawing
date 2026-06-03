@@ -217,6 +217,9 @@
                 drawSolidFill(it.segs, sp.plane, sectionFillRoot, 0x1a1a1a);
               } else if (g.hatchId) {
                 drawHatchFill(it.segs, sp.plane, g.hatchId, sectionFillRoot);
+              } else {
+                // No layer hatch assigned → default mid-gray poché fill.
+                drawSolidFill(it.segs, sp.plane, sectionFillRoot, 0x808080);
               }
             }
           }

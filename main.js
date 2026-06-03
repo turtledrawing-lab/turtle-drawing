@@ -184,6 +184,11 @@ function createWindow(pendingDocJson) {
   // renamed to "Turtle Drawing", which makes isPackaged report true even in
   // dev. process.defaultApp is true only when launched as `electron .`.
   const _IS_DEV = !!process.defaultApp;
+  if (_IS_DEV) {
+    // Mark the dev window so it's never confused with the installed app.
+    win.setTitle('Turtle Drawing (dev)');
+    win.on('page-title-updated', (e) => { e.preventDefault(); }); // keep the (dev) suffix
+  }
   const _devSearch = _IS_DEV
     ? ('dev=1' + (process.env.TD_SELFTEST ? '&selftest=1' : '') + (process.env.TD_RECOVERYTEST ? '&recoverytest=1' : '') + (process.env.TD_CLEARRECOVERY ? '&clearrecovery=1' : '') + (process.env.TD_PERFTEST ? '&perftest=1' : ''))
     : '';
