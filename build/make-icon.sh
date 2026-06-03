@@ -5,6 +5,18 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 SRC="icon.svg"
+# Safety: icon.svg is not tracked in git. Running this without it used to
+# `rm icon.icns` and then fail (set -e), destroying the committed icon and
+# breaking the build. If the source SVG is absent, keep the existing icns
+# and no-op instead of regenerating.
+if [ ! -f "$SRC" ]; then
+  if [ -f icon.icns ]; then
+    echo "ℹ️  $SRC not found — keeping existing build/icon.icns (no regeneration)."
+    exit 0
+  fi
+  echo "❌ $SRC not found and no build/icon.icns present — cannot build icon." >&2
+  exit 1
+fi
 OUT_DIR="icon.iconset"
 rm -rf "$OUT_DIR" icon.icns
 mkdir -p "$OUT_DIR"

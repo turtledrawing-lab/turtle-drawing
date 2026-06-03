@@ -9,10 +9,12 @@
   "scripts": {
     "start": "electron .",
     "icon": "bash build/make-icon.sh",
-    "build": "npm run icon && electron-builder --mac",
-    "build:arm64": "npm run icon && electron-builder --mac --arm64",
-    "build:x64": "npm run icon && electron-builder --mac --x64",
-    "build:universal": "npm run icon && electron-builder --mac --universal"
+    "build": "npm run icon && electron-builder --mac -c.mac.notarize=false",
+    "build:arm64": "npm run icon && electron-builder --mac --arm64 -c.mac.notarize=false",
+    "build:x64": "npm run icon && electron-builder --mac --x64 -c.mac.notarize=false",
+    "build:universal": "npm run icon && electron-builder --mac --universal -c.mac.notarize=false",
+    "release": "bash build/release.sh",
+    "release:install": "bash build/release.sh --install"
   },
   "devDependencies": {
     "electron": "^31.0.0",

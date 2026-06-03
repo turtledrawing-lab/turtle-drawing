@@ -21615,10 +21615,15 @@ let currentFileName = null;
 /* Serialize the scene to a plain object for JSON encoding. Stores lengths in
    millimeters (matching the user-facing display unit) so the file is
    human-readable and self-describing. */
+/* Current .tt schema version. Bump only when the document shape changes such
+   that an older app can't safely read it. openTT() warns when a file's version
+   exceeds this, so beta files degrade gracefully across updates instead of
+   silently mis-loading. */
+const TT_VERSION = 2;
 function sceneToDoc() {
   return {
     format: 'turtle-drawing',
-    version: 2,
+    version: TT_VERSION,
     unit: 'mm',
     activeLayer: Model.activeLayerId,
     camera: {
@@ -22132,6 +22137,17 @@ function openTT(text, filename) {
   let doc;
   try { doc = JSON.parse(text); }
   catch (e) { showError('Invalid .tt file: ' + e.message); return; }
+  // Format / version guard (P2-6): fail friendly on a non-Turtle document, and
+  // on a file from a NEWER app warn before a best-effort load rather than
+  // silently mis-reading it. Older / unversioned files load as-is — the loader
+  // defaults any missing fields.
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) { showError('This does not look like a Turtle Drawing (.tt) document.'); return; }
+  if (doc.format && doc.format !== 'turtle-drawing') { showError('This is not a Turtle Drawing document (format: "' + doc.format + '").'); return; }
+  const fileVer = (typeof doc.version === 'number') ? doc.version : 1;
+  if (fileVer > TT_VERSION) {
+    const proceed = window.confirm('This file was created by a newer version of Turtle Drawing (file format v' + fileVer + '; this app supports v' + TT_VERSION + ').\n\nSome data may not load correctly. Open anyway?');
+    if (!proceed) { setStatus('msg', 'Open cancelled — file is from a newer version.'); return; }
+  }
   try { loadDocIntoScene(doc); }
   catch (e) { showError('Failed to load: ' + e.message); return; }
   currentFileName = (filename || 'drawing').replace(/\.tt$/i, '') + '.tt';
@@ -30708,6 +30724,19 @@ function _perfTest() {
     const cap = Math.max(8, Math.min(50, Math.floor(150 * 1024 * 1024 / (F * 250))));
     log('grid ' + N + 'x' + N + ': verts=' + Vn + ' faces=' + F + ' | em.clone()=' + cloneMs.toFixed(1) + 'ms | adaptive undo-depth=' + cap + ' | 50-deep heap ≈ ' + memStr);
   }
+  // addVertex weld scan is O(n²) — only bites when EDITING a large mesh (import
+  // builds vertices directly, so it's unaffected). Quantify the per-op cost.
+  try {
+    const em2 = new EditableMesh(); const M = 5000; const t = performance.now();
+    for (let k = 0; k < M; k++) em2.addVertex(new THREE.Vector3((k * 0.137) % 60, (k % 11) * 0.27, (k * 1.7) % 60));
+    log('addVertex x' + M + ' (welding) = ' + (performance.now() - t).toFixed(0) + 'ms  [O(n^2) weld scan — edit-time only]');
+  } catch (e) { log('addVertex test threw ' + (e && e.message)); }
+  // toBufferGeometry = the per-rebuild (per-edit) GPU upload cost for a big mesh.
+  try {
+    const em3 = mkGrid(150); const t = performance.now(); const REP = 3;
+    for (let r = 0; r < REP; r++) em3.toBufferGeometry();
+    log('toBufferGeometry(' + em3.faces.length + ' faces) avg = ' + ((performance.now() - t) / REP).toFixed(1) + 'ms');
+  } catch (e) { log('toBufferGeometry test threw ' + (e && e.message)); }
 }
 
 try {
