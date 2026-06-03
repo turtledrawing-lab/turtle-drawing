@@ -177,7 +177,27 @@ function createWindow(pendingDocJson) {
     },
   });
 
-  win.loadFile('turtle_drawing.html');
+  // Dev builds load with ?dev=1 to enable in-app diagnostics (mesh-health
+  // canary, geometry self-test). Never enabled in packaged/beta builds.
+  // Set TD_SELFTEST=1 to also auto-run the geometry self-test on launch.
+  // NOTE: app.isPackaged is unreliable here — the dev Electron binary is
+  // renamed to "Turtle Drawing", which makes isPackaged report true even in
+  // dev. process.defaultApp is true only when launched as `electron .`.
+  const _IS_DEV = !!process.defaultApp;
+  const _devSearch = _IS_DEV
+    ? ('dev=1' + (process.env.TD_SELFTEST ? '&selftest=1' : '') + (process.env.TD_RECOVERYTEST ? '&recoverytest=1' : '') + (process.env.TD_CLEARRECOVERY ? '&clearrecovery=1' : '') + (process.env.TD_PERFTEST ? '&perftest=1' : ''))
+    : '';
+  win.loadFile('turtle_drawing.html', _devSearch ? { search: _devSearch } : undefined);
+  // Dev-only: forward [selftest]/[health]/[recovery] diagnostic lines to stdout.
+  if (_IS_DEV) {
+    try {
+      win.webContents.on('console-message', (_e, _l, message) => {
+        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0)) {
+          process.stdout.write('[RENDERER] ' + message + '\n');
+        }
+      });
+    } catch (_) {}
+  }
   if (pendingDocJson) _pendingDocs.set(win.id, pendingDocJson);
 
   if (splash) {
@@ -583,12 +603,21 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 // shows a transient toast; if the user invokes again within 900ms (which
 // the OS does while ⌘Q is held), we actually quit — but first check for
 // unsaved changes and prompt to save.
+// Mark a CLEAN exit in every renderer so the crash-recovery check on the next
+// launch knows this shutdown was intentional. beforeunload covers the red-X /
+// menu-quit paths, but app.exit(0) below bypasses it, so set the flag here too.
+async function _markCleanExit() {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue;
+    try { await w.webContents.executeJavaScript("try{localStorage.setItem('turtle_clean_exit_v1','1')}catch(e){}", true); } catch (_) {}
+  }
+}
 let _quitArmedUntil = 0;
 async function holdToQuit() {
   const now = Date.now();
   if (now < _quitArmedUntil) {
     const ok = await confirmDiscardIfDirty();
-    if (ok) app.exit(0);
+    if (ok) { await _markCleanExit(); app.exit(0); }
     return;
   }
   _quitArmedUntil = now + 900;

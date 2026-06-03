@@ -4576,9 +4576,26 @@ class EditableMesh {
     // the healed front wall — that vertex sharing is enough to tear the
     // slant apart if any face moves that vertex.
     let pullMode = false;
-    // Frame faces (with holes): always force pullMode so outer walls are
-    // created freely instead of notching into the surrounding box walls.
-    if (hasHoles) pullMode = true;
+    // Frame faces (with holes) that are PART OF A SOLID must build outer walls
+    // freely (pullMode) instead of notching into the surrounding box walls.
+    // But a FREE-STANDING holed ring — no perpendicular neighbor on any outer
+    // edge — must NOT take pullMode: like a plain rectangle it keeps its
+    // original face as the opposite cap. Forcing pullMode there removed the
+    // original (leaving the ring open at the top) and flipped the bottom cap.
+    let hasPerpEdgeNeighbor = false;
+    {
+      const oe = new Set();
+      const fv = face.verts;
+      for (let k = 0; k < fv.length; k++) { const a = fv[k], b = fv[(k + 1) % fv.length]; oe.add(a < b ? a + '_' + b : b + '_' + a); }
+      for (const F of this.faces) {
+        if (F === face) continue;
+        if (Math.abs(F.normal.dot(face.normal)) > 0.01) continue; // perpendicular walls only
+        const Fv = F.verts;
+        for (let i = 0; i < Fv.length; i++) { const a = Fv[i], b = Fv[(i + 1) % Fv.length]; if (oe.has(a < b ? a + '_' + b : b + '_' + a)) { hasPerpEdgeNeighbor = true; break; } }
+        if (hasPerpEdgeNeighbor) break;
+      }
+    }
+    if (hasHoles && hasPerpEdgeNeighbor) pullMode = true;
     {
       const pushedVerts = new Set(face.verts);
       for (const F of this.faces) {
@@ -4996,35 +5013,35 @@ class EditableMesh {
       capFace.holes = newHoles.map(h => reverseCap ? h.slice().reverse() : h.slice());
     }
 
-    // Side walls only for edges that did NOT get notched into an adjacent face
-    // Compute the original face centroid for normal-direction validation.
-    const faceCentroid = new THREE.Vector3();
-    for (const vi of oldIdx) faceCentroid.add(this.vertices[vi]);
-    faceCentroid.multiplyScalar(1 / oldIdx.length);
+    // Side walls only for edges that did NOT get notched into an adjacent face.
     for (let k = 0; k < N; k++) {
       if (!wallNeeded[k]) continue;
       const i1 = oldIdx[k], i2 = oldIdx[(k + 1) % N];
       const i3 = newIdx[(k + 1) % N], i4 = newIdx[k];
       const wallVerts = (d >= 0) ? [i1, i2, i3, i4] : [i4, i3, i2, i1];
       const wf = this.addFace(wallVerts, face.color, face.layerId);
-      // Validate wall normal direction. For d<0 (indent) the wall should
-      // face INTO the cavity = toward the original face centroid. For d>0
-      // (protrusion) it should face AWAY from the face centroid (outward
-      // from the new prism). Flip if wrong.
+      // Orient the wall analytically. oldIdx is wound CCW w.r.t. the original
+      // face normal (Newell), and pushVec = originalNormal * d, so
+      //   edgeVec × pushVec
+      // points in the DESIRED wall-normal direction for BOTH push signs:
+      // outward (away from the prism interior) for d>0, into the cavity for
+      // d<0. This is immune to the vertex-density bias a centroid reference
+      // suffers when an arc clusters many verts at one corner — that bias was
+      // flipping (or, via the dead-zone, skipping) the curved-edge walls,
+      // leaving them back-faced: the blue "flipped cut face" on rounded
+      // extrudes. A near-zero cross (degenerate sliver wall) is left as-is.
       if (wf && wf.normal) {
-        const wallCenter = new THREE.Vector3();
-        for (const vi of wf.verts) wallCenter.add(this.vertices[vi]);
-        wallCenter.multiplyScalar(1 / wf.verts.length);
-        const toward = new THREE.Vector3().subVectors(faceCentroid, wallCenter);
-        if (toward.lengthSq() > 1e-12) {
-          toward.normalize();
-          const dotN = wf.normal.dot(toward);
-          const wantInward = (d < 0);
-          const isInward = dotN > 0;
-          if (isInward !== wantInward && Math.abs(dotN) > 0.05) {
-            wf.verts.reverse();
-            this.computeFaceNormal(wf);
-          }
+        const edgeVec = new THREE.Vector3().subVectors(this.vertices[i2], this.vertices[i1]);
+        const desired = new THREE.Vector3().crossVectors(edgeVec, pushVec);
+        // Free-standing prism walls always face OUTWARD (away from the prism
+        // body) regardless of push sign — but edgeVec×pushVec points INWARD for
+        // d<0, so flip the reference. For a recess/protrusion into existing
+        // solid, edgeVec×pushVec is already correct (outward for d>0, into the
+        // cavity for d<0).
+        if (isFreeStanding && d < 0) desired.negate();
+        if (desired.lengthSq() > 1e-12 && wf.normal.dot(desired) < 0) {
+          wf.verts.reverse();
+          this.computeFaceNormal(wf);
         }
       }
     }
@@ -6866,6 +6883,19 @@ function selectGroup(gid, add=false) {
 /* ========================================================================== */
 const History = { past: [], future: [], maxDepth: 50 };
 let _lastSnapshot = null;
+/* Adaptive undo depth (P1-4). snapshot() deep-clones every mesh, so a heavy
+   scene held at full depth (50) can reach hundreds of MB and OOM. Scale the
+   retained depth down for large scenes — keeping a usable minimum — so the
+   undo stack stays within a memory budget. Normal scenes keep the full depth. */
+function _undoDepthCap() {
+  let faces = 0;
+  try { for (const o of Model.objects) if (o && o.em && o.em.faces) faces += o.em.faces.length; } catch (_) {}
+  if (faces <= 0) return History.maxDepth;
+  const BUDGET = 150 * 1024 * 1024;        // ~150 MB target for the whole stack
+  const PER_FACE = 250;                    // rough bytes/face/snapshot (verts+face objs)
+  const byBudget = Math.floor(BUDGET / Math.max(1, faces * PER_FACE));
+  return Math.max(8, Math.min(History.maxDepth, byBudget));
+}
 function snapshot() {
   return {
     state: Model.objects.map(o => {
@@ -6993,7 +7023,7 @@ function pushHistory(label) {
   // Save the PRE-edit snapshot (captured last time), then re-snapshot the post-edit state.
   if (_lastSnapshot) {
     History.past.push({ label, ..._lastSnapshot });
-    if (History.past.length > History.maxDepth) History.past.shift();
+    while (History.past.length > _undoDepthCap()) History.past.shift();
   }
   try { renderHistoryList && renderHistoryList(); } catch (_) {}
   History.future = [];
@@ -8647,6 +8677,106 @@ function _spliceTouchingHoles_UNUSED_OLD(em) {
       }
       if (!did) break;
     }
+  }
+}
+
+/* Repair topology artifacts that extrude/burn-through can leave on faces with
+   holes — duplicate hole loops, self-overlapping (repeated-vertex) loops, and
+   degenerate (<3 distinct vert) loops. These produce non-manifold edges and
+   stray seam lines (e.g. after drilling a hole then filling it). Only touches
+   malformed data: a legitimate face never has the same hole twice, a loop with
+   a repeated vertex, or a loop with fewer than 3 distinct vertices. */
+function _healMeshTopology(em) {
+  if (!em || !em.faces) return;
+  for (const f of em.faces) {
+    if (!f.holes || !f.holes.length) continue;
+    const seen = new Set();
+    const out = [];
+    for (const h of f.holes) {
+      // Repair a self-overlapping loop by keeping each vertex's first occurrence.
+      const c = []; const used = new Set();
+      for (const vi of h) { if (!used.has(vi)) { used.add(vi); c.push(vi); } }
+      if (c.length < 3) continue;                       // degenerate → drop
+      const sig = c.slice().sort((a, b) => a - b).join(',');
+      if (seen.has(sig)) continue;                       // duplicate loop → drop
+      seen.add(sig);
+      out.push(c);
+    }
+    f.holes = out;
+  }
+}
+
+/* Close a hole that is exactly filled by a separate coplanar "cap" face, and
+   drop the now-interior walls left behind. This is what makes "fill a drilled
+   tunnel by extruding a wall to meet the opposite wall" resolve cleanly: the
+   extrude leaves the holed end-faces still holed, a coplanar cap covering each
+   hole, plus duplicate/interior tunnel walls. We merge each cap into its host
+   (drop the hole + delete the cap), remove exact-duplicate faces, then drop any
+   face left fully interior (all of its edges shared by no kept face) — the
+   collapsed tunnel walls. Runs at extrude commit, before burn-through. */
+function _closeCoplanarHoleCaps(em) {
+  if (!em || !em.faces) return;
+  // 0) Collapse consecutive-duplicate verts in each face's outer loop and drop
+  //    degenerate faces (<3 distinct verts) — e.g. tunnel walls that collapsed
+  //    to a line when the pushed wall met (or nearly met, after weld) the
+  //    opposite wall. Without this the collapsed walls block the membrane
+  //    cleanup below (the reported "sideways close doesn't finish" case).
+  {
+    const keep = [];
+    for (const f of em.faces) {
+      const c = []; for (let i = 0; i < f.verts.length; i++) if (f.verts[i] !== f.verts[(i + 1) % f.verts.length]) c.push(f.verts[i]);
+      f.verts = c;
+      if (new Set(c).size >= 3) keep.push(f);
+    }
+    em.faces = keep;
+  }
+  // 1) Clean hole loops first (simplify / drop degenerate / dedupe) so a
+  //    collapsed hole becomes a full face before cap/membrane detection.
+  try { _healMeshTopology(em); } catch (_) {}
+  const sameSet = (a, b) => { if (a.length !== b.length) return false; const s = new Set(a); for (const v of b) if (!s.has(v)) return false; return true; };
+  const remove = new Set();
+  // 2) Hole filled by a coplanar same-plane cap face → drop hole + cap.
+  for (const F1 of em.faces) {
+    if (remove.has(F1) || !F1.holes || !F1.holes.length || !F1.normal) continue;
+    const v0 = em.vertices[F1.verts[0]];
+    const kept = [];
+    for (const H of F1.holes) {
+      let cap = null;
+      for (const F2 of em.faces) {
+        if (F2 === F1 || remove.has(F2) || !F2.normal) continue;
+        if (Math.abs(F2.normal.dot(F1.normal)) < 0.99) continue;                               // parallel planes
+        if (Math.abs(em.vertices[F2.verts[0]].clone().sub(v0).dot(F1.normal)) > 0.02) continue; // same plane
+        if ((!F2.holes || !F2.holes.length) && sameSet(F2.verts, H)) { cap = F2; break; }
+      }
+      if (cap) remove.add(cap); else kept.push(H);
+    }
+    F1.holes = kept;
+  }
+  if (remove.size) em.faces = em.faces.filter(f => !remove.has(f));
+  // 2) Drop exact-duplicate faces (identical vertex set).
+  { const seen = new Set(), dup = new Set();
+    for (const f of em.faces) { const sig = f.verts.slice().sort((a, b) => a - b).join(','); if (seen.has(sig)) dup.add(f); else seen.add(sig); }
+    if (dup.size) em.faces = em.faces.filter(f => !dup.has(f)); }
+  // 3) Drop faces left fully interior: every edge belongs to this face only
+  //    (the collapsed tunnel walls after both ends were capped). A genuinely
+  //    standalone drawn face is kept because it carries no holes and isn't an
+  //    artifact of capping — guard by only dropping faces whose verts are all
+  //    orphaned (used by no other kept face), which is true for membrane walls.
+  {
+    const useCount = new Map();
+    for (const f of em.faces) for (const vi of f.verts) useCount.set(vi, (useCount.get(vi) || 0) + 1);
+    const ec = new Map(); const K = (a, b) => Math.min(a, b) + ':' + Math.max(a, b);
+    for (const f of em.faces) { for (let i = 0; i < f.verts.length; i++) ec.set(K(f.verts[i], f.verts[(i+1)%f.verts.length]), (ec.get(K(f.verts[i], f.verts[(i+1)%f.verts.length])) || 0) + 1); if (f.holes) for (const h of f.holes) for (let i = 0; i < h.length; i++) ec.set(K(h[i], h[(i+1)%h.length]), (ec.get(K(h[i], h[(i+1)%h.length])) || 0) + 1); }
+    const drop = new Set();
+    for (const f of em.faces) {
+      if (f.holes && f.holes.length) continue;
+      let allOpen = true;
+      for (let i = 0; i < f.verts.length; i++) if ((ec.get(K(f.verts[i], f.verts[(i+1)%f.verts.length])) || 0) !== 1) { allOpen = false; break; }
+      // only the faces sharing each vert with itself (orphaned membrane)
+      const orphan = f.verts.every(vi => (useCount.get(vi) || 0) <= 1);
+      if (allOpen && orphan) drop.add(f);
+    }
+    if (drop.size) em.faces = em.faces.filter(f => !drop.has(f));
   }
 }
 
@@ -14391,6 +14521,114 @@ Tools.pp = {
               obj.em.removeFace(cap);
               continue;
             }
+            // Robust overlap path: if the cap is FULLY CONTAINED in curTgt
+            // (every cap vertex lies interior to, or on the boundary of,
+            // curTgt) and is not identical to it, subtract it via directed-edge
+            // CSG. This is the reliable way to cut a breakthrough opening that
+            // touches curTgt's boundary on one or more sides — the legacy
+            // per-edge split below relies on a fragile tie-break and leaves a
+            // leftover face for some push directions (e.g. pushing an inner
+            // tunnel wall down/right left the opening region uncut).
+            //
+            // Symmetric-difference of curTgt's directed boundary against the
+            // cap's (oriented to cancel along shared sub-segments) yields N
+            // boundary cycles. Cycles wound the SAME way as curTgt are kept as
+            // separate faces — a breakthrough that touches two opposite edges
+            // splits curTgt into two strips — while cycles wound OPPOSITE are
+            // interior holes. The opening region's edges all cancel, so it
+            // simply disappears. Falls through to the legacy split only when
+            // the cap is NOT fully contained (partial overlap extending
+            // outside curTgt) or the subtraction yields no usable cycle.
+            {
+              const _mesh = obj.em, _EPS = 1e-3;
+              const _loopNormal = (loop) => {
+                let nx=0, ny=0, nz=0; const L=loop.length;
+                for (let i=0;i<L;i++){ const a=_mesh.vertices[loop[i]], b=_mesh.vertices[loop[(i+1)%L]];
+                  nx+=(a.y-b.y)*(a.z+b.z); ny+=(a.z-b.z)*(a.x+b.x); nz+=(a.x-b.x)*(a.y+b.y); }
+                const l=Math.hypot(nx,ny,nz); return l>1e-10 ? new THREE.Vector3(nx/l,ny/l,nz/l) : null;
+              };
+              let _capContained = cap.verts.length >= 3 && !sameVertsCyclic(curTgt.verts, cap.verts);
+              if (_capContained) {
+                for (const vi of cap.verts) {
+                  const t = findLocationOnFace(_mesh.vertices[vi], curTgt, _mesh).type;
+                  if (t === 'outside') { _capContained = false; break; }
+                }
+              }
+              if (_capContained) {
+                const _refN = _loopNormal(curTgt.verts) || curTgt.normal.clone();
+                const _insertOnEdge = (face, vi) => {
+                  if (face.verts.includes(vi)) return;
+                  const p = _mesh.vertices[vi];
+                  for (let i = 0; i < face.verts.length; i++) {
+                    const a = face.verts[i], b = face.verts[(i + 1) % face.verts.length];
+                    const pa = _mesh.vertices[a], pb = _mesh.vertices[b];
+                    const dx = pb.x - pa.x, dy = pb.y - pa.y, dz = pb.z - pa.z;
+                    const len2 = dx*dx + dy*dy + dz*dz; if (len2 < 1e-12) continue;
+                    const t = ((p.x - pa.x)*dx + (p.y - pa.y)*dy + (p.z - pa.z)*dz) / len2;
+                    if (t < _EPS || t > 1 - _EPS) continue;
+                    const qx = pa.x + t*dx, qy = pa.y + t*dy, qz = pa.z + t*dz;
+                    if ((p.x-qx)**2 + (p.y-qy)**2 + (p.z-qz)**2 < _EPS*_EPS) { face.verts.splice(i + 1, 0, vi); return; }
+                  }
+                };
+                const _vertsBefore = curTgt.verts.slice();
+                const _holesBefore = (curTgt.holes || []).map(h => h.slice());
+                for (const vi of cap.verts) _insertOnEdge(curTgt, vi);
+                // Orient the cap so its edges run COUNTER to curTgt along shared
+                // sub-segments (so they cancel). A same-wound cap must be
+                // reversed; an opposite-wound cap already runs counter.
+                const _capN = _loopNormal(cap.verts);
+                const _capSameWind = _capN ? (_capN.dot(_refN) > 0) : true;
+                const _se = new Map();
+                const _pushSE = (x, y) => { const k1=x+','+y, k2=y+','+x; if (_se.has(k2)) { const c=_se.get(k2)-1; if (c===0) _se.delete(k2); else _se.set(k2,c); } else _se.set(k1,(_se.get(k1)||0)+1); };
+                for (let i2 = 0; i2 < curTgt.verts.length; i2++) _pushSE(curTgt.verts[i2], curTgt.verts[(i2 + 1) % curTgt.verts.length]);
+                for (let i2 = 0; i2 < cap.verts.length; i2++) {
+                  const a = cap.verts[i2], b = cap.verts[(i2 + 1) % cap.verts.length];
+                  if (_capSameWind) _pushSE(b, a); else _pushSE(a, b);
+                }
+                const _adj = new Map();
+                for (const [kk, c] of _se) { const [aS,bS]=kk.split(','); const aN=+aS,bN=+bS; for (let i2=0;i2<c;i2++){ if(!_adj.has(aN))_adj.set(aN,[]); _adj.get(aN).push(bN); } }
+                const _cyc = [];
+                while (_adj.size > 0) {
+                  const start = _adj.keys().next().value; const c2=[start]; let cur=start; let safety=1000;
+                  while (safety-- > 0) { const outs=_adj.get(cur); if(!outs||outs.length===0)break; const next=outs.shift(); if(outs.length===0)_adj.delete(cur); if(next===start)break; c2.push(next); cur=next; }
+                  if (c2.length >= 3) _cyc.push(c2);
+                }
+                // Classify cycles by winding relative to curTgt: same-wound =
+                // separate face piece, opposite-wound = interior hole.
+                const _pos = [], _neg = [];
+                for (const c2 of _cyc) { const n2 = _loopNormal(c2); if (n2 && n2.dot(_refN) < 0) _neg.push(c2); else _pos.push(c2); }
+                if (_pos.length >= 1) {
+                  _pos.sort((a,b)=>b.length-a.length);
+                  // Project to the dominant plane for point-in-polygon hole assignment.
+                  const _ax=Math.abs(_refN.x), _ay=Math.abs(_refN.y), _az=Math.abs(_refN.z);
+                  const _proj = (vi) => { const p=_mesh.vertices[vi];
+                    if (_az>=_ax && _az>=_ay) return [p.x,p.y];
+                    if (_ay>=_ax && _ay>=_az) return [p.x,p.z];
+                    return [p.y,p.z]; };
+                  const _inPoly = (loop, vi) => { const c=_proj(vi); const px=c[0], py=c[1]; let inside=false;
+                    for (let i=0,j=loop.length-1;i<loop.length;j=i++){ const a=_proj(loop[i]), b=_proj(loop[j]);
+                      if (((a[1]>py)!==(b[1]>py)) && (px < (b[0]-a[0])*(py-a[1])/((b[1]-a[1])||1e-12)+a[0])) inside=!inside; }
+                    return inside; };
+                  const _holesFor = new Map(); _pos.forEach(pc => _holesFor.set(pc, []));
+                  // Negative cycles are interior holes (already wound opposite
+                  // to the outer boundary, as createFaceFromCycle expects).
+                  for (const h of _neg) { const host = _pos.find(pc => _inPoly(pc, h[0])) || _pos[0]; _holesFor.get(host).push(h); }
+                  curTgt.verts = _pos[0];
+                  curTgt.holes = _holesFor.get(_pos[0]);
+                  obj.em.computeFaceNormal(curTgt);
+                  for (let pi=1; pi<_pos.length; pi++) {
+                    const nf = obj.em.addFace(_pos[pi], curTgt.color, curTgt.layerId);
+                    nf.holes = _holesFor.get(_pos[pi]);
+                  }
+                  obj.em.removeFace(cap);
+                  curTgt = obj.em.faces.includes(curTgt) ? curTgt : null;
+                  continue;
+                }
+                // Subtraction produced nothing usable → restore and fall through.
+                curTgt.verts = _vertsBefore;
+                curTgt.holes = _holesBefore;
+              }
+            }
             // Split curTgt along every cap edge that is interior to curTgt
             // (its endpoints are both on curTgt's boundary but the edge
             // itself is not already part of that boundary). Cap endpoints
@@ -14607,6 +14845,15 @@ Tools.pp = {
 
           // Burn-through cleanup runs only at commit time — see _runBurnThrough.
           if (this._commitBurn) {
+            // Mirror the VCB (typed-distance) commit: weld coincident verts and
+            // CSG-subtract any coplanar face overlap BEFORE burn-through. This is
+            // what closes a face pushed until it MEETS another face — e.g. an
+            // inner tunnel wall pushed to the opposite wall to fill a drilled
+            // hole. Without this pre-step the burn pass mangles the overlapping
+            // pair, leaving holes open and walls missing (the reported bug).
+            try { obj.em.weldVertices(0.005); } catch (_) {}
+            try { obj.em.splitFaceByCoplanarFace && obj.em.splitFaceByCoplanarFace(); } catch (_) {}
+            try { _closeCoplanarHoleCaps(obj.em); } catch (_) {}
             try { this._runBurnThrough(obj.em); } catch (_) {}
           }
           // Phase 4: HalfEdge-based coplanar cleanup. After push, a small face
@@ -14882,7 +15129,12 @@ Tools.pp = {
       // Minimal splice: only the simplest case (hole with exactly one edge
       // collinear with one outer edge) — rewritten as L-shape polygon.
       try { _spliceSimpleNotch(this.hoverObj.em); } catch (e) { console.error('[pp] splice err:', e); }
+      try { _healMeshTopology(this.hoverObj.em); } catch (_) {}
       this.hoverObj.rebuild();
+      // DEV canary: flag mesh corruption (flipped/leftover/non-manifold) the
+      // instant a push/pull commit produces it. Gated to dev builds (?dev).
+      if (window.__TD_DEV) { try { const _h = _meshHealth(this.hoverObj.em);
+        if (_h.fail) console.log('[health] pushpull faces='+_h.faces+' open='+_h.open+' nonman='+_h.nonman+' winding='+_h.winding+' degen='+_h.degenerate+' dup='+_h.dup); } catch (_) {} }
       // Clear selection so the pushed face's edges don't stay highlighted.
       try {
         Selection.objects.clear();
@@ -14939,15 +15191,15 @@ Tools.pp = {
     }));
     const face = obj.em.faces.find(f => sameVerts(f.verts, this.faceCopy.verts));
     if (face) obj.em.extrudeFace(face, d);
-    // Aggressive weld: merge any vertices within 5mm so push-to-back welds
-    // the new front position with existing back vertices.
+    // Cleanup after fill/push: weld coincident verts, CSG-subtract coplanar
+    // overlap, close coplanar hole-caps (fills a drilled tunnel cleanly),
+    // burn-through, then merge + heal topology.
     try { obj.em.weldVertices(0.005); } catch (_) {}
-    // Detect coplanar face overlap (hole-wall pushed to outer wall) and
-    // CSG-subtract before burn-through, which would otherwise mangle the
-    // overlapping pair.
     try { obj.em.splitFaceByCoplanarFace && obj.em.splitFaceByCoplanarFace(); } catch (_) {}
+    try { _closeCoplanarHoleCaps(obj.em); } catch (_) {}
     try { this._runBurnThrough(obj.em); } catch (_) {}
     try { mergeCoplanarAdjacentFaces(obj.em); } catch (_) {}
+    try { _healMeshTopology(obj.em); } catch (_) {}
     obj.rebuild();
     pushHistory('Extrude ' + Units.format(d));
     this.lastDistance = d;
@@ -19055,9 +19307,23 @@ Tools.erase = {
             c = true;
           }
         } else if (touching.length === 1) {
-          // Edge belongs to a single face's boundary (drawn line on a face).
-          // Erasing it should delete the face (the line goes with it).
-          deleteFacesPromoteEdges([touching[0]]);
+          const face = touching[0];
+          // A rectangle (or any loop) drawn INSIDE another face is stored as
+          // that face's HOLE plus a separate fill face. `touching` only scans
+          // outer boundaries, so such an edge looks single-faced. Deleting the
+          // fill face then leaves the host's hole → a visible hole (the
+          // reported "면까지 지워짐" bug). If this face fills a coplanar
+          // neighbour's hole, remove that hole so the surface fills back in,
+          // then drop the now-redundant fill face — keeping its other edges as
+          // lines. Net effect: only the erased line disappears, face survives.
+          const faceSet = new Set(face.verts);
+          for (const host of em.faces) {
+            if (host === face || !host.holes || !host.holes.length || !host.normal || !face.normal) continue;
+            if (host.normal.dot(face.normal) < 0.99) continue;
+            const hi = host.holes.findIndex(h => h.length === face.verts.length && h.every(v => faceSet.has(v)));
+            if (hi >= 0) { host.holes.splice(hi, 1); break; }
+          }
+          deleteFacesPromoteEdges([face]);
           c = true;
         }
       }
@@ -21839,6 +22105,7 @@ function loadDocIntoScene(doc) {
 
 /* Save scene as a .tt (JSON) file and trigger a browser download. */
 function saveTT(name) {
+  try { _saveIntegrityCheck(); } catch (_) {}
   const doc = sceneToDoc();
   const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -30254,6 +30521,226 @@ document.addEventListener('click', (e) => {
   }
   requestAnimationFrame(loop);
 })();
+
+/* ============================================================================
+   DEV: mesh-health checker + geometry self-test  (P0-1, beta hardening)
+   ----------------------------------------------------------------------------
+   _meshHealth(em) reports topology/winding defects. The winding test is
+   directed-edge orientation consistency — a shared edge must be traversed in
+   OPPOSITE directions by its two faces; same-direction means a flipped
+   ("blue") face. This works for convex AND non-convex solids, unlike a
+   centroid heuristic. Enabled only in dev builds (?dev / ?selftest).
+   ============================================================================ */
+function _meshHealth(em) {
+  const V = em.vertices, F = em.faces;
+  const uKey = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
+  const undirected = new Map(), directed = new Map();
+  let degenerate = 0;
+  const loops = [];
+  for (const f of F) {
+    const vs = f.verts || [];
+    let bad = vs.length < 3 || new Set(vs).size < 3;
+    if (!bad) {
+      let nx = 0, ny = 0, nz = 0; const N = vs.length;
+      for (let i = 0; i < N; i++) {
+        const A = V[vs[i]], B = V[vs[(i + 1) % N]];
+        if (!A || !B) { bad = true; break; }
+        nx += (A.y - B.y) * (A.z + B.z); ny += (A.z - B.z) * (A.x + B.x); nz += (A.x - B.x) * (A.y + B.y);
+      }
+      if (!bad && Math.hypot(nx, ny, nz) < 1e-9) bad = true;
+    }
+    if (bad) { degenerate++; continue; }
+    loops.push(vs);
+    if (f.holes) for (const h of f.holes) if (h && h.length >= 3) loops.push(h);
+  }
+  for (const loop of loops) {
+    const N = loop.length;
+    for (let i = 0; i < N; i++) {
+      const a = loop[i], b = loop[(i + 1) % N]; if (a === b) continue;
+      undirected.set(uKey(a, b), (undirected.get(uKey(a, b)) || 0) + 1);
+      directed.set(a + '_' + b, (directed.get(a + '_' + b) || 0) + 1);
+    }
+  }
+  let open = 0, nonman = 0, winding = 0;
+  for (const [k, c] of undirected) {
+    if (c === 1) open++;
+    else if (c > 2) nonman++;
+    else { const p = k.split('_'); if ((directed.get(p[0] + '_' + p[1]) || 0) >= 2 || (directed.get(p[1] + '_' + p[0]) || 0) >= 2) winding++; }
+  }
+  const seen = new Map(); let dup = 0;
+  for (const f of F) {
+    const sig = (f.verts || []).slice().sort((x, y) => x - y).join(','); if (!sig) continue;
+    const n = (seen.get(sig) || 0) + 1; seen.set(sig, n); if (n > 1) dup++;
+  }
+  return { faces: F.length, open, nonman, winding, degenerate, dup,
+           fail: nonman > 0 || winding > 0 || degenerate > 0 || dup > 0 };
+}
+
+/* Save-time integrity guard (P1-3). Runs only on an explicit .tt save (not the
+   20s autosave). Checks NATIVE solid meshes for UNAMBIGUOUS defects — flipped
+   shared edges (winding), zero-area faces (degenerate), duplicate faces — that
+   a silently-swallowed geometry-op failure can leave behind. Imported / image /
+   entourage / underlay objects are skipped: external meshes are routinely
+   non-manifold and inconsistently wound, which would false-positive. The
+   warning is non-blocking (the save always proceeds) so a stray false positive
+   never costs the user their save. */
+function _saveIntegrityCheck() {
+  if (typeof _meshHealth !== 'function' || typeof Model === 'undefined' || !Model.objects) return 0;
+  let bad = 0; const details = [];
+  for (let i = 0; i < Model.objects.length; i++) {
+    const o = Model.objects[i];
+    if (!o || !o.em || !o.em.faces || !o.em.faces.length) continue;
+    if (o.materialId || o._imported || o.isImagePlane || o.isEntourage || o.isUnderlay || o.faceCamera) continue;
+    let h; try { h = _meshHealth(o.em); } catch (_) { continue; }
+    if (h.winding > 0 || h.degenerate > 0 || h.dup > 0) {
+      bad++;
+      details.push('obj' + i + ' "' + (o.name || '?') + '" winding=' + h.winding + ' degen=' + h.degenerate + ' dup=' + h.dup + ' (nonman=' + h.nonman + ' open=' + h.open + ')');
+    }
+  }
+  if (bad > 0) {
+    try { if (window.__TD_DEV) details.forEach(d => console.log('[health] save-guard: ' + d)); } catch (_) {}
+    try { if (typeof setStatus === 'function') setStatus('msg', '⚠ ' + bad + ' object(s) may have geometry errors — saved anyway'); } catch (_) {}
+  }
+  return bad;
+}
+
+function _selfTest() {
+  const log = (s) => { try { console.log('[selftest] ' + s); } catch (_) {} };
+  const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+  const results = [];
+  // closed:true  → must be a watertight, consistently-wound solid (open/nonman/winding all 0).
+  // closed:false → leftover coplanar faces are expected (open/nonman by design);
+  //                only flips (winding), degenerate, or duplicate faces are failures.
+  const run = (name, opts, fn) => {
+    let h, em;
+    try { em = fn(); h = _meshHealth(em); }
+    catch (e) { log(name + ' THREW ' + (e && e.message)); results.push({ name, thrown: true, bad: true }); return; }
+    const bad = opts.closed ? (h.open > 0 || h.nonman > 0 || h.winding > 0 || h.degenerate > 0 || h.dup > 0)
+                            : (h.winding > 0 || h.degenerate > 0 || h.dup > 0);
+    log(name + ': faces=' + h.faces + ' open=' + h.open + ' nonman=' + h.nonman + ' winding=' + h.winding + ' degen=' + h.degenerate + ' dup=' + h.dup + (bad ? '   <<< FAIL' : '   ok'));
+    if (bad && em) { try { em.faces.forEach((f, i) => {
+      const c = new THREE.Vector3(); f.verts.forEach(vi => c.add(em.vertices[vi])); c.multiplyScalar(1 / f.verts.length);
+      log('   f' + i + ' n=(' + f.normal.x.toFixed(2) + ',' + f.normal.y.toFixed(2) + ',' + f.normal.z.toFixed(2) + ') v=[' + f.verts.join(',') + ']' + (f.holes && f.holes.length ? ' H=' + JSON.stringify(f.holes) : '')); }); } catch (_) {} }
+    results.push({ name, h, bad });
+  };
+  const quad = (em, p0, p1, p2, p3) => { const a = em.addVertex(p0), b = em.addVertex(p1), c = em.addVertex(p2), d = em.addVertex(p3); return em.addFace([a, b, c, d], 0xffffff, 'Layer0'); };
+
+  run('box_up',   { closed: true }, () => { const em = new EditableMesh(); const f = quad(em, V3(0,0,0), V3(0,0,4), V3(4,0,4), V3(4,0,0)); em.extrudeFace(f,  3); return em; });
+  run('box_down', { closed: true }, () => { const em = new EditableMesh(); const f = quad(em, V3(0,0,0), V3(0,0,4), V3(4,0,4), V3(4,0,0)); em.extrudeFace(f, -3); return em; });
+  run('arc_corner_up', { closed: false }, () => {
+    const em = new EditableMesh();
+    const f = quad(em, V3(0,0,0), V3(0,0,10), V3(10,0,10), V3(10,0,0));
+    const pts = []; const n = 8;
+    for (let i = 0; i <= n; i++) { const t = (-90 * i / n) * Math.PI / 180; pts.push(V3(7 + 3 * Math.cos(t), 0, 3 + 3 * Math.sin(t))); }
+    const res = splitFaceByPolyline(em, f, pts); if (!res) throw new Error('split returned null');
+    const big = res.reduce((a, b) => b.verts.length > a.verts.length ? b : a);
+    em.extrudeFace(big, 5); return em;
+  });
+  run('holed_drill', { closed: true }, () => {
+    const em = new EditableMesh();
+    const o0 = em.addVertex(V3(0,0,0)), o1 = em.addVertex(V3(0,0,10)), o2 = em.addVertex(V3(10,0,10)), o3 = em.addVertex(V3(10,0,0));
+    const i0 = em.addVertex(V3(3,0,3)), i1 = em.addVertex(V3(7,0,3)), i2 = em.addVertex(V3(7,0,7)), i3 = em.addVertex(V3(3,0,7));
+    // Hole loop must be wound OPPOSITE to the outer boundary (outer is +Y here,
+    // so the hole must read -Y): order [i0,i1,i2,i3].
+    const f = em.addFace([o0, o1, o2, o3], 0xffffff, 'Layer0'); f.holes = [[i0, i1, i2, i3]]; em.computeFaceNormal(f);
+    em.extrudeFace(f, -3); return em;
+  });
+  run('box_face_out', { closed: true }, () => {
+    const em = new EditableMesh(); const f = quad(em, V3(0,0,0), V3(0,0,4), V3(4,0,4), V3(4,0,0)); em.extrudeFace(f, 4);
+    const side = em.faces.find(ff => Math.abs(ff.normal.y) < 0.5); if (!side) throw new Error('no side face');
+    em.extrudeFace(side, 2); return em;     // protrude a side wall outward
+  });
+  run('box_face_in', { closed: true }, () => {
+    const em = new EditableMesh(); const f = quad(em, V3(0,0,0), V3(0,0,4), V3(4,0,4), V3(4,0,0)); em.extrudeFace(f, 4);
+    const side = em.faces.find(ff => Math.abs(ff.normal.y) < 0.5); if (!side) throw new Error('no side face');
+    em.extrudeFace(side, -1.5); return em;  // indent a side wall inward
+  });
+
+  // Save-guard (P1-3): a flipped-face native box must be flagged; an imported copy skipped.
+  try {
+    const em = new EditableMesh(); const f = quad(em, V3(0,0,0), V3(0,0,2), V3(2,0,2), V3(2,0,0)); em.extrudeFace(f, 2);
+    if (em.faces[2]) { em.faces[2].verts.reverse(); em.computeFaceNormal(em.faces[2]); }   // induce a winding defect
+    const base = (typeof _saveIntegrityCheck === 'function' && typeof Model !== 'undefined' && Model.objects) ? _saveIntegrityCheck() : -1;
+    if (base < 0) { log('save_guard: SKIPPED (no Model/_saveIntegrityCheck)'); }
+    else {
+      const fakeN = { em, name: 'GuardTestNative' }, fakeI = { em, name: 'GuardTestImport', _imported: true };
+      let n1 = base, n2 = base;
+      Model.objects.push(fakeN); try { n1 = _saveIntegrityCheck(); } finally { const i = Model.objects.indexOf(fakeN); if (i >= 0) Model.objects.splice(i, 1); }
+      Model.objects.push(fakeI); try { n2 = _saveIntegrityCheck(); } finally { const i = Model.objects.indexOf(fakeI); if (i >= 0) Model.objects.splice(i, 1); }
+      const okG = (n1 - base === 1) && (n2 - base === 0);
+      log('save_guard: native-flagged=' + (n1 - base === 1) + ' import-skipped=' + (n2 - base === 0) + (okG ? '   ok' : '   <<< FAIL'));
+      results.push({ name: 'save_guard', bad: !okG });
+    }
+  } catch (e) { log('save_guard THREW ' + (e && e.message)); results.push({ name: 'save_guard', bad: true }); }
+
+  const fails = results.filter(r => r.bad);
+  log('==== DONE: ' + results.length + ' configs, ' + fails.length + ' FAILED' + (fails.length ? ': ' + fails.map(r => r.name).join(', ') : ''));
+  return results;
+}
+
+/* Undo-cost profiler (P1-4). snapshot() deep-clones every object's EditableMesh
+   and History keeps maxDepth(50) of them, so undo memory/latency scales with
+   total face/vertex count. Measure em.clone() time + 50-deep heap at a couple
+   of large-model sizes to decide whether undo needs a lighter strategy. */
+function _perfTest() {
+  const log = (s) => { try { console.log('[perf] ' + s); } catch (_) {} };
+  const mkGrid = (N) => {
+    const em = new EditableMesh(); const idx = [];
+    for (let i = 0; i <= N; i++) { idx[i] = []; for (let j = 0; j <= N; j++) { em.vertices.push(new THREE.Vector3(i, 0, j)); idx[i][j] = em.vertices.length - 1; } }
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) em.faces.push({ verts: [idx[i][j], idx[i + 1][j], idx[i + 1][j + 1], idx[i][j + 1]], normal: new THREE.Vector3(0, 1, 0), color: 0xffffff, layerId: 'Layer0', holes: [] });
+    return em;
+  };
+  log('History.maxDepth = ' + (typeof History !== 'undefined' ? History.maxDepth : '?'));
+  for (const N of [100, 220]) {
+    let em; try { em = mkGrid(N); } catch (e) { log('build ' + N + ' threw ' + (e && e.message)); continue; }
+    const F = em.faces.length, Vn = em.vertices.length;
+    const REP = 8; const t0 = performance.now();
+    for (let r = 0; r < REP; r++) em.clone();
+    const cloneMs = (performance.now() - t0) / REP;
+    let memStr = 'n/a (performance.memory unavailable)';
+    if (performance.memory) {
+      const before = performance.memory.usedJSHeapSize; const arr = [];
+      for (let r = 0; r < 50; r++) arr.push(em.clone());
+      const delta = performance.memory.usedJSHeapSize - before;
+      memStr = (delta / 1048576).toFixed(1) + ' MB total (' + (delta / 50 / 1024).toFixed(0) + ' KB/snapshot)';
+      arr.length = 0;
+    }
+    const cap = Math.max(8, Math.min(50, Math.floor(150 * 1024 * 1024 / (F * 250))));
+    log('grid ' + N + 'x' + N + ': verts=' + Vn + ' faces=' + F + ' | em.clone()=' + cloneMs.toFixed(1) + 'ms | adaptive undo-depth=' + cap + ' | 50-deep heap ≈ ' + memStr);
+  }
+}
+
+try {
+  const _q = new URLSearchParams(location.search);
+  window.__TD_DEV = _q.has('dev') || _q.has('selftest') || _q.has('recoverytest');
+  window._meshHealth = _meshHealth;
+  window._selfTest = _selfTest;
+  window._perfTest = _perfTest;
+  // Dev-only: surface ESCAPED errors (the 285 catch(_) sites stay as graceful
+  // fallbacks; their important consequence — mesh corruption — is caught by the
+  // push/pull canary and the save-guard). This catches everything that slips
+  // past those: uncaught exceptions and unhandled promise rejections.
+  if (window.__TD_DEV) {
+    try { window.addEventListener('error', (ev) => { try { console.log('[dev-error] ' + ((ev && ev.message) || '?') + (ev && ev.filename ? ' @' + String(ev.filename).split('/').pop() + ':' + ev.lineno : '')); } catch (_) {} }); } catch (_) {}
+    try { window.addEventListener('unhandledrejection', (ev) => { try { console.log('[dev-error] unhandledrejection: ' + ((ev && ev.reason && ev.reason.message) || (ev && ev.reason) || '?')); } catch (_) {} }); } catch (_) {}
+  }
+  // Dev-only crash-recovery dry run: seed a fake unsaved session BEFORE Tabs.boot
+  // runs its recovery check (~700ms), and tell _maybeRecover to log its decision
+  // instead of prompting. Verifies read → content-detect → decision end to end.
+  if (_q.has('clearrecovery')) {
+    try { localStorage.removeItem('turtle_recovery_v1'); localStorage.removeItem('turtle_clean_exit_v1'); console.log('[recovery] CLEARED keys'); } catch (e) {}
+  }
+  if (_q.has('recoverytest')) {
+    try {
+      window.__TD_RECOVERY_TEST = true;
+      localStorage.setItem('turtle_recovery_v1', JSON.stringify({ ts: Date.now(), activeId: 'tT', tabs: [{ id: 'tT', name: 'RecTest', doc: { objects: [{}], components: [], dimensions: [], annotations: [] } }] }));
+      localStorage.setItem('turtle_clean_exit_v1', '0');
+      console.log('[recovery] TEST seeded fake unsaved session (expect "offering to restore 1 doc")');
+    } catch (e) { try { console.log('[recovery] TEST seed failed ' + (e && e.message)); } catch (_) {} }
+  }
+  if (_q.has('selftest')) setTimeout(() => { try { _selfTest(); } catch (e) { try { console.log('[selftest] harness error ' + (e && e.message)); } catch (_) {} } }, 1500);
+  if (_q.has('perftest')) setTimeout(() => { try { _perfTest(); } catch (e) { try { console.log('[perf] harness error ' + (e && e.message)); } catch (_) {} } }, 900);
+} catch (e) { try { console.log('[selftest] harness init threw ' + (e && e.message)); } catch (_) {} }
 
 </script>
 </body>

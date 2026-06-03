@@ -29,6 +29,66 @@
     catch (err) { console.warn('[tabs] loadDocIntoScene failed', err); }
   }
 
+  /* ---------- Crash recovery + autosave (P0-2) -----------------------
+     Tabs only live in memory, so a crash / force-quit / power-loss loses
+     everything since the last manual .tt save. We periodically snapshot the
+     whole session (all tabs) to localStorage and, on a launch that follows an
+     UNEXPECTED exit, offer to restore it. A normal close sets a "clean exit"
+     flag (beforeunload), so a tidy quit never prompts.
+  ------------------------------------------------------------------- */
+  const RKEY = 'turtle_recovery_v1';
+  const CLEAN_KEY = 'turtle_clean_exit_v1';
+  const AUTOSAVE_MS = 20000;
+  const _rlog = (s) => { try { if (window.__TD_DEV) console.log('[recovery] ' + s); } catch (_) {} };
+  function _docHasContent(doc) {
+    try {
+      return !!(doc && ((doc.objects && doc.objects.length) ||
+                        (doc.components && doc.components.length) ||
+                        (doc.dimensions && doc.dimensions.length) ||
+                        (doc.annotations && doc.annotations.length)));
+    } catch (_) { return false; }
+  }
+  function _writeAutosave() {
+    try {
+      if (typeof Tabs.serialize !== 'function') return;
+      const snap = Tabs.serialize();
+      snap.tabs = (snap.tabs || []).filter(t => _docHasContent(t.doc));
+      if (!snap.tabs.length) { try { localStorage.removeItem(RKEY); } catch (_) {} return; }
+      snap.ts = Date.now();
+      const json = JSON.stringify(snap);
+      // localStorage caps near 5 MB; very large docs (e.g. imported textures)
+      // can blow the quota. Skip rather than throw — don't disrupt editing.
+      if (json.length > 4500000) { _rlog('session too large to autosave (' + json.length + ' bytes); skipped'); return; }
+      localStorage.setItem(RKEY, json);
+      localStorage.setItem(CLEAN_KEY, '0');
+    } catch (e) { _rlog('autosave failed: ' + (e && e.message)); }
+  }
+  function _maybeRecover() {
+    let raw = null, clean = null;
+    try { raw = localStorage.getItem(RKEY); } catch (_) {}
+    try { clean = localStorage.getItem(CLEAN_KEY); } catch (_) {}
+    try { localStorage.setItem(CLEAN_KEY, '0'); } catch (_) {}   // this session: not yet cleanly exited
+    let snap = null; try { snap = JSON.parse(raw || 'null'); } catch (_) {}
+    if (!snap || !snap.tabs || !snap.tabs.length) { _rlog('no recovery data'); return; }
+    // Claim the recovery data immediately (clear it before doing anything else)
+    // so a second window or a re-entry can't double-handle the same snapshot.
+    try { localStorage.removeItem(RKEY); } catch (_) {}
+    if (clean === '1') { _rlog('previous exit clean — discarding stale recovery'); return; }
+    const n = snap.tabs.length;
+    _rlog('unexpected previous exit — offering to restore ' + n + ' doc(s) (rawLen=' + (raw ? raw.length : 0) + ')');
+    if (window.__TD_RECOVERY_TEST) { _rlog('TEST mode: would prompt; not prompting/restoring'); return; }
+    let when = ''; try { if (snap.ts) when = new Date(snap.ts).toLocaleString(); } catch (_) {}
+    const msg = 'Turtle Drawing didn’t close normally last time.\n\nRestore ' + n + ' unsaved document' + (n > 1 ? 's' : '') + (when ? '\n(from ' + when + ')' : '') + '?';
+    let ok = false; try { ok = window.confirm(msg); } catch (_) {}
+    _rlog('prompt result ok=' + ok);
+    if (ok) { try { Tabs.restoreSession(snap); _rlog('restored ' + n + ' doc(s)'); } catch (e) { _rlog('restore failed: ' + (e && e.message)); } }
+  }
+  function _setupAutosave() {
+    try { window.addEventListener('beforeunload', () => { try { localStorage.setItem(CLEAN_KEY, '1'); } catch (_) {} }); } catch (_) {}
+    try { document.addEventListener('visibilitychange', () => { if (document.hidden) _writeAutosave(); }); } catch (_) {}
+    try { setInterval(_writeAutosave, AUTOSAVE_MS); } catch (_) {}
+  }
+
   Tabs.save = function () {
     const t = Tabs.list.find(x => x.id === Tabs.activeId);
     if (!t) return;
@@ -113,6 +173,21 @@
     if (!t || !newName) return;
     t.name = newName;
     render();
+  };
+
+  /* Full-session serialize/restore (every tab) — used for crash recovery. */
+  Tabs.serialize = function () {
+    try { Tabs.save(); } catch (_) {}   // flush the active tab's live scene into its doc
+    return { activeId: Tabs.activeId, tabs: Tabs.list.map(t => ({ id: t.id, name: t.name, doc: t.doc || null })) };
+  };
+  Tabs.restoreSession = function (snap) {
+    if (!snap || !Array.isArray(snap.tabs) || !snap.tabs.length) return false;
+    Tabs.list = snap.tabs.map(t => ({ id: t.id || uid(), name: t.name || 'Untitled', doc: t.doc || null, dirty: true }));
+    Tabs.activeId = snap.tabs.some(t => t.id === snap.activeId) ? snap.activeId : Tabs.list[0].id;
+    const cur = Tabs.list.find(x => x.id === Tabs.activeId);
+    if (cur && cur.doc) loadDoc(cur.doc);
+    render();
+    return true;
   };
 
   /* ---------- Rendering ---------------------------------------------- */
@@ -294,16 +369,22 @@
     render();
 
     // If this window was spawned via tab detach, load the pending doc.
+    // Otherwise (a normal launch) check for an unsaved session to recover.
     if (window.electronConsumePendingDoc) {
       window.electronConsumePendingDoc().then((docJson) => {
-        if (!docJson) return;
-        try {
-          const doc = typeof docJson === 'string' ? JSON.parse(docJson) : docJson;
-          loadDoc(doc);
-          const cur = Tabs.list.find(x => x.id === Tabs.activeId);
-          if (cur) cur.doc = doc;
-        } catch (err) { console.warn('[tabs] consume pending doc', err); }
-      });
+        if (docJson) {
+          try {
+            const doc = typeof docJson === 'string' ? JSON.parse(docJson) : docJson;
+            loadDoc(doc);
+            const cur = Tabs.list.find(x => x.id === Tabs.activeId);
+            if (cur) cur.doc = doc;
+          } catch (err) { console.warn('[tabs] consume pending doc', err); }
+          return;                                  // detached-tab window — no recovery prompt
+        }
+        try { _maybeRecover(); } catch (_) {}
+      }).catch(() => { try { _maybeRecover(); } catch (_) {} });
+    } else {
+      try { _maybeRecover(); } catch (_) {}
     }
 
     // Auto-save current tab's doc on every history push so switching
@@ -326,6 +407,8 @@
         if (Tabs.activeId) { e.preventDefault(); Tabs.close(Tabs.activeId); }
       }
     });
+
+    _setupAutosave();
   }
 
   window.addEventListener('DOMContentLoaded', () => {
