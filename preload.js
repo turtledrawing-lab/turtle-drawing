@@ -12,6 +12,15 @@ window.electronPickFile = async (opts) => {
   try { return await ipcRenderer.invoke('pick-import-file', opts || {}); }
   catch (e) { console.error('[preload] pick-file failed:', e); return null; }
 };
+// System fonts for 3D text: list installed .ttf/.otf, and read one's bytes.
+window.electronListFonts = async () => {
+  try { return await ipcRenderer.invoke('list-system-fonts'); }
+  catch (e) { console.error('[preload] list-fonts failed:', e); return []; }
+};
+window.electronReadFont = async (fontPath) => {
+  try { return await ipcRenderer.invoke('read-font-file', fontPath); }
+  catch (e) { console.error('[preload] read-font failed:', e); return null; }
+};
 
 // Detach the current tab's document into a new top-level window.
 window.electronDetachTab = async (docJson) => {

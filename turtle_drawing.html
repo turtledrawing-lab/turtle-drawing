@@ -980,6 +980,7 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
     <button data-act="zoom-all" title="Zoom All (Shift+Z)">⛶</button>
     <button data-act="eye-level" title="Position Camera (Eye Level 1.6 m)">👁</button>
     <button data-act="toggle-turntable" title="Turntable Animation (Cmd+Shift+T)" style="font-size:14px;">↻</button>
+    <button data-act="text-3d" title="3D Text" style="font-size:13px;font-weight:700;">T</button>
     <div class="sep"></div>
     <button data-tool="tape"   title="Ruler (T)">📏</button>
     <button data-tool="dim"      title="Dimension (I)">⊢</button>
@@ -1502,6 +1503,8 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
 <!-- Font loading + extruded text geometry (jsdelivr serves correct MIME) -->
 <script src="https://unpkg.com/three@0.137.0/examples/js/loaders/FontLoader.js"></script>
 <script src="https://unpkg.com/three@0.137.0/examples/js/geometries/TextGeometry.js"></script>
+<!-- opentype.js — parse system .ttf/.otf so 3D Text can use any installed font -->
+<script src="https://unpkg.com/opentype.js@1.3.4/dist/opentype.min.js"></script>
 <!-- Evan Wallace's CSG (BSP-tree Boolean) — used for proper
      Union / Subtract / Intersect on triangulated meshes. Exposes global `CSG`. -->
 <script src="https://cdn.jsdelivr.net/gh/evanw/csg.js@master/csg.js"></script>
@@ -21472,7 +21475,13 @@ async function importCadastralFlow() {
    vertex coordinates so the resulting object can move/rotate independently.
    `unitToMeters` defaults to 1 (assume meters); STL/OBJ users sometimes need
    0.001 (mm → m). */
-function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1) {
+function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}) {
+  const featureEdgesOnly = !!(opts && opts.featureEdgesOnly);
+  // placeMode: instead of dropping objects at the camera target, build them and
+  // hand off to _startPlacementMode so the user positions them with the mouse
+  // (ghost preview → click), exactly like an imported model.
+  const placeMode = !!(opts && opts.placeMode);
+  const placeObjs = [];
   const meshes = [];
   rootObj.updateMatrixWorld(true);
   rootObj.traverse((n) => {
@@ -21513,19 +21522,53 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1) {
       if (a === b || b === c || a === c) continue;
       em.addFace([a, b, c], 0xffffff, Model.activeLayerId || 'Layer0');
     }
-    // Edges (visible boundary edges only — front of mesh)
-    for (const f of em.faces) {
-      for (let k = 0; k < f.verts.length; k++) {
-        const ai = f.verts[k], bi = f.verts[(k+1) % f.verts.length];
-        em.edges.push({ a: ai, b: bi });
+    // Edges. Legacy default mirrors every triangle edge. For heavily
+    // tessellated geometry (e.g. 3D text) that's a wall of internal lines, so
+    // featureEdgesOnly keeps just the silhouette / sharp edges (outlines) and
+    // drops the flat-face triangulation + smooth-curve facets. groupComponents
+    // additionally splits the mesh into connected components (e.g. each glyph)
+    // and bundles them as one editable group — the text selects as a unit but
+    // can be Exploded (ungrouped) into individual letters.
+    const made = [];
+    if (featureEdgesOnly) {
+      // Weld coincident verts so adjacent triangles share edges — required for
+      // both feature-edge detection (drop flat-face triangulation) and
+      // connected-component splitting (separate the glyphs).
+      try { em.weldVertices(); } catch (_) {}
+      let parts = [em];
+      if (opts && opts.groupComponents) {
+        try { const sc = _splitConnectedComponents(em); if (sc && sc.length) parts = sc; } catch (_) {}
       }
+      const gid = (parts.length > 1) ? _newGroupId() : null;
+      for (let pi = 0; pi < parts.length; pi++) {
+        const nm = (m.name || 'Mesh') + (parts.length > 1 ? ' #' + (pi + 1) : '') + ' (' + (filename || 'imported') + ')';
+        const pso = new SketchObject(parts[pi], nm, { skipEdges: true });
+        pso._skipEdges = true;
+        pso._featureEdges = true;
+        if (gid) pso.groupId = gid;
+        made.push(pso);
+      }
+    } else {
+      for (const f of em.faces) {
+        for (let k = 0; k < f.verts.length; k++) {
+          const ai = f.verts[k], bi = f.verts[(k+1) % f.verts.length];
+          em.edges.push({ a: ai, b: bi });
+        }
+      }
+      made.push(new SketchObject(em, (m.name || 'Mesh') + ' (' + (filename || 'imported') + ')'));
     }
-    const so = new SketchObject(em, (m.name || 'Mesh') + ' (' + (filename || 'imported') + ')');
-    so.layerId = Model.activeLayerId || 'Layer0';
-    addObject(so);
-    so.rebuild();
+    for (const so of made) {
+      so.layerId = Model.activeLayerId || 'Layer0';
+      if (placeMode) { so.rebuild(); placeObjs.push(so); }   // build for ghost; placed on click
+      else { addObject(so); so.rebuild(); }
+    }
     for (const v of em.vertices) bbox.expandByPoint(v);
-    added++;
+    added += made.length;
+  }
+  if (placeMode) {
+    if (!placeObjs.length || bbox.isEmpty()) { setStatus('msg', 'Nothing to place.'); return 0; }
+    _startPlacementMode(placeObjs, bbox, filename);
+    return placeObjs.length;
   }
   if (!bbox.isEmpty()) {
     const center = new THREE.Vector3(); bbox.getCenter(center);
@@ -28665,12 +28708,133 @@ function _loadHelvetikerFont() {
   });
 }
 
+/* Selectable typefaces for 3D text (three.js example fonts). All Latin-only —
+   Korean/CJK glyphs are not present in these typeface files. */
+const _TEXT_FONTS = [
+  { name: 'Helvetiker',       url: 'https://unpkg.com/three@0.128.0/examples/fonts/helvetiker_regular.typeface.json' },
+  { name: 'Helvetiker Bold',  url: 'https://unpkg.com/three@0.128.0/examples/fonts/helvetiker_bold.typeface.json' },
+  { name: 'Optimer',          url: 'https://unpkg.com/three@0.128.0/examples/fonts/optimer_regular.typeface.json' },
+  { name: 'Optimer Bold',     url: 'https://unpkg.com/three@0.128.0/examples/fonts/optimer_bold.typeface.json' },
+  { name: 'Gentilis',         url: 'https://unpkg.com/three@0.128.0/examples/fonts/gentilis_regular.typeface.json' },
+  { name: 'Gentilis Bold',    url: 'https://unpkg.com/three@0.128.0/examples/fonts/gentilis_bold.typeface.json' },
+  { name: 'Droid Sans',       url: 'https://unpkg.com/three@0.128.0/examples/fonts/droid/droid_sans_regular.typeface.json' },
+  { name: 'Droid Sans Bold',  url: 'https://unpkg.com/three@0.128.0/examples/fonts/droid/droid_sans_bold.typeface.json' },
+  { name: 'Droid Serif',      url: 'https://unpkg.com/three@0.128.0/examples/fonts/droid/droid_serif_regular.typeface.json' },
+  { name: 'Droid Serif Bold', url: 'https://unpkg.com/three@0.128.0/examples/fonts/droid/droid_serif_bold.typeface.json' },
+];
+const _typefaceCache = {};
+function _loadTypeface(url) {
+  if (_typefaceCache[url]) return Promise.resolve(_typefaceCache[url]);
+  return new Promise((resolve, reject) => {
+    if (typeof THREE.FontLoader !== 'function') return reject(new Error('FontLoader missing'));
+    new THREE.FontLoader().load(url, (font) => { _typefaceCache[url] = font; resolve(font); }, undefined, (err) => reject(err));
+  });
+}
+
+/* Extract a single face from a TrueType Collection (.ttc) into a standalone
+   sfnt buffer — opentype.js rejects the 'ttcf' signature, so we rebuild a
+   normal font from the chosen face's table directory (tables are copied with
+   corrected offsets). Returns the input unchanged if it isn't a collection. */
+function _ttcToSfnt(ab, faceIndex) {
+  const dv = new DataView(ab);
+  if (dv.getUint32(0) !== 0x74746366) return ab; // not 'ttcf'
+  const numFonts = dv.getUint32(8);
+  const fi = Math.min(faceIndex || 0, numFonts - 1);
+  const sfntOff = dv.getUint32(12 + fi * 4);
+  const sfntVersion = dv.getUint32(sfntOff);
+  const numTables = dv.getUint16(sfntOff + 4);
+  const recs = [];
+  for (let i = 0; i < numTables; i++) {
+    const ro = sfntOff + 12 + i * 16;
+    recs.push({ tag: dv.getUint32(ro), cs: dv.getUint32(ro + 4), off: dv.getUint32(ro + 8), len: dv.getUint32(ro + 12) });
+  }
+  const a4 = (n) => (n + 3) & ~3;
+  let total = 12 + numTables * 16;
+  for (const r of recs) total += a4(r.len);
+  const out = new ArrayBuffer(total);
+  const odv = new DataView(out), ob = new Uint8Array(out), src = new Uint8Array(ab);
+  odv.setUint32(0, sfntVersion); odv.setUint16(4, numTables);
+  let es = 0, sr = 1; while (sr * 2 <= numTables) { sr *= 2; es++; }
+  odv.setUint16(6, sr * 16); odv.setUint16(8, es); odv.setUint16(10, numTables * 16 - sr * 16);
+  let pos = 12 + numTables * 16;
+  for (let i = 0; i < recs.length; i++) {
+    const r = recs[i], ro = 12 + i * 16;
+    odv.setUint32(ro, r.tag); odv.setUint32(ro + 4, r.cs); odv.setUint32(ro + 8, pos); odv.setUint32(ro + 12, r.len);
+    ob.set(src.subarray(r.off, r.off + r.len), pos);
+    pos += a4(r.len);
+  }
+  return out;
+}
+
+/* Convert an opentype.js font + text into THREE.Shape[] (with holes) for
+   ExtrudeGeometry — lets 3D text use any system .ttf/.otf. opentype emits a
+   y-down path; we flip to y-up. Holes (inside of O/A/B/etc.) are found by
+   even-odd containment nesting, so font winding conventions don't matter. */
+function _shapesFromOpentype(font, text, size) {
+  const SEG = 8;
+  const otPath = font.getPath(text, 0, 0, size);
+  const contours = [];
+  let cur = null, px = 0, py = 0;
+  const fy = (y) => -y;
+  for (const c of otPath.commands) {
+    if (c.type === 'M') { cur = [new THREE.Vector2(c.x, fy(c.y))]; contours.push(cur); px = c.x; py = c.y; }
+    else if (c.type === 'L') { if (cur) cur.push(new THREE.Vector2(c.x, fy(c.y))); px = c.x; py = c.y; }
+    else if (c.type === 'Q') {
+      for (let i = 1; i <= SEG; i++) { const t = i / SEG, a = 1 - t;
+        const x = a*a*px + 2*a*t*c.x1 + t*t*c.x, y = a*a*py + 2*a*t*c.y1 + t*t*c.y;
+        if (cur) cur.push(new THREE.Vector2(x, fy(y))); }
+      px = c.x; py = c.y;
+    } else if (c.type === 'C') {
+      for (let i = 1; i <= SEG; i++) { const t = i / SEG, a = 1 - t;
+        const x = a*a*a*px + 3*a*a*t*c.x1 + 3*a*t*t*c.x2 + t*t*t*c.x;
+        const y = a*a*a*py + 3*a*a*t*c.y1 + 3*a*t*t*c.y2 + t*t*t*c.y;
+        if (cur) cur.push(new THREE.Vector2(x, fy(y))); }
+      px = c.x; py = c.y;
+    }
+  }
+  const polys = contours.filter(p => p.length >= 3);
+  if (!polys.length) return [];
+  const inside = (pt, poly) => {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+      if (((yi > pt.y) !== (yj > pt.y)) && (pt.x < (xj - xi) * (pt.y - yi) / ((yj - yi) || 1e-9) + xi)) c = !c;
+    }
+    return c;
+  };
+  const dep = polys.map(p => { let d = 0; for (const q of polys) if (q !== p && inside(p[0], q)) d++; return d; });
+  const shapes = [];
+  for (let i = 0; i < polys.length; i++) {
+    if (dep[i] % 2 !== 0) continue;                       // odd nesting = hole
+    const sh = new THREE.Shape(polys[i]);
+    for (let j = 0; j < polys.length; j++) {
+      if (j !== i && dep[j] === dep[i] + 1 && inside(polys[j][0], polys[i])) {
+        sh.holes.push(new THREE.Path(polys[j]));
+      }
+    }
+    shapes.push(sh);
+  }
+  return shapes;
+}
+
 async function open3DTextDialog() {
+  let sysFonts = [];
+  try { if (window.electronListFonts) sysFonts = await window.electronListFonts(); } catch (_) {}
+  const _esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
       <span style="width:80px;font-size:12px;">Text</span>
       <input id="_t3_text" type="text" value="TEXT" style="flex:1;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
+      <span style="width:80px;font-size:12px;">Font</span>
+      <select id="_t3_font" style="flex:1;padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;">
+        <optgroup label="Built-in">
+          ${_TEXT_FONTS.map((f, i) => '<option value="' + f.url + '" data-kind="tf"' + (i === 0 ? ' selected' : '') + '>' + f.name + '</option>').join('')}
+        </optgroup>
+        ${sysFonts.length ? ('<optgroup label="System fonts (' + sysFonts.length + ')">' + sysFonts.map(f => '<option value="' + _esc(f.path) + '" data-kind="sys">' + _esc(f.name) + '</option>').join('') + '</optgroup>') : ''}
+      </select>
     </label>
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
       <span style="width:80px;font-size:12px;">Size (m)</span>
@@ -28691,7 +28855,7 @@ async function open3DTextDialog() {
         <option value="y">Floor (Y) — Lay flat on ground</option>
       </select>
     </label>
-    <div style="font-size:10px;color:#888;margin-top:8px;">Korean helvetiker may not render with this font.</div>
+    <div style="font-size:10px;color:#888;margin-top:8px;">Built-in fonts are Latin-only. For Korean/CJK, pick a System font that supports it (e.g. AppleGothic, AppleMyungjo).</div>
   `;
   const ok = await showModal('3D Add text', wrap);
   if (!ok) return;
@@ -28700,20 +28864,32 @@ async function open3DTextDialog() {
   const depth = parseFloat(wrap.querySelector('#_t3_depth').value) || 0.05;
   const colHex = wrap.querySelector('#_t3_col').value || '#1a1a1a';
   const dir = wrap.querySelector('#_t3_dir').value;
-  let font;
-  try { font = await _loadHelvetikerFont(); }
-  catch (err) { showError('Failed to load font: ' + err.message); return; }
+  const fontEl = wrap.querySelector('#_t3_font');
+  const fontOpt = fontEl && fontEl.selectedOptions && fontEl.selectedOptions[0];
+  const fontKind = fontOpt ? (fontOpt.dataset.kind || 'tf') : 'tf';
+  const fontVal = (fontOpt ? fontOpt.value : '') || _TEXT_FONTS[0].url;
   let geo;
   try {
-    geo = new THREE.TextGeometry(text, {
-      font,
-      size,
-      height: depth,
-      curveSegments: 6,
-      bevelEnabled: false,
-    });
+    if (fontKind === 'sys') {
+      // System .ttf/.otf → parse with opentype.js, build extruded shapes.
+      if (typeof opentype === 'undefined' || !window.electronReadFont) throw new Error('System font support unavailable');
+      const bytes = await window.electronReadFont(fontVal);
+      if (!bytes) throw new Error('Could not read font file');
+      const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
+      let ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+      // .ttc collection → extract the first face to a standalone sfnt first.
+      try { if (new DataView(ab).getUint32(0) === 0x74746366) ab = _ttcToSfnt(ab, 0); } catch (_) {}
+      const otf = opentype.parse(ab);
+      const shapes = _shapesFromOpentype(otf, text, size);
+      if (!shapes.length) throw new Error('No glyph outlines for this text/font');
+      geo = new THREE.ExtrudeGeometry(shapes, { depth, bevelEnabled: false, steps: 1, curveSegments: 6 });
+    } else {
+      // Built-in typeface.json font → THREE.TextGeometry.
+      const font = await _loadTypeface(fontVal);
+      geo = new THREE.TextGeometry(text, { font, size, height: depth, curveSegments: 6, bevelEnabled: false });
+    }
   } catch (err) {
-    showError('TextGeometry Failed to create: ' + err.message);
+    showError('Failed to create 3D text: ' + (err && err.message ? err.message : err));
     return;
   }
   geo.center();
@@ -28727,8 +28903,8 @@ async function open3DTextDialog() {
   mesh.updateMatrixWorld(true);
   // Reuse the GLB import pipeline to convert into a SketchObject
   const root = new THREE.Group(); root.add(mesh);
-  _importMeshTreeIntoScene(root, '3D Text', 1);
-  setStatus('msg', '3D Text added. Move Adjust the position with the tool.');
+  _importMeshTreeIntoScene(root, '3D Text', 1, { featureEdgesOnly: true, groupComponents: true, placeMode: true });
+  setStatus('msg', 'Click in the viewport to place the 3D text. Esc to cancel.');
 }
 
 async function openTitleBlockDialog() {
@@ -29274,8 +29450,24 @@ animate();
          : b.dataset.act  ? 'a:' + b.dataset.act  : null;
   }
   function load() {
-    try { const x = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (Array.isArray(x)) return x; } catch (_) {}
-    return initialOrder.slice();
+    let saved = null;
+    try { const x = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (Array.isArray(x)) saved = x; } catch (_) {}
+    if (!saved) return initialOrder.slice();
+    // Merge in buttons added since the layout was saved (e.g. a new tool),
+    // each placed right after its original neighbour — otherwise a stale saved
+    // layout silently drops newly-added toolbar icons.
+    const present = new Set(saved.filter(k => k !== '|'));
+    const result = saved.slice();
+    for (let i = 0; i < initialOrder.length; i++) {
+      const k = initialOrder[i];
+      if (k === '|' || present.has(k)) continue;
+      let after = null;
+      for (let j = i - 1; j >= 0; j--) { const pk = initialOrder[j]; if (pk !== '|' && present.has(pk)) { after = pk; break; } }
+      const at = after ? result.indexOf(after) : -1;
+      if (at >= 0) result.splice(at + 1, 0, k); else result.push(k);
+      present.add(k);
+    }
+    return result;
   }
   function save(order) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(order)); } catch (_) {} }
 

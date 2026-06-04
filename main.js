@@ -123,6 +123,57 @@ ipcMain.handle('detach-consume', async (event) => {
   return doc || null;
 });
 
+// ── System fonts for 3D text ───────────────────────────────────────────
+// Enumerate installed .ttf/.otf/.ttc fonts so 3D Text can use any system
+// font. .ttf/.otf parse directly in the renderer; .ttc collections are split
+// to a standalone sfnt there (the first face) before opentype.js parses them.
+const _FONT_DIRS = [
+  '/System/Library/Fonts',
+  '/System/Library/Fonts/Supplemental',
+  '/Library/Fonts',
+  path.join(require('os').homedir(), 'Library', 'Fonts'),
+];
+// macOS keeps DOWNLOADED "optional" fonts (e.g. NanumGothic and many CJK
+// faces — the ones Font Book lists but that aren't in the dirs above) under
+// per-asset hash folders here. Walk it so those show up too.
+const _ASSETS_FONT_ROOT = '/System/Library/AssetsV2';
+ipcMain.handle('list-system-fonts', async () => {
+  const out = [];
+  const seen = new Set();
+  const add = (dir, f) => {
+    if (!/\.(ttf|otf|ttc)$/i.test(f)) return;
+    const key = f.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name: f.replace(/\.(ttf|otf|ttc)$/i, ''), path: path.join(dir, f) });
+  };
+  for (const dir of _FONT_DIRS) {
+    try { for (const f of fs.readdirSync(dir)) add(dir, f); } catch (_) {}
+  }
+  // AssetsV2/com_apple_MobileAsset_Font*/<hash>.asset/AssetData/<font files>
+  try {
+    for (const sub of fs.readdirSync(_ASSETS_FONT_ROOT)) {
+      if (!/^com_apple_MobileAsset_Font/.test(sub)) continue;
+      const subDir = path.join(_ASSETS_FONT_ROOT, sub);
+      let assets;
+      try { assets = fs.readdirSync(subDir); } catch (_) { continue; }
+      for (const a of assets) {
+        const adata = path.join(subDir, a, 'AssetData');
+        try { for (const f of fs.readdirSync(adata)) add(adata, f); } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+});
+ipcMain.handle('read-font-file', async (_e, p) => {
+  // Only allow reads from the known system font locations — never arbitrary paths.
+  if (typeof p !== 'string') return null;
+  const ok = _FONT_DIRS.some(d => p.startsWith(d + '/')) || p.startsWith(_ASSETS_FONT_ROOT + '/');
+  if (!ok) return null;
+  try { return fs.readFileSync(p); } catch (_) { return null; }
+});
+
 let autoUpdater = null;
 try {
   // Only enable auto-updater for real packaged builds where the
