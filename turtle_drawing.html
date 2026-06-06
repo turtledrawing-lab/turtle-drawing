@@ -24642,13 +24642,13 @@ function _handleActionImpl(act) {
       export3DM().catch(e => { console.error(e); showError('3DM export failed: ' + e.message); });
       break;
     case 'export-svg':
-      try { AD.Export.saveSVG(); } catch (e) { console.error(e); showError('SVG export failed: ' + e.message); }
+      Promise.resolve().then(() => AD.Export.saveSVG()).catch(e => { console.error(e); showError('SVG export failed: ' + e.message); });
       break;
     case 'export-pdf':
       AD.Export.savePDF().catch(e => { console.error(e); showError('PDF export failed: ' + e.message); });
       break;
     case 'export-dxf':
-      try { AD.Export.saveDXF(); } catch (e) { console.error(e); showError('DXF export failed: ' + e.message); }
+      Promise.resolve().then(() => AD.Export.saveDXF()).catch(e => { console.error(e); showError('DXF export failed: ' + e.message); });
       break;
     case 'about':
       alert(

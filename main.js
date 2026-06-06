@@ -393,9 +393,9 @@ function createWindow(pendingDocJson) {
             { label: '3DM (Rhino)...', click: send('export-3dm') },
             { label: 'STL (3D printing)...',    click: send('export-stl') },
             { type: 'separator' },
-            { label: 'Section SVG...',          click: send('export-svg') },
-            { label: 'Section PDF...',          click: send('export-pdf') },
-            { label: 'Section DXF...',          click: send('export-dxf') },
+            { label: 'Section / Elevation SVG...', click: send('export-svg') },
+            { label: 'Section / Elevation PDF...', click: send('export-pdf') },
+            { label: 'Section / Elevation DXF (per-layer colors)...', click: send('export-dxf') },
           ],
         },
         ...(!isMac ? [

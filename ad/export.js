@@ -82,69 +82,13 @@
        it uses Three.js's own z-buffer output — what the viewport
        shows IS what gets exported.
        ============================================================ */
-    let viewPixels = null;
-    let viewW = 0, viewH = 0;
-    try {
-      const _dpr2 = renderer.getPixelRatio ? renderer.getPixelRatio() : 1;
-      viewW = Math.max(256, Math.floor(W * _dpr2));
-      viewH = Math.max(256, Math.floor(H * _dpr2));
-      const target2 = new THREE.WebGLRenderTarget(viewW, viewH, {
-        format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
-        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-      });
-      const savedTarget = renderer.getRenderTarget();
-      const savedClear = renderer.getClearColor(new THREE.Color());
-      const savedAlpha = renderer.getClearAlpha();
-      renderer.setClearColor(0xffffff, 1);
-      renderer.setRenderTarget(target2);
-      renderer.clear();
-      renderer.render(scene, camera);
-      renderer.setRenderTarget(savedTarget);
-      renderer.setClearColor(savedClear, savedAlpha);
-      viewPixels = new Uint8Array(viewW * viewH * 4);
-      renderer.readRenderTargetPixels(target2, 0, 0, viewW, viewH, viewPixels);
-      target2.dispose();
-      // ---- DEBUG: dump the HLR reference image to a floating panel so
-      //      we can visually confirm it looks like a correct hidden-line
-      //      view (if it looks like wireframe, LineMaterial's depth
-      //      testing is the real culprit).
-      try {
-        const dbg = document.createElement('canvas');
-        dbg.width = viewW; dbg.height = viewH;
-        const ctx = dbg.getContext('2d');
-        const img = ctx.createImageData(viewW, viewH);
-        // Flip Y because readRenderTargetPixels returns bottom-up.
-        for (let y = 0; y < viewH; y++) {
-          const srcRow = (viewH - 1 - y) * viewW * 4;
-          const dstRow = y * viewW * 4;
-          for (let x = 0; x < viewW * 4; x++) {
-            img.data[dstRow + x] = viewPixels[srcRow + x];
-          }
-        }
-        ctx.putImageData(img, 0, 0);
-        const url = dbg.toDataURL('image/png');
-        let panel = document.getElementById('_adHlrDebug');
-        if (!panel) {
-          panel = document.createElement('div');
-          panel.id = '_adHlrDebug';
-          panel.style.cssText =
-            'position:fixed;right:8px;bottom:8px;z-index:10000;' +
-            'width:240px;border:1px solid #333;background:#fff;' +
-            'box-shadow:0 4px 12px rgba(0,0,0,0.25);padding:4px;' +
-            'font:10px -apple-system,sans-serif;';
-          panel.innerHTML =
-            '<div style="display:flex;justify-content:space-between;padding:2px 4px;">'
-            + '<span>HLR reference</span><span id="_adHlrClose" style="cursor:pointer;color:#888;">×</span></div>'
-            + '<img id="_adHlrImg" style="width:100%;display:block;border:0.5px solid #aaa;">';
-          document.body.appendChild(panel);
-          panel.querySelector('#_adHlrClose').onclick = () => panel.remove();
-        }
-        panel.querySelector('#_adHlrImg').src = url;
-      } catch (_) {}
-    } catch (err) {
-      console.warn('[export] pixel HLR pass failed', err);
-      viewPixels = null;
-    }
+    // NOTE: the old "pixel-overlap" HLR (render the whole scene, then keep an
+    // edge if it overlaps a dark pixel) is disabled — on dense models a hidden
+    // edge almost always crosses some other dark stroke, so it was kept and the
+    // export looked like a wireframe. HLR now relies solely on the GPU depth
+    // buffer below (raycast fallback), which actually tests occlusion.
+    const viewPixels = null;
+    const viewW = 0, viewH = 0;
     /* Is a screen-space pixel "dark" (likely a line stroke or deep
        shade)?  Anything with an average channel below 200 passes. */
     const pixelIsDark = (px, py) => {
@@ -193,87 +137,106 @@
        in front of the edge is closer → edge hidden. This mirrors
        exactly what the GPU does when rendering the viewport.
        ============================================================ */
+    // Solid meshes that occlude (skip transparent glass/water). MUST be
+    // defined here — BEFORE the depth pass — because the depth pass needs it
+    // to decide which nodes write depth. (Was previously declared further
+    // down, so the depth pass hit a temporal-dead-zone error and silently
+    // fell back to slow/loose raycast HLR every export.)
+    const occRay = new THREE.Raycaster();
+    const occMeshes = Model.objects
+      .filter(o => o.group && o.group.visible && o.em && o.em.faces.length)
+      // Opaque solids occlude; glass / translucent surfaces do NOT (you see
+      // through them in the viewport, and the elevation should match).
+      .filter(o => !o.mat || !o.mat.transparent || (o.mat.opacity || 0) > 0.9)
+      .map(o => {
+        o.mesh.updateMatrixWorld(true);
+        try {
+          o.mesh.geometry.computeBoundingBox();
+          o.mesh.geometry.computeBoundingSphere();
+        } catch (_) {}
+        return o.mesh;
+      });
+
     const _dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : 1;
-    const depthW = Math.max(64, Math.floor(W * _dpr));
-    const depthH = Math.max(64, Math.floor(H * _dpr));
+    // Render the occluder depth buffer at high resolution so THIN geometry
+    // (railing balusters, glazing bars, mullions) rasterises cleanly — at low
+    // res they alias in and out and their edges get falsely cut. Cap long side.
+    let depthW = Math.floor(W * _dpr * 2), depthH = Math.floor(H * _dpr * 2);
+    const _capRes = 4096;
+    if (Math.max(depthW, depthH) > _capRes) {
+      const sc = _capRes / Math.max(depthW, depthH);
+      depthW = Math.floor(depthW * sc); depthH = Math.floor(depthH * sc);
+    }
+    depthW = Math.max(64, depthW); depthH = Math.max(64, depthH);
+    const _depthScaleX = depthW / W, _depthScaleY = depthH / H;
     let depthPixels = null;
-    try {
-      const target = new THREE.WebGLRenderTarget(depthW, depthH, {
-        format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
-        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-      });
-      // Build the clip-plane list BEFORE creating the depth material so
-      // we can attach it to the material directly. MeshDepthMaterial
-      // doesn't automatically honour renderer.clippingPlanes when used
-      // as scene.overrideMaterial — it needs its own copy.
-      const clipList = activePlanes.map(sp => sp.plane);
-      const depthMat = new THREE.MeshDepthMaterial({
-        depthPacking: THREE.RGBADepthPacking,
-        side: THREE.DoubleSide,
-      });
-      if (clipList.length) {
-        depthMat.clippingPlanes = clipList;
-        depthMat.clipShadows = true;
-      }
-      // Hide everything that isn't an opaque solid — lines / sprites /
-      // helper geometry should NOT write depth.
+    {
+      // Saved state + resources hoisted so the finally ALWAYS restores the live
+      // renderer/scene even if render / readback throws (same leak guard as the
+      // id pass below).
+      let savedOverride, savedClipEnabled, savedClippingPlanes, savedClearColor,
+          savedClearAlpha, savedTarget, mutated = false;
       const savedVis = [];
-      const solidMeshes = new Set(occMeshes);
-      scene.traverse(node => {
-        if (!node.visible) return;
-        const isSolid = solidMeshes.has(node);
-        if (isSolid) return;
-        // Keep intermediate groups visible; only hide leaves we don't want.
-        if (node.isMesh || node.isLine || node.isLineSegments ||
-            node.isLineSegments2 || node.isSprite || node.isPoints) {
-          savedVis.push(node);
-          node.visible = false;
+      let target = null, depthMat = null;
+      try {
+        target = new THREE.WebGLRenderTarget(depthW, depthH, {
+          format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
+          minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+        });
+        // MeshDepthMaterial doesn't honour renderer.clippingPlanes via
+        // overrideMaterial — it needs its own copy.
+        const clipList = activePlanes.map(sp => sp.plane);
+        depthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
+        if (clipList.length) { depthMat.clippingPlanes = clipList; depthMat.clipShadows = true; }
+        savedOverride = scene.overrideMaterial;
+        savedClipEnabled = renderer.localClippingEnabled;
+        savedClippingPlanes = renderer.clippingPlanes;
+        savedClearColor = renderer.getClearColor(new THREE.Color());
+        savedClearAlpha = renderer.getClearAlpha();
+        savedTarget = renderer.getRenderTarget();
+        mutated = true;
+        // Hide everything that isn't an opaque solid — lines / sprites /
+        // helper geometry should NOT write depth.
+        const solidMeshes = new Set(occMeshes);
+        scene.traverse(node => {
+          if (!node.visible) return;
+          if (solidMeshes.has(node)) return;
+          if (node.isMesh || node.isLine || node.isLineSegments ||
+              node.isLineSegments2 || node.isSprite || node.isPoints) {
+            savedVis.push(node); node.visible = false;
+          }
+        });
+        scene.overrideMaterial = depthMat;
+        renderer.localClippingEnabled = true;
+        renderer.clippingPlanes = clipList;
+        renderer.setClearColor(0xffffff, 1);
+        renderer.setRenderTarget(target);
+        renderer.clear();
+        renderer.render(scene, camera);
+        depthPixels = new Uint8Array(depthW * depthH * 4);
+        renderer.readRenderTargetPixels(target, 0, 0, depthW, depthH, depthPixels);
+        // Sanity check — an all-"far" buffer means the pass silently failed.
+        let hasDepth = false;
+        for (let i = 0; i < depthPixels.length; i += 1024) {
+          if (depthPixels[i] < 250 || depthPixels[i + 1] < 250 ||
+              depthPixels[i + 2] < 250 || depthPixels[i + 3] < 250) { hasDepth = true; break; }
         }
-      });
-      const savedOverride = scene.overrideMaterial;
-      const savedClipEnabled = renderer.localClippingEnabled;
-      const savedClippingPlanes = renderer.clippingPlanes;
-      const savedClearColor = renderer.getClearColor(new THREE.Color());
-      const savedClearAlpha = renderer.getClearAlpha();
-      scene.overrideMaterial = depthMat;
-      renderer.localClippingEnabled = true;
-      renderer.clippingPlanes = clipList;
-      const savedTarget = renderer.getRenderTarget();
-      renderer.setClearColor(0xffffff, 1);
-      renderer.setRenderTarget(target);
-      renderer.clear();
-      renderer.render(scene, camera);
-      renderer.setRenderTarget(savedTarget);
-      // Restore state before we early-out to readPixels.
-      renderer.clippingPlanes = savedClippingPlanes;
-      renderer.localClippingEnabled = savedClipEnabled;
-      renderer.setClearColor(savedClearColor, savedClearAlpha);
-      scene.overrideMaterial = savedOverride;
-      for (const n of savedVis) n.visible = true;
-      depthPixels = new Uint8Array(depthW * depthH * 4);
-      renderer.readRenderTargetPixels(target, 0, 0, depthW, depthH, depthPixels);
-      // Sanity check — if the entire buffer is "far" (white pixels =
-      // nothing rendered), the depth pass silently failed. In that case
-      // fall back to raycast so we don't mistakenly mark every edge
-      // as visible.
-      let hasDepth = false;
-      for (let i = 0; i < depthPixels.length; i += 1024) {
-        if (depthPixels[i] < 250 || depthPixels[i + 1] < 250 ||
-            depthPixels[i + 2] < 250 || depthPixels[i + 3] < 250) {
-          hasDepth = true; break;
-        }
-      }
-      if (!hasDepth) {
-        console.warn('[export] depth pass returned empty — falling back to raycast');
+        if (!hasDepth) { console.warn('[export] depth pass returned empty — falling back to raycast'); depthPixels = null; }
+      } catch (err) {
+        console.warn('[export] depth pass failed, using raycast fallback', err);
         depthPixels = null;
-      } else if (typeof setStatus === 'function') {
-        setStatus('msg', 'HLR: GPU depth buffer active.');
+      } finally {
+        if (mutated) {
+          scene.overrideMaterial = savedOverride;
+          for (const n of savedVis) n.visible = true;
+          renderer.setRenderTarget(savedTarget);
+          renderer.clippingPlanes = savedClippingPlanes;
+          renderer.localClippingEnabled = savedClipEnabled;
+          renderer.setClearColor(savedClearColor, savedClearAlpha);
+        }
+        if (target) target.dispose();
+        if (depthMat) depthMat.dispose();
       }
-      target.dispose();
-      depthMat.dispose();
-    } catch (err) {
-      console.warn('[export] depth pass failed, using raycast fallback', err);
-      depthPixels = null;
     }
 
     const unpackDepth = (r, g, b, a) =>
@@ -281,8 +244,8 @@
       b / Math.pow(256, 2) + a / 256;
     const depthAt = (px, py) => {
       if (!depthPixels) return null;
-      const x = Math.max(0, Math.min(depthW - 1, Math.round(px * _dpr)));
-      const yFlip = Math.max(0, Math.min(depthH - 1, depthH - 1 - Math.round(py * _dpr)));
+      const x = Math.max(0, Math.min(depthW - 1, Math.round(px * _depthScaleX)));
+      const yFlip = Math.max(0, Math.min(depthH - 1, depthH - 1 - Math.round(py * _depthScaleY)));
       const idx = (yFlip * depthW + x) * 4;
       return unpackDepth(
         depthPixels[idx], depthPixels[idx + 1],
@@ -290,21 +253,7 @@
       );
     };
 
-    const occRay = new THREE.Raycaster();
-    // Exclude transparent (glass, water) surfaces — they don't occlude
-    // in the viewport and shouldn't here either.
-    const occMeshes = Model.objects
-      .filter(o => o.group && o.group.visible && o.em && o.em.faces.length)
-      .filter(o => !o.mat || !o.mat.transparent || (o.mat.opacity || 0) > 0.9)
-      .map(o => {
-        o.mesh.updateMatrixWorld(true);
-        // Raycaster needs fresh bounding volumes when geometry changes.
-        try {
-          o.mesh.geometry.computeBoundingBox();
-          o.mesh.geometry.computeBoundingSphere();
-        } catch (_) {}
-        return o.mesh;
-      });
+    // (occRay / occMeshes defined above, before the depth pass.)
     const camPos = camera.position.clone();
     const _sceneBBox = new THREE.Box3();
     for (const o of Model.objects) {
@@ -324,20 +273,55 @@
        more robust than a single midpoint test: long edges that are
        mostly hidden but peek out at a corner still get drawn; edges
        buried behind a solid are reliably dropped. */
+    // Linearise window depth → real view-space distance. In a perspective
+    // view raw window depth crushes all distant geometry into a sliver near
+    // 1.0, so a fixed bias can't tell front from back — that's why distant
+    // elevations exported as a full wireframe (no edges were ever culled).
+    // Comparing linear world distances with a world-space tolerance fixes it.
+    const _near = camera.near || 0.1, _far = camera.far || 1e5;
+    const _isPersp = !!camera.isPerspectiveCamera;
+    const linearizeDepth = (d01) => {
+      if (!_isPersp) return _near + d01 * (_far - _near);   // ortho: already linear
+      const zndc = d01 * 2 - 1;
+      return (2 * _near * _far) / (_far + _near - zndc * (_far - _near));
+    };
+    // Occlusion bias in world units. CLAMPED (not purely scene-relative): a
+    // model with site/context has a huge diagonal, and a relative-only tol then
+    // exceeds a column's depth so its hidden BACK edge leaks. Base stays tight
+    // (culls thin columns); the slope-scaled cap allows grazing surfaces more.
+    const _hlrTol = Math.max(0.01, Math.min(0.06, sceneDiag * 0.0015));
+    const _hlrMaxTol = Math.max(0.1, Math.min(0.25, sceneDiag * 0.008));
+    const _projScratch = new THREE.Vector3();
     const isSampleVisible = (p3) => {
       // Primary: GPU depth buffer comparison. Pixel-accurate, matches
       // exactly what Three.js z-tests during viewport rendering.
       if (depthPixels) {
-        const projVec = p3.clone().project(camera);
+        const projVec = _projScratch.copy(p3).project(camera);
         if (projVec.z < -1 || projVec.z > 1) return true;
         const sx = (projVec.x + 1) * 0.5 * W;
         const sy = (1 - projVec.y) * 0.5 * H;
         if (sx < 0 || sx >= W || sy < 0 || sy >= H) return true;
-        const edgeDepth = (projVec.z + 1) * 0.5;  // NDC → [0,1]
-        const sceneDepth = depthAt(sx, sy);
-        if (sceneDepth == null) return true;
-        if (sceneDepth >= 0.9999) return true;     // nothing rendered
-        return edgeDepth <= sceneDepth + 0.0008;   // small bias for self-hit
+        const edgeLin = linearizeDepth((projVec.z + 1) * 0.5);
+        const sd = depthAt(sx, sy);
+        if (sd == null || sd >= 0.9999) return true;            // background — nothing in front
+        const sceneLin = linearizeDepth(sd);
+        if (edgeLin <= sceneLin + _hlrTol) return true;          // clearly in front → visible
+        // Behind by more than the base bias. A GRAZING surface / coplanar
+        // detail changes depth fast across a pixel, so widen by the local
+        // gradient to avoid falsely culling it. Capped so it can't balloon at
+        // a depth STEP (parapet top, column silhouette) — any 1-px over-reach
+        // there is a short run the run-length cleanup drops. Flat frontal
+        // occluders have ~0 gradient, so thin columns' BACK edges stay culled.
+        let grad = 0;
+        for (let oy = -1; oy <= 1; oy++)
+          for (let ox = -1; ox <= 1; ox++) {
+            if (!ox && !oy) continue;
+            const d = depthAt(sx + ox / _depthScaleX, sy + oy / _depthScaleY);
+            if (d == null || d >= 0.9999) continue;
+            const diff = Math.abs(linearizeDepth(d) - sceneLin);
+            if (diff > grad) grad = diff;
+          }
+        return edgeLin <= sceneLin + Math.min(_hlrTol + grad * 1.5, _hlrMaxTol);
       }
       // Raycast fallback.
       const dir = new THREE.Vector3().subVectors(p3, camPos);
@@ -382,28 +366,23 @@
       return inside;
     };
 
+    const _hlrS = new THREE.Vector3(), _hlrP0 = new THREE.Vector3(), _hlrP1 = new THREE.Vector3();
+    // Collect candidate segments during the scene walk. Hidden-line removal is
+    // applied AFTERWARDS in one GPU pass (see "GPU per-edge HLR" below) so each
+    // edge's visibility is decided by the EXACT depth test the viewport uses —
+    // not a world-space tolerance, which can never separate a thin column's
+    // front edge from its (screen-coincident) hidden back edge.
+    const candEdges = [];
     const pushLineSeg = (a3, b3, mat, layer, kind) => {
       const clipped = clipSeg3(a3, b3);
       if (!clipped) return;
-      const pa = proj(clipped[0]);
-      const pb = proj(clipped[1]);
+      const A = clipped[0], B = clipped[1];
+      const pa = proj(A), pb = proj(B);
       if (!pa.ok && !pb.ok) return;
-      // Hidden-line removal for non-cut edges:
-      //   1. Pixel-overlap test against the rendered viewport buffer.
-      //   2. Fallback: raycast HLR.
-      if (kind !== 'cut') {
-        if (viewPixels) {
-          if (!is2DEdgeVisible(pa.x, pa.y, pb.x, pb.y)) return;
-        } else if (!isVisibleAgainstSolid(clipped[0], clipped[1])) {
-          return;
-        }
-      }
-      edges.push({
-        x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
-        weight: weightOf(mat),
-        color: colourOf(mat),
-        layer: layer || 'Default',
-        kind: kind || 'visible',
+      candEdges.push({
+        A, B, pa, pb,
+        weight: weightOf(mat), color: colourOf(mat),
+        layer: layer || 'Default', kind: kind || 'visible',
       });
     };
 
@@ -447,13 +426,61 @@
        ============================================================ */
     const camDir = new THREE.Vector3();
     camera.getWorldDirection(camDir);
+    // "As seen" mode — when set, export each object's live displayed edge
+    // geometry (o.edges) instead of rebuilding every mesh edge, so the
+    // output matches the viewport (hidden tessellation stays hidden).
+    const featureOnly = !!opts.featureOnly;
 
     for (const o of Model.objects) {
       if (!o.group || !o.group.visible) continue;
       if (!o.em || !o.em.faces.length) continue;
       const layer = o.layerId || 'Default';
       const weight = (AD.Layers && AD.Layers.BASE_WEIGHT) || 0.20;
+      const lineMat = {
+        color: { getHexString: () => '1a1a1a' },
+        isLineMaterial: true,
+        linewidth: weight / 0.25 * 1.1,
+      };
 
+      // ── "As seen" mode: export EXACTLY the edge lines the viewport draws
+      //    for this object — i.e. its live o.edges geometry: feature/crease
+      //    edges for imported meshes, real edges for modelled solids,
+      //    nothing for edge-hidden objects — then HLR-test them. We CANNOT
+      //    re-derive this from o.em.faces: imported meshes keep unwelded
+      //    vertices, so every triangle edge reads as a boundary and no
+      //    tessellation can be filtered out (that's why both modes looked
+      //    identical). THREE.EdgesGeometry (which builds o.edges) welds by
+      //    position and applies the 30° crease threshold for us. ───────────
+      if (featureOnly) {
+        // Prefer the object's live displayed edges (exactly the viewport).
+        let src = o.edges;
+        let geo = src && src.geometry;
+        let pos = geo && geo.attributes && geo.attributes.position;
+        let tempGeo = null;
+        if (!pos || pos.count < 2) {
+          // Edge-hidden object (heavy import drawn shaded-only): derive the
+          // same outline/crease edges on the fly so the elevation isn't
+          // missing it. EdgesGeometry welds by position + uses the 30° crease
+          // threshold — what the viewport would show with edges enabled.
+          try {
+            tempGeo = new THREE.EdgesGeometry(o.mesh.geometry, 30);
+            src = o.mesh;
+            pos = tempGeo.attributes.position;
+          } catch (_) {}
+        }
+        if (!pos || pos.count < 2) { if (tempGeo) tempGeo.dispose(); continue; }
+        src.updateMatrixWorld(true);
+        const m = src.matrixWorld;
+        for (let i = 0; i + 1 < pos.count; i += 2) {
+          worldA.fromBufferAttribute(pos, i).applyMatrix4(m);
+          worldB.fromBufferAttribute(pos, i + 1).applyMatrix4(m);
+          pushLineSeg(worldA, worldB, lineMat, layer, 'visible');
+        }
+        if (tempGeo) tempGeo.dispose();
+        continue;
+      }
+
+      // ── Wireframe mode: rebuild every front-facing edge from the mesh.
       // Force fresh face normals — stale normals (left behind by a
       // Move / Push-Pull that modified the mesh) would break the
       // back-face classification below.
@@ -471,31 +498,16 @@
         }
       }
       for (const [, info] of edgeMap) {
-        // Face-side analysis:
-        //   frontCount = number of adjacent faces whose normal faces
-        //                the camera
-        //   backCount  = faces whose normal points away
-        // An edge is RELEVANT when:
-        //   • frontCount ≥ 1 AND backCount ≥ 1 → SILHOUETTE, keep
-        //   • frontCount = adjacent count      → interior front crease;
-        //     keep ONLY if at least one neighbouring face is actually
-        //     visible (we defer this to the raycast)
-        //   • backCount = adjacent count       → hidden; drop
-        let frontCount = 0, backCount = 0;
+        // Drop edges whose every adjacent face points away from the camera.
+        let frontCount = 0;
         for (const f of info.faces) {
-          const d = f.normal.dot(camDir);
-          if (d < -1e-4) frontCount++;
-          else if (d > 1e-4) backCount++;
+          if (f.normal.dot(camDir) < -1e-4) frontCount++;
         }
         if (frontCount === 0) continue;       // all back → cull
         const a3 = o.em.vertices[info.a];
         const b3 = o.em.vertices[info.b];
         if (!a3 || !b3) continue;
-        pushLineSeg(a3, b3, {
-          color: { getHexString: () => '1a1a1a' },
-          isLineMaterial: true,
-          linewidth: weight / 0.25 * 1.1,
-        }, layer, 'visible');
+        pushLineSeg(a3, b3, lineMat, layer, 'visible');
       }
     }
 
@@ -559,6 +571,196 @@
           return;
         }
       });
+    }
+
+    /* ============================================================
+       GPU per-edge HLR (ID buffer) — the authoritative pass.
+       ------------------------------------------------------------
+       Render the solid faces to a depth buffer (white, with the same
+       polygon-offset the viewport uses so coplanar edges win), then
+       render every candidate edge as a line whose COLOUR encodes its
+       index, depth-tested against those faces. A pixel then holds the
+       index of the edge actually visible there — exactly what the
+       viewport shows. An edge behind a shaded face is depth-culled so
+       its index never appears (dropped); a thin column's back edge
+       (coincident on screen with the front edge) is culled while the
+       front edge stays, because each edge is matched by its OWN index.
+       ============================================================ */
+    const visCand = candEdges.filter(e => e.kind !== 'cut');
+    let idPixels = null;
+    if (visCand.length && visCand.length < 16000000) {
+      const clipList = activePlanes.map(sp => sp.plane);
+      // Saved state + GPU resources hoisted OUTSIDE the try so the finally can
+      // ALWAYS restore the live renderer/scene — a render/readback throw must
+      // not leak a bound target / swapped materials / hidden nodes into the
+      // viewport (that would corrupt every subsequent frame until reload).
+      let savedClipEnabled, savedClippingPlanes, savedClear, savedAlpha,
+          savedAutoClear, savedTarget, mutated = false;
+      const savedVis = [];
+      const savedMats = [];
+      let idTarget = null, faceMat = null, idGeo = null, idMat = null, idLines = null;
+      try {
+        idTarget = new THREE.WebGLRenderTarget(depthW, depthH, {
+          format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
+          minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+          depthBuffer: true,
+        });
+        // A plain render target gets a 16-bit depth renderbuffer, which z-fights
+        // at building distance — edges ~cm behind a concrete face then pass the
+        // depth test (the leak). Attach a 32-bit FLOAT depth texture instead so
+        // the depth test is precise enough to cull them (canvas is 24-bit/clean).
+        try { idTarget.depthTexture = new THREE.DepthTexture(depthW, depthH, THREE.FloatType); } catch (_) {}
+        // Build the id-edge geometry — each segment coloured by its index.
+        const M = visCand.length;
+        const positions = new Float32Array(M * 6);
+        const colors = new Float32Array(M * 6);
+        for (let i = 0; i < M; i++) {
+          const e = visCand[i];
+          positions[i*6]   = e.A.x; positions[i*6+1] = e.A.y; positions[i*6+2] = e.A.z;
+          positions[i*6+3] = e.B.x; positions[i*6+4] = e.B.y; positions[i*6+5] = e.B.z;
+          const id = i + 1;                            // 1.. ; 0 / white = "no edge"
+          const r = (id & 255) / 255, g = ((id >> 8) & 255) / 255, b = ((id >> 16) & 255) / 255;
+          colors[i*6] = r; colors[i*6+1] = g; colors[i*6+2] = b;
+          colors[i*6+3] = r; colors[i*6+4] = g; colors[i*6+5] = b;
+        }
+        idGeo = new THREE.BufferGeometry();
+        idGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        idGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        idMat = new THREE.LineBasicMaterial({ vertexColors: true, depthTest: true, depthWrite: false, toneMapped: false });
+        if (clipList.length) idMat.clippingPlanes = clipList;
+        idLines = new THREE.LineSegments(idGeo, idMat);
+        idLines.frustumCulled = false;
+        idLines.renderOrder = 1000;                    // draw AFTER all faces in the SAME pass
+        // Flat WHITE material for the occluders so non-edge pixels read as
+        // background (id 0) and never collide with an edge index. Same polygon
+        // offset the viewport uses → an edge lying ON a face still wins.
+        faceMat = new THREE.MeshBasicMaterial({
+          color: 0xffffff, side: THREE.DoubleSide, toneMapped: false,
+          polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+        });
+        if (clipList.length) faceMat.clippingPlanes = clipList;
+        // Snapshot, then mutate the live scene/renderer.
+        savedClipEnabled = renderer.localClippingEnabled;
+        savedClippingPlanes = renderer.clippingPlanes;
+        savedClear = renderer.getClearColor(new THREE.Color());
+        savedAlpha = renderer.getClearAlpha();
+        savedAutoClear = renderer.autoClear;
+        savedTarget = renderer.getRenderTarget();
+        mutated = true;
+        const solidSet = new Set(occMeshes);
+        // Hide every leaf that isn't a solid occluder (the id lines are added
+        // AFTER this, so they stay visible) → only faces write depth.
+        scene.traverse(node => {
+          if (!node.visible) return;
+          if (solidSet.has(node)) return;
+          if (node.isMesh || node.isLine || node.isLineSegments ||
+              node.isLineSegments2 || node.isSprite || node.isPoints) {
+            savedVis.push(node); node.visible = false;
+          }
+        });
+        // Swap occluders to the white depth material (drawn first, renderOrder 0).
+        for (const m of occMeshes) { savedMats.push([m, m.material]); m.material = faceMat; }
+        scene.add(idLines);
+        renderer.localClippingEnabled = true;
+        renderer.clippingPlanes = clipList;
+        renderer.autoClear = true;
+        renderer.setClearColor(0xffffff, 1);
+        renderer.setRenderTarget(idTarget);
+        // ONE pass: faces (default renderOrder 0) write depth, then the id
+        // lines (renderOrder 1000) depth-test against them. No reliance on
+        // depth persisting between separate render() calls.
+        renderer.render(scene, camera);
+        idPixels = new Uint8Array(depthW * depthH * 4);
+        renderer.readRenderTargetPixels(idTarget, 0, 0, depthW, depthH, idPixels);
+        if (typeof setStatus === 'function') setStatus('msg', 'HLR: GPU per-edge buffer active.');
+      } catch (err) {
+        console.warn('[export] id-buffer HLR failed, using depth fallback', err);
+        idPixels = null;
+      } finally {
+        if (idLines) { try { scene.remove(idLines); } catch (_) {} }
+        for (const [m, mat] of savedMats) m.material = mat;       // restore occluder materials
+        if (mutated) {
+          for (const n of savedVis) n.visible = true;
+          renderer.setRenderTarget(savedTarget);
+          renderer.autoClear = savedAutoClear;
+          renderer.clippingPlanes = savedClippingPlanes;
+          renderer.localClippingEnabled = savedClipEnabled;
+          renderer.setClearColor(savedClear, savedAlpha);
+        }
+        if (idTarget) { if (idTarget.depthTexture) idTarget.depthTexture.dispose(); idTarget.dispose(); }
+        if (idGeo) idGeo.dispose();
+        if (idMat) idMat.dispose();
+        if (faceMat) faceMat.dispose();
+      }
+    }
+    // Index of the edge visible at a screen pixel (0 = none / background).
+    const idAtPixel = (px, py) => {
+      const x = Math.max(0, Math.min(depthW - 1, Math.round(px * _depthScaleX)));
+      const yF = Math.max(0, Math.min(depthH - 1, depthH - 1 - Math.round(py * _depthScaleY)));
+      const o = (yF * depthW + x) * 4;
+      const r = idPixels[o], g = idPixels[o + 1], b = idPixels[o + 2];
+      if (r === 255 && g === 255 && b === 255) return 0;
+      return r + g * 256 + b * 65536;
+    };
+    // Step the neighbourhood in BUFFER pixels (1/_depthScale screen px). The id
+    // buffer is 2-4x denser than screen, so a screen-px step would skip buffer
+    // pixels and miss the 1px-wide id line → false "hidden" → chopped edges.
+    const _bx = 1 / _depthScaleX, _by = 1 / _depthScaleY;
+    const idVisibleAt = (id, px, py) => {
+      for (let oy = -1; oy <= 1; oy++)
+        for (let ox = -1; ox <= 1; ox++)
+          if (idAtPixel(px + ox * _bx, py + oy * _by) === id) return true;
+      return false;
+    };
+
+    // ---- Resolve each candidate edge into visible spans ----
+    const processEdge = (e, idIndex) => {
+      const { A, B, pa, pb } = e;
+      const rec = (x1, y1, x2, y2) => edges.push({
+        x1, y1, x2, y2, weight: e.weight, color: e.color, layer: e.layer, kind: e.kind,
+      });
+      if (e.kind === 'cut') { rec(pa.x, pa.y, pb.x, pb.y); return; }   // section cuts: always drawn
+      const visAt = (t) => {
+        const p = proj(_hlrS.lerpVectors(A, B, t));
+        if (!p.ok) return false;
+        return idPixels ? idVisibleAt(idIndex, p.x, p.y) : isSampleVisible(_hlrS);
+      };
+      const refine = (tv, th) => { for (let k = 0; k < 7; k++) { const tm = (tv + th) * 0.5; if (visAt(tm)) tv = tm; else th = tm; } return tv; };
+      const flush = (t0, t1) => {
+        if (t1 - t0 < 1e-4) return;
+        const q0 = proj(_hlrP0.lerpVectors(A, B, t0));
+        const q1 = proj(_hlrP1.lerpVectors(A, B, t1));
+        if (!q0.ok && !q1.ok) return;
+        if (Math.hypot(q1.x - q0.x, q1.y - q0.y) < 2) return;          // drop sub-2px stubs
+        rec(q0.x, q0.y, q1.x, q1.y);
+      };
+      const screenLen = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+      const N = Math.max(1, Math.min(200, Math.ceil(screenLen / 4)));
+      const raw = new Array(N + 1);
+      for (let i = 0; i <= N; i++) raw[i] = visAt(i / N);
+      const vis = raw.slice();                         // median-filter isolated 1-sample noise
+      for (let i = 1; i < N; i++) { const s = (raw[i-1]?1:0)+(raw[i]?1:0)+(raw[i+1]?1:0); vis[i] = s >= 2; }
+      let vc = 0; for (let i = 0; i <= N; i++) if (vis[i]) vc++;
+      if (N < 5) { if (vc * 2 >= N + 1) rec(pa.x, pa.y, pb.x, pb.y); return; }   // too short → snap
+      // The EXACT id oracle needs no run-length cleanup (MINRUN 1 = no-op) — so
+      // even short real occlusions (a baluster's last few px behind the
+      // parapet) are CLIPPED, not filled as "noise" → no protruding stubs.
+      // The noisy depth fallback still gets the aggressive cleanup.
+      const MINRUN = idPixels ? 1 : 3;
+      for (let i = 0; i <= N; ) { if (vis[i]) { i++; continue; } let j = i; while (j <= N && !vis[j]) j++; if (j - i < MINRUN) for (let k = i; k < j; k++) vis[k] = true; i = j; }
+      for (let i = 0; i <= N; ) { if (!vis[i]) { i++; continue; } let j = i; while (j <= N && vis[j]) j++; if (j - i < MINRUN) for (let k = i; k < j; k++) vis[k] = false; i = j; }
+      let spanStart = -1, prevVis = false;
+      for (let i = 0; i <= N; i++) {
+        const v = vis[i];
+        if (v && !prevVis) spanStart = (i === 0) ? 0 : refine(i / N, (i - 1) / N);
+        else if (!v && prevVis) { flush(spanStart, refine((i - 1) / N, i / N)); spanStart = -1; }
+        prevVis = v;
+      }
+      if (prevVis && spanStart >= 0) flush(spanStart, 1);
+    };
+    {
+      let _vi = 0;
+      for (const e of candEdges) processEdge(e, e.kind === 'cut' ? 0 : (++_vi));
     }
 
     // ---- Cut-mask pass: drop every NON-cut edge that lies inside an
@@ -945,13 +1147,150 @@
       dxf += String(code).padStart(3, ' ') + '\n' + String(val) + '\n';
     };
 
+    // ── Per-layer colours ────────────────────────────────────────────────
+    // Use the readable layer NAME as the DXF layer, and give each layer its
+    // own ACI colour (this is R12 DXF, which has no true-colour) so the
+    // exported elevation imports with each layer a distinct, hue-matched
+    // colour. Entities are ByLayer.
+    // R12 layer names: max 31 chars and must be UNIQUE. Resolve each layer KEY
+    // to a char-safe, length-capped, unique name once and reuse it everywhere
+    // (table + entities). "0" is reserved for the default layer. Over-length or
+    // colliding names get a numeric suffix — AutoCAD/Illustrator reject both
+    // >31-char layer names and duplicate layer records, which broke the export.
+    const _usedNames = new Set(['0', 'Defpoints']);
+    const _nameByKey = new Map();
+    const _dxfLayer = (key) => {
+      const k = (key == null ? '0' : key);
+      if (_nameByKey.has(k)) return _nameByKey.get(k);
+      let raw = k;
+      try { const L = (typeof getLayer === 'function') ? getLayer(k) : null; if (L && L.name) raw = L.name; } catch (_) {}
+      let base = (safe(raw || '0') || 'Layer').slice(0, 31) || 'Layer';
+      let nm = base;
+      for (let i = 2; _usedNames.has(nm); i++) {
+        const suf = '_' + i;
+        nm = base.slice(0, 31 - suf.length) + suf;
+      }
+      _usedNames.add(nm); _nameByKey.set(k, nm);
+      return nm;
+    };
+    const _hexToRgb = (h) => {
+      if (typeof h === 'number') return [(h >> 16) & 255, (h >> 8) & 255, h & 255];
+      if (typeof h === 'string') { const m = h.replace('#', '').trim(); if (m.length >= 6) return [parseInt(m.slice(0,2),16), parseInt(m.slice(2,4),16), parseInt(m.slice(4,6),16)]; }
+      return [0, 0, 0];
+    };
+    // Map an RGB to the nearest AutoCAD Color Index by HUE, so pastels keep
+    // their colour family instead of collapsing to grey. 10..240 is the ACI
+    // hue ramp (10=red, 50=yellow, 90=green, 130=cyan, 170=blue, 210=magenta).
+    const _rgbToAci = (r, g, b) => {
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+      if (mx < 32) return 250;                               // near-black
+      if (d < 24) return mx > 176 ? 9 : (mx > 96 ? 8 : 250); // greyscale
+      let h;
+      if (mx === r) h = ((g - b) / d) % 6;
+      else if (mx === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h = (((h * 60) % 360) + 360) % 360;
+      return 10 + (Math.round(h / 15) % 24) * 10;            // 10..240
+    };
+    const _layers = new Map(); // dxfName -> {r,g,b}
+    const _noteLayer = (key) => {
+      const nm = _dxfLayer(key);
+      if (_layers.has(nm)) return;
+      let col = null;
+      try { const L = (typeof getLayer === 'function') ? getLayer(key) : null; if (L && L.color != null) col = L.color; } catch (_) {}
+      const rgb = _hexToRgb(col != null ? col : '#000000');
+      _layers.set(nm, { r: rgb[0], g: rgb[1], b: rgb[2] });
+    };
+    for (const e of s2d.edges) _noteLayer(e.layer);
+    for (const f of s2d.fills) _noteLayer(f.layer);
+    if (s2d.dims) for (const d of s2d.dims) _noteLayer(d.layer || 'Dim');
+
+    // Structure mirrors a canonical AutoCAD R12 (AC1009) file exactly — the
+    // shape `ezdxf` emits and AutoCAD/Illustrator open without complaint:
+    //   HEADER → TABLES(VPORT,LTYPE,LAYER,STYLE,VIEW,UCS,APPID,DIMSTYLE)
+    //   → BLOCKS($Model_Space,$Paper_Space) → ENTITIES → EOF
+    // Critical: tables close with `ENDTAB` (NOT `ENDTABLE` — AutoCAD's reader
+    // doesn't recognise that, which corrupted the table structure on open).
+    // R12 needs no object handles, so we omit them.
+    const _ex = (+vb[2]).toFixed(3), _ey = (+vb[3]).toFixed(3);
+    // ── HEADER ──────────────────────────────────────────────────────────
+    emit(0, 'SECTION'); emit(2, 'HEADER');
+    emit(9, '$ACADVER'); emit(1, 'AC1009');
+    emit(9, '$DWGCODEPAGE'); emit(3, 'ANSI_1252');
+    emit(9, '$INSBASE'); emit(10, '0.0'); emit(20, '0.0'); emit(30, '0.0');
+    emit(9, '$EXTMIN'); emit(10, '0.0'); emit(20, '0.0'); emit(30, '0.0');
+    emit(9, '$EXTMAX'); emit(10, _ex); emit(20, _ey); emit(30, '0.0');
+    emit(9, '$LIMMIN'); emit(10, '0.0'); emit(20, '0.0');
+    emit(9, '$LIMMAX'); emit(10, _ex); emit(20, _ey);
+    emit(9, '$LTSCALE'); emit(40, '1.0');
+    emit(9, '$TEXTSIZE'); emit(40, '2.5');
+    emit(9, '$TEXTSTYLE'); emit(7, 'Standard');
+    emit(9, '$CLAYER'); emit(8, '0');
+    emit(9, '$CELTYPE'); emit(6, 'ByLayer');
+    emit(9, '$CECOLOR'); emit(62, 256);
+    emit(9, '$LUNITS'); emit(70, 2);
+    emit(9, '$LUPREC'); emit(70, 4);
+    emit(9, '$TILEMODE'); emit(70, 1);
+    emit(9, '$HANDLING'); emit(70, 0);
+    emit(0, 'ENDSEC');
+    // ── TABLES ──────────────────────────────────────────────────────────
+    emit(0, 'SECTION'); emit(2, 'TABLES');
+    // VPORT — AutoCAD needs the *Active viewport record.
+    emit(0, 'TABLE'); emit(2, 'VPORT'); emit(70, 1);
+    emit(0, 'VPORT'); emit(2, '*ACTIVE'); emit(70, 0);
+    emit(10, '0.0'); emit(20, '0.0'); emit(11, '1.0'); emit(21, '1.0');
+    emit(12, '0.0'); emit(22, '0.0'); emit(13, '0.0'); emit(23, '0.0');
+    emit(14, '10.0'); emit(24, '10.0'); emit(15, '10.0'); emit(25, '10.0');
+    emit(16, '0.0'); emit(26, '0.0'); emit(36, '1.0');
+    emit(17, '0.0'); emit(27, '0.0'); emit(37, '0.0');
+    emit(40, '297.0'); emit(41, '1.414'); emit(42, '50.0'); emit(43, '0.0'); emit(44, '0.0');
+    emit(50, '0.0'); emit(51, '0.0');
+    emit(71, 0); emit(72, 100); emit(73, 1); emit(74, 3); emit(75, 0); emit(76, 0); emit(77, 0); emit(78, 0);
+    emit(0, 'ENDTAB');
+    // LTYPE — ByBlock, ByLayer, Continuous (entities/layers reference these).
+    emit(0, 'TABLE'); emit(2, 'LTYPE'); emit(70, 3);
+    emit(0, 'LTYPE'); emit(2, 'ByBlock'); emit(70, 0); emit(3, ''); emit(72, 65); emit(73, 0); emit(40, '0.0');
+    emit(0, 'LTYPE'); emit(2, 'ByLayer'); emit(70, 0); emit(3, ''); emit(72, 65); emit(73, 0); emit(40, '0.0');
+    emit(0, 'LTYPE'); emit(2, 'Continuous'); emit(70, 0); emit(3, 'Solid line'); emit(72, 65); emit(73, 0); emit(40, '0.0');
+    emit(0, 'ENDTAB');
+    // LAYER — default "0" + "Defpoints", then one coloured layer per used layer.
+    emit(0, 'TABLE'); emit(2, 'LAYER'); emit(70, _layers.size + 2);
+    emit(0, 'LAYER'); emit(2, '0'); emit(70, 0); emit(62, 7); emit(6, 'Continuous');
+    emit(0, 'LAYER'); emit(2, 'Defpoints'); emit(70, 0); emit(62, 7); emit(6, 'Continuous');
+    for (const [nm, c] of _layers) {
+      emit(0, 'LAYER'); emit(2, nm); emit(70, 0);
+      emit(62, _rgbToAci(c.r, c.g, c.b));
+      emit(6, 'Continuous');
+    }
+    emit(0, 'ENDTAB');
+    // STYLE — Standard text style (TEXT entities default to it).
+    emit(0, 'TABLE'); emit(2, 'STYLE'); emit(70, 1);
+    emit(0, 'STYLE'); emit(2, 'Standard'); emit(70, 0); emit(40, '0.0'); emit(41, '1.0'); emit(50, '0.0'); emit(71, 0); emit(42, '2.5'); emit(3, 'txt'); emit(4, '');
+    emit(0, 'ENDTAB');
+    emit(0, 'TABLE'); emit(2, 'VIEW'); emit(70, 0); emit(0, 'ENDTAB');
+    emit(0, 'TABLE'); emit(2, 'UCS'); emit(70, 0); emit(0, 'ENDTAB');
+    emit(0, 'TABLE'); emit(2, 'APPID'); emit(70, 1);
+    emit(0, 'APPID'); emit(2, 'ACAD'); emit(70, 0);
+    emit(0, 'ENDTAB');
+    emit(0, 'TABLE'); emit(2, 'DIMSTYLE'); emit(70, 0); emit(0, 'ENDTAB');
+    emit(0, 'ENDSEC');
+    // ── BLOCKS — model/paper space records (AutoCAD R12 expects them) ──────
+    emit(0, 'SECTION'); emit(2, 'BLOCKS');
+    emit(0, 'BLOCK'); emit(8, '0'); emit(2, '$Model_Space'); emit(70, 0);
+    emit(10, '0.0'); emit(20, '0.0'); emit(30, '0.0'); emit(3, '$Model_Space'); emit(1, '');
+    emit(0, 'ENDBLK'); emit(8, '0');
+    emit(0, 'BLOCK'); emit(8, '0'); emit(2, '$Paper_Space'); emit(70, 0);
+    emit(10, '0.0'); emit(20, '0.0'); emit(30, '0.0'); emit(3, '$Paper_Space'); emit(1, '');
+    emit(0, 'ENDBLK'); emit(8, '0');
+    emit(0, 'ENDSEC');
+    // ENTITIES
     emit(0, 'SECTION'); emit(2, 'ENTITIES');
 
     // White solid fills under each polygon.
     for (const f of s2d.fills) {
       const tris = fanTriangulate(f.poly);
       for (const t of tris) {
-        emit(0, 'SOLID'); emit(8, safe(f.layer));
+        emit(0, 'SOLID'); emit(8, _dxfLayer(f.layer));
         emit(10, fx(t[0][0])); emit(20, fy(t[0][1])); emit(30, '0.0');
         emit(11, fx(t[1][0])); emit(21, fy(t[1][1])); emit(31, '0.0');
         emit(12, fx(t[2][0])); emit(22, fy(t[2][1])); emit(32, '0.0');
@@ -963,7 +1302,7 @@
 
     // Edges.
     for (const e of s2d.edges) {
-      emit(0, 'LINE'); emit(8, safe(e.layer));
+      emit(0, 'LINE'); emit(8, _dxfLayer(e.layer));
       emit(10, fx(e.x1)); emit(20, fy(e.y1)); emit(30, '0.0');
       emit(11, fx(e.x2)); emit(21, fy(e.y2)); emit(31, '0.0');
     }
@@ -978,7 +1317,7 @@
       const ARROW = ds.arrowSize, GAP = 5, TICK = 8;
       const tsz = Math.max(2, ds.textSize);
       const emitLine2 = (layer, x1, y1, x2, y2) => {
-        emit(0, 'LINE'); emit(8, safe(layer));
+        emit(0, 'LINE'); emit(8, _dxfLayer(layer));
         emit(10, fx(x1)); emit(20, fy(y1)); emit(30, '0.0');
         emit(11, fx(x2)); emit(21, fy(y2)); emit(31, '0.0');
       };
@@ -1021,7 +1360,7 @@
         let angDeg = Math.atan2(-ddy, ddx) * 180 / Math.PI; // DXF Y is up → flip
         if (angDeg >  90) angDeg -= 180;
         if (angDeg < -90) angDeg += 180;
-        emit(0, 'TEXT'); emit(8, safe(layer));
+        emit(0, 'TEXT'); emit(8, _dxfLayer(layer));
         emit(10, fx(midX)); emit(20, fy(midY)); emit(30, '0.0');
         emit(40, tsz.toFixed(2));        // text height
         emit(1, String(d.text));         // text content
@@ -1152,27 +1491,62 @@
     try { return window.prompt('File name', defaultName) || null; }
     catch (_) { return defaultName; }
   }
-  AD.Export.saveSVG = function () {
-    const name = _promptName(_defaultName('svg'));
-    if (!name) return;
-    const s2d = AD.Export.buildScene2D();
-    AD.Export.download(name, AD.Export.toSVG(s2d), 'image/svg+xml');
+  // Combined export dialog: file name + which lines to emit. "Visible only"
+  // (feature edges) matches the viewport — boundary/silhouette outlines and
+  // sharp creases — while "wireframe" keeps every front-facing mesh edge
+  // (the dense triangulation of imported models). Choice is remembered.
+  async function _askExportOptions(fmt) {
+    const defaultName = _defaultName(fmt);
+    const KEY = 'turtle_export_feature_only';
+    let pref = true;
+    try { const v = localStorage.getItem(KEY); if (v !== null) pref = v === '1'; } catch (_) {}
+    const showModal = (typeof window !== 'undefined') ? window.showModal : null;
+    if (typeof showModal !== 'function') {              // fallback: plain prompt
+      const nm = _promptName(defaultName);
+      return nm ? { name: nm, featureOnly: pref } : null;
+    }
+    const wrap = document.createElement('div');
+    wrap.innerHTML =
+      '<label style="display:block;font-size:12px;color:#666;margin-bottom:4px;">파일 이름</label>' +
+      '<input id="_exName" type="text" style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box;">' +
+      '<div style="margin-top:14px;font-size:12px;color:#666;margin-bottom:6px;">내보낼 선</div>' +
+      '<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin-bottom:8px;">' +
+        '<input type="radio" name="_exmode" value="feature" style="margin-top:2px;">' +
+        '<span><b>보이는 선만</b><br><span style="color:#888;">은선 제거 + 메시 분할(삼각형)선 숨김 — 화면에 보이는 입면선</span></span></label>' +
+      '<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;">' +
+        '<input type="radio" name="_exmode" value="all" style="margin-top:2px;">' +
+        '<span><b>전체 와이어프레임</b><br><span style="color:#888;">앞면의 모든 모서리(분할선 포함)</span></span></label>';
+    wrap.querySelector('#_exName').value = defaultName;
+    wrap.querySelectorAll('input[name=_exmode]').forEach(r => { r.checked = (r.value === (pref ? 'feature' : 'all')); });
+    const ok = await showModal('입면 내보내기 (' + fmt.toUpperCase() + ')', wrap, { okLabel: '내보내기', cancelLabel: '취소' });
+    if (!ok) return null;
+    const name = ((wrap.querySelector('#_exName').value || '').trim()) || defaultName;
+    const sel = wrap.querySelector('input[name=_exmode]:checked');
+    const featureOnly = !sel || sel.value === 'feature';
+    try { localStorage.setItem(KEY, featureOnly ? '1' : '0'); } catch (_) {}
+    return { name, featureOnly };
+  }
+  AD.Export.saveSVG = async function () {
+    const opt = await _askExportOptions('svg');
+    if (!opt) return;
+    const s2d = AD.Export.buildScene2D({ featureOnly: opt.featureOnly });
+    AD.Export.download(opt.name, AD.Export.toSVG(s2d), 'image/svg+xml');
   };
   AD.Export.savePDF = async function () {
     if (typeof PDFLib === 'undefined') {
       alert('PDF library not loaded yet. Try again shortly.');
       return;
     }
-    const name = _promptName(_defaultName('pdf'));
-    if (!name) return;
-    const s2d = AD.Export.buildScene2D();
+    const opt = await _askExportOptions('pdf');
+    if (!opt) return;
+    const s2d = AD.Export.buildScene2D({ featureOnly: opt.featureOnly });
     const bytes = await AD.Export.toPDF(s2d);
-    AD.Export.download(name, bytes, 'application/pdf');
+    AD.Export.download(opt.name, bytes, 'application/pdf');
   };
-  AD.Export.saveDXF = function () {
-    const name = _promptName(_defaultName('dxf'));
-    if (!name) return;
-    const s2d = AD.Export.buildScene2D();
-    AD.Export.download(name, AD.Export.toDXF(s2d), 'application/dxf');
+  AD.Export.saveDXF = async function () {
+    const opt = await _askExportOptions('dxf');
+    if (!opt) return;
+    const s2d = AD.Export.buildScene2D({ featureOnly: opt.featureOnly });
+    AD.Export.download(opt.name, AD.Export.toDXF(s2d), 'application/dxf');
   };
 })();
