@@ -51,6 +51,17 @@
   function _writeAutosave() {
     try {
       if (typeof Tabs.serialize !== 'function') return;
+      // Pre-flight: a very large model serialises past the 4.5 MB cap below and
+      // gets skipped anyway — but building that multi-MB string every 20s is
+      // heavy memory churn (it was running right before the paint OOM crash).
+      // Skip cheaply by face count BEFORE serialising.
+      try {
+        if (typeof Model !== 'undefined' && Model.objects) {
+          let _f = 0;
+          for (const o of Model.objects) if (o && o.em && o.em.faces) _f += o.em.faces.length;
+          if (_f > 150000) { _rlog('model too large to autosave (' + _f + ' faces); skipped'); return; }
+        }
+      } catch (_) {}
       const snap = Tabs.serialize();
       snap.tabs = (snap.tabs || []).filter(t => _docHasContent(t.doc));
       if (!snap.tabs.length) { try { localStorage.removeItem(RKEY); } catch (_) {} return; }
