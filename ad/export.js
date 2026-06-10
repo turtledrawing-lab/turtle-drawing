@@ -1134,12 +1134,17 @@
   };
 
   /* ---------- DXF emitter (minimal, ENTITIES-only). --------------------- */
-  AD.Export.toDXF = function (s2d) {
+  AD.Export.toDXF = function (s2d, opts) {
     const vb = s2d.viewBox;
+    // mmPerPx: when the view is orthographic, saveDXF probes the real
+    // pixels-per-metre and passes mm-per-pixel here so the DXF carries TRUE
+    // millimetre coordinates (a 3 m wall measures 3000 in CAD). Perspective
+    // views have no uniform scale — they stay in pixels (mmPerPx = 1).
+    const _S = (opts && isFinite(opts.mmPerPx) && opts.mmPerPx > 0) ? opts.mmPerPx : 1;
     // DXF uses Y-up. Flip from SVG/pixel Y-down.
     const flipY = (y) => vb[3] - (y - vb[1]);
-    const fx = (x) => (x - vb[0]).toFixed(3);
-    const fy = (y) => flipY(y).toFixed(3);
+    const fx = (x) => ((x - vb[0]) * _S).toFixed(3);
+    const fy = (y) => (flipY(y) * _S).toFixed(3);
 
     let dxf = '';
     const emit = (code, val) => {
@@ -1212,11 +1217,15 @@
     // Critical: tables close with `ENDTAB` (NOT `ENDTABLE` — AutoCAD's reader
     // doesn't recognise that, which corrupted the table structure on open).
     // R12 needs no object handles, so we omit them.
-    const _ex = (+vb[2]).toFixed(3), _ey = (+vb[3]).toFixed(3);
+    const _ex = (+vb[2] * _S).toFixed(3), _ey = (+vb[3] * _S).toFixed(3);
     // ── HEADER ──────────────────────────────────────────────────────────
     emit(0, 'SECTION'); emit(2, 'HEADER');
     emit(9, '$ACADVER'); emit(1, 'AC1009');
     emit(9, '$DWGCODEPAGE'); emit(3, 'ANSI_1252');
+    // $INSUNITS is technically post-R12 but universally tolerated; modern
+    // readers (AutoCAD, LibreCAD, Illustrator) use it to label the drawing
+    // millimetres when we exported true mm coordinates.
+    if (_S !== 1) { emit(9, '$INSUNITS'); emit(70, 4); }
     emit(9, '$INSBASE'); emit(10, '0.0'); emit(20, '0.0'); emit(30, '0.0');
     emit(9, '$EXTMIN'); emit(10, '0.0'); emit(20, '0.0'); emit(30, '0.0');
     emit(9, '$EXTMAX'); emit(10, _ex); emit(20, _ey); emit(30, '0.0');
@@ -1315,7 +1324,9 @@
         textSize:11, arrowSize:7, arrowStyle:'filled'
       };
       const ARROW = ds.arrowSize, GAP = 5, TICK = 8;
-      const tsz = Math.max(2, ds.textSize);
+      // Text height is a LENGTH (not a coordinate), so it doesn't pass
+      // through fx/fy — scale it to mm explicitly.
+      const tsz = Math.max(2, ds.textSize) * _S;
       const emitLine2 = (layer, x1, y1, x2, y2) => {
         emit(0, 'LINE'); emit(8, _dxfLayer(layer));
         emit(10, fx(x1)); emit(20, fy(y1)); emit(30, '0.0');
@@ -1547,6 +1558,19 @@
     const opt = await _askExportOptions('dxf');
     if (!opt) return;
     const s2d = AD.Export.buildScene2D({ featureOnly: opt.featureOnly });
-    AD.Export.download(opt.name, AD.Export.toDXF(s2d), 'application/dxf');
+    // Orthographic views have a uniform pixels-per-metre scale — probe it and
+    // emit TRUE millimetre coordinates (+$INSUNITS=4) so the elevation
+    // measures correctly in CAD. Perspective has no such scale: keep pixels.
+    let mmPerPx = 1;
+    try {
+      if (camera && camera.isOrthographicCamera) {
+        const pxPerM = AD.Export._hatchScaleForExport(s2d);
+        if (isFinite(pxPerM) && pxPerM > 0.001) mmPerPx = 1000 / pxPerM;
+      }
+    } catch (_) {}
+    AD.Export.download(opt.name, AD.Export.toDXF(s2d, { mmPerPx }), 'application/dxf');
+    if (mmPerPx !== 1) {
+      try { setStatus('msg', 'DXF exported in real millimetres (1m = 1000 units).'); } catch (_) {}
+    }
   };
 })();
