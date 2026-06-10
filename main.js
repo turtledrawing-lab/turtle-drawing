@@ -8,6 +8,10 @@ const fs = require('fs');
 try { app.setName('Turtle Drawing'); } catch (_) {}
 try { app.name = 'Turtle Drawing'; } catch (_) {}
 
+// Big imported models routinely exceed V8's default ~4 GB heap during
+// parse/serialize peaks — raise it before any renderer is created.
+try { app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192'); } catch (_) {}
+
 // Runtime Dock icon — the bundle's CFBundleIconFile handles the initial
 // icon, but on macOS app.dock.setIcon is needed to refresh after rename
 // and to survive restart-less reloads during development.
@@ -80,6 +84,9 @@ ipcMain.handle('pick-import-file', async (event, opts) => {
 // Map new window id → pending doc JSON, consumed by the renderer once
 // the page signals it's ready (via IPC 'detach-ready').
 const _pendingDocs = new Map();
+
+// Respawn timestamps for the renderer-crash auto-restart cap (60s window).
+let _crashRespawns = [];
 
 ipcMain.handle('detach-tab', async (event, payload) => {
   const win = createWindow(payload && payload.docJson);
@@ -174,6 +181,157 @@ ipcMain.handle('read-font-file', async (_e, p) => {
   try { return fs.readFileSync(p); } catch (_) { return null; }
 });
 
+/* ---------- Safe .tt save + disk autosave (work-loss prevention) ---------
+   writeTTSafely: back up the previous file to <name>.tt.bak, then write
+   atomically (tmp + rename) so a crash mid-write can never leave a
+   truncated .tt — the worst case is the intact old file + .bak. */
+function writeTTSafely(filePath, json) {
+  if (fs.existsSync(filePath)) {
+    try { fs.copyFileSync(filePath, filePath + '.bak'); } catch (_) {}
+  }
+  const tmp = filePath + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, json, 'utf8');
+  fs.renameSync(tmp, filePath);
+}
+
+// Renderer-driven save: silent overwrite when it already knows the path
+// (normal Cmd+S on an opened/previously-saved file), native dialog otherwise.
+ipcMain.handle('save-tt-file', async (event, payload) => {
+  try {
+    const { json, suggestedName, knownPath, forceDialog } = payload || {};
+    if (typeof json !== 'string' || !json.length) return { error: 'empty payload' };
+    let target = (!forceDialog && knownPath && typeof knownPath === 'string' &&
+                  fs.existsSync(path.dirname(knownPath))) ? knownPath : null;
+    if (!target) {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const res = dialog.showSaveDialogSync(win, {
+        title: 'Save',
+        defaultPath: (suggestedName || 'drawing').replace(/\.tt$/i, '') + '.tt',
+        filters: [{ name: 'Turtle Drawing', extensions: ['tt'] }],
+      });
+      if (!res) return { canceled: true };
+      target = res;
+    }
+    writeTTSafely(target, json);
+    return { path: target, name: path.basename(target) };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+/* Disk autosave for crash recovery — replaces the old localStorage snapshot
+   (5 MB quota, lost on site-data clears). PER-WINDOW files (a shared file was
+   last-writer-wins across windows), claimed by RENAME (atomic) so two windows
+   can never double-restore the same snapshot. Lifecycle:
+     - a window closing NORMALLY deletes its own file (see createWindow);
+     - a crashed window keeps it → next launch claims and offers it;
+     - claims orphaned by a crash DURING the recovery prompt are re-offered;
+     - declined / failed restores are PARKED (autosave-parked-*.json): never
+       re-offered, but kept ~7 days for manual recovery. */
+const _autosaveDir = () => {
+  const d = path.join(app.getPath('userData'), 'recovery');
+  try { fs.mkdirSync(d, { recursive: true }); } catch (_) {}
+  return d;
+};
+const _autosavePathFor = (wcId) => path.join(_autosaveDir(), 'autosave-w' + wcId + '.json');
+const _liveClaims = new Set();
+ipcMain.handle('autosave-write', async (e, json) => {
+  try {
+    if (typeof json !== 'string' || !json.length) return false;
+    const p = _autosavePathFor(e.sender.id);
+    const tmp = p + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, json, 'utf8');
+    fs.renameSync(tmp, p);
+    return true;
+  } catch (_) { return false; }
+});
+ipcMain.handle('autosave-claim', async () => {
+  try {
+    const dir = _autosaveDir();
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (_) { return null; }
+    const claims = [];
+    let seq = 0;
+    for (const n of names) {
+      const full = path.join(dir, n);
+      // Live snapshots: legacy shared name + per-window files.
+      const live = /^autosave(\.json|-w\d+\.json)$/.test(n);
+      // Orphaned claims from a previous run (crash during the prompt).
+      const orphan = /^autosave\.claimed-/.test(n) && !_liveClaims.has(full);
+      // Housekeeping: drop parked snapshots older than ~7 days.
+      if (/^autosave-parked-(\d+)\.json$/.test(n)) {
+        const ts = parseInt(RegExp.$1, 10);
+        if (ts && Date.now() - ts > 7 * 24 * 3600 * 1000) { try { fs.unlinkSync(full); } catch (_) {} }
+        continue;
+      }
+      if (!live && !orphan) continue;
+      try {
+        let claimed = full;
+        if (live) {
+          claimed = path.join(dir, 'autosave.claimed-' + Date.now() + '-' + process.pid + '-' + (seq++) + '.json');
+          fs.renameSync(full, claimed);
+        }
+        const json = fs.readFileSync(claimed, 'utf8');
+        _liveClaims.add(claimed);
+        claims.push({ claimId: claimed, json });
+      } catch (_) {}
+    }
+    return claims.length ? claims : null;
+  } catch (_) { return null; }
+});
+ipcMain.handle('autosave-resolve', async (_e, claimId, success) => {
+  // success → restored, delete. failure/declined → PARK for manual recovery
+  // (never auto-deleted on a single "Cancel", never re-prompted either).
+  try {
+    if (typeof claimId !== 'string' || !claimId.startsWith(_autosaveDir())) return false;
+    _liveClaims.delete(claimId);
+    if (!fs.existsSync(claimId)) return false;
+    if (success) fs.unlinkSync(claimId);
+    else fs.renameSync(claimId, path.join(_autosaveDir(), 'autosave-parked-' + Date.now() + '.json'));
+    return true;
+  } catch (_) { return false; }
+});
+ipcMain.handle('autosave-clear', async (e) => {
+  try { fs.unlinkSync(_autosavePathFor(e.sender.id)); return true; } catch (_) { return false; }
+});
+
+/* Vendored binary assets (e.g. rhino3dm.wasm): the renderer cannot fetch()
+   file:// URLs, so it asks main for the bytes. Locked to the vendor dir. */
+ipcMain.handle('read-vendor-file', async (_e, name) => {
+  try {
+    if (typeof name !== 'string' || path.basename(name) !== name) return null;
+    const p = path.join(__dirname, 'vendor', name);
+    return fs.readFileSync(p);   // works inside app.asar too
+  } catch (_) { return null; }
+});
+
+/* Always-on error journal: the renderer batches uncaught errors, rejection
+   reasons, and geometry-guard verdicts; we append them to a rotating log so
+   production failures are diagnosable from a beta report. */
+const _errorLogPath = () => path.join(app.getPath('userData'), 'td-errors.log');
+ipcMain.handle('error-journal-append', async (_e, lines) => {
+  try {
+    if (!Array.isArray(lines) || !lines.length) return false;
+    const p = _errorLogPath();
+    try {
+      const st = fs.statSync(p);
+      if (st.size > 512 * 1024) { try { fs.renameSync(p, p + '.1'); } catch (_) {} }
+    } catch (_) {}
+    const stamp = new Date().toISOString();
+    fs.appendFileSync(p, lines.map(l => stamp + ' ' + String(l).slice(0, 2000)).join('\n') + '\n', 'utf8');
+    return true;
+  } catch (_) { return false; }
+});
+ipcMain.handle('reveal-error-log', async () => {
+  try {
+    const { shell } = require('electron');
+    const p = _errorLogPath();
+    if (!fs.existsSync(p)) fs.writeFileSync(p, '', 'utf8');
+    shell.showItemInFolder(p);
+    return true;
+  } catch (_) { return false; }
+});
+
 let autoUpdater = null;
 try {
   // Only enable auto-updater for real packaged builds where the
@@ -248,13 +406,151 @@ function createWindow(pendingDocJson) {
   if (_IS_DEV) {
     try {
       win.webContents.on('console-message', (_e, _l, message) => {
-        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0)) {
+        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0 || message.indexOf('[rhinotest]') === 0 || message.indexOf('[glbtest]') === 0 || message.indexOf('[objtest]') === 0)) {
           process.stdout.write('[RENDERER] ' + message + '\n');
         }
       });
     } catch (_) {}
   }
+  // Dev-only E2E check for the OBJ inch heuristic: TD_OBJTEST=1 imports a
+  // SketchUp-header OBJ (394 units ≈ a 10m wall in inches) with the unit
+  // modal bypassed and logs the resulting size as [objtest].
+  if (_IS_DEV && process.env.TD_OBJTEST) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        win.webContents.executeJavaScript(`
+          (async () => {
+            try {
+              window.__TD_UNIT_CHOICE = 'auto';
+              const objText = '# Exported from SketchUp\\nv 0 0 0\\nv 394 0 0\\nv 394 0 394\\nv 0 0 394\\nf 1 2 3 4\\n';
+              const before = Model.objects.length;
+              await importOBJ(objText, 'sketchup_test.obj');
+              const added = Model.objects.slice(before);
+              const bb = new THREE.Box3();
+              for (const o of added) for (const v of o.em.vertices) bb.expandByPoint(v);
+              const sz = new THREE.Vector3(); bb.getSize(sz);
+              const maxDim = Math.max(sz.x, sz.y, sz.z);
+              console.log('[objtest] added=' + added.length + ' maxDim=' + maxDim.toFixed(3) + 'm (expect ~10.008 for inch scaling)');
+              for (const o of added) removeObject(o);
+              delete window.__TD_UNIT_CHOICE;
+            } catch (e) { console.log('[objtest] FAIL ' + (e && e.message)); }
+          })()
+        `, true).catch((e) => process.stdout.write('[objtest] inject failed: ' + e + '\n'));
+      }, 6000);
+    });
+  }
+  // Dev-only E2E check for the glTF round-trip: TD_GLBTEST=1 builds a box,
+  // exports it through GLTFExporter, re-imports through GLTFLoader +
+  // _importMeshTreeIntoScene (placement stubbed), and logs [glbtest].
+  if (_IS_DEV && process.env.TD_GLBTEST) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        win.webContents.executeJavaScript(`
+          (async () => {
+            try {
+              const em = new EditableMesh();
+              const a = em.addVertex(new THREE.Vector3(0,0,0)), b = em.addVertex(new THREE.Vector3(0,0,2)),
+                    c = em.addVertex(new THREE.Vector3(2,0,2)), d = em.addVertex(new THREE.Vector3(2,0,0));
+              const f = em.addFace([a,b,c,d], 0xffffff, 'Layer0'); em.extrudeFace(f, 1);
+              const so = new SketchObject(em, 'GLBTest');
+              const grp = new THREE.Group();
+              const m = new THREE.Mesh(so.mesh.geometry, new THREE.MeshStandardMaterial({ vertexColors: true }));
+              m.name = 'Layer0/GLBTest'; grp.add(m);
+              const ab = await new Promise((res, rej) => { try { new THREE.GLTFExporter().parse(grp, res, { binary: true }); } catch (e) { rej(e); } });
+              const placed = [];
+              const orig = window._startPlacementMode;
+              window._startPlacementMode = (objs) => placed.push(...objs);
+              try {
+                await new Promise((res, rej) => new THREE.GLTFLoader().parse(ab, '', (g) => {
+                  try { _importMeshTreeIntoScene(g.scene, 'roundtrip.glb', 1, { placeMode: true }); res(); } catch (e) { rej(e); }
+                }, rej));
+              } finally { window._startPlacementMode = orig; }
+              const o = placed[0];
+              console.log('[glbtest] exporter=' + (typeof THREE.GLTFExporter === 'function') +
+                ' collada=' + (typeof THREE.ColladaLoader === 'function') +
+                ' glbBytes=' + (ab && ab.byteLength) +
+                ' placed=' + placed.length +
+                ' faces=' + (o && o.em.faces.length) +
+                ' verts=' + (o && o.em.vertices.length));
+            } catch (e) { console.log('[glbtest] FAIL ' + (e && e.message)); }
+          })()
+        `, true).catch((e) => process.stdout.write('[glbtest] inject failed: ' + e + '\n'));
+      }, 6000);
+    });
+  }
+  // Dev-only E2E check for the Rhino importer: TD_RHINOTEST=1 feeds
+  // /tmp/test_cube.3dm through importRhino3dm (placement stubbed) and logs
+  // [rhinotest] results to stdout. Never runs in packaged builds.
+  if (_IS_DEV && process.env.TD_RHINOTEST) {
+    try {
+      const b64 = fs.readFileSync('/tmp/test_cube.3dm').toString('base64');
+      win.webContents.once('did-finish-load', () => {
+        setTimeout(() => {
+          win.webContents.executeJavaScript(`
+            (async () => {
+              try {
+                const bytes = Uint8Array.from(atob('${b64}'), c => c.charCodeAt(0));
+                const placed = [];
+                const orig = window._startPlacementMode;
+                window._startPlacementMode = (objs) => { placed.push(...objs); };
+                try { await importRhino3dm(bytes, 'test_cube.3dm'); }
+                finally { window._startPlacementMode = orig; }
+                const o = placed[0];
+                const L = Model.layers.find(l => l.name === 'TestLayer');
+                console.log('[rhinotest] objects=' + placed.length +
+                  ' layerFound=' + !!L +
+                  ' layerColor=' + (L && L.color) +
+                  ' objLayerOk=' + !!(o && L && o.layerId === L.id) +
+                  ' verts=' + (o && o.em.vertices.length) +
+                  ' faces=' + (o && o.em.faces.length) +
+                  ' v1=' + (o ? [o.em.vertices[1].x, o.em.vertices[1].y, o.em.vertices[1].z].join(',') : '-'));
+              } catch (e) { console.log('[rhinotest] FAIL ' + (e && e.message)); }
+            })()
+          `, true).catch((e) => process.stdout.write('[rhinotest] inject failed: ' + e + '\n'));
+        }, 6000);
+      });
+    } catch (e) { process.stdout.write('[rhinotest] no test file: ' + e + '\n'); }
+  }
   if (pendingDocJson) _pendingDocs.set(win.id, pendingDocJson);
+
+  // A window that closes NORMALLY cleans up its own autosave snapshot — file
+  // presence alone then means "this window did not exit cleanly", which is
+  // what the recovery prompt keys on. Crashed windows (and quits that leave
+  // dirty tabs unsaved — see confirmDiscardIfDirty) keep theirs.
+  {
+    const _wcId = win.webContents.id;
+    win.on('closed', () => {
+      if (win._crashed || win._preserveAutosave) return;
+      try { fs.unlinkSync(_autosavePathFor(_wcId)); } catch (_) {}
+    });
+  }
+
+  // Renderer crash (GPU context loss / OOM): recreate the window instead of
+  // leaving a blank shell. The fresh window's recovery prompt then offers the
+  // disk autosave — without this handler the user saw a dead window and the
+  // crash protection never got a chance to run. Capped: a crash-on-boot must
+  // not become an infinite respawn loop.
+  win.webContents.on('render-process-gone', (_e, details) => {
+    try { console.error('[main] renderer gone:', details && details.reason); } catch (_) {}
+    if (details && (details.reason === 'clean-exit' || details.reason === 'killed')) return;
+    win._crashed = true;   // keep this window's autosave file for recovery
+    try {
+      if (!win.isDestroyed()) win.destroy();
+    } catch (_) {}
+    const now = Date.now();
+    _crashRespawns = _crashRespawns.filter(t => now - t < 60000);
+    if (_crashRespawns.length >= 3) {
+      try {
+        dialog.showErrorBox('Turtle Drawing',
+          '렌더러가 반복적으로 종료되어 자동 재시작을 멈췄습니다.\n' +
+          '다시 실행하면 마지막 자동 저장본 복구를 제안합니다.');
+      } catch (_) {}
+      try { app.quit(); } catch (_) {}
+      return;
+    }
+    _crashRespawns.push(now);
+    try { createWindow(); } catch (_) {}
+  });
 
   if (splash) {
     // Keep splash visible at least 900ms even if the main window loads instantly.
@@ -365,7 +661,7 @@ function createWindow(pendingDocJson) {
             catch (e) { dialog.showErrorBox('Open failed', String(e)); return; }
             const filename = path.basename(res.filePaths[0]);
             if (anyWin) {
-              try { anyWin.webContents.send('menu-action', 'file-open-data', { docJson, filename }); } catch (_) {}
+              try { anyWin.webContents.send('menu-action', 'file-open-data', { docJson, filename, fullPath: res.filePaths[0] }); } catch (_) {}
             } else {
               createWindow(docJson);
             }
@@ -380,6 +676,9 @@ function createWindow(pendingDocJson) {
           submenu: [
             { label: 'DXF...',                  click: send('import-dxf') },
             { label: 'Rhino (.3dm)...',         click: send('import-3dm') },
+            { label: 'glTF / GLB...',           click: send('import-glb') },
+            { label: 'Collada (.dae)...',       click: send('import-dae') },
+            { label: 'STL...',                  click: send('import-stl') },
             { label: 'OBJ (file)...',           click: send('import-obj') },
             { label: 'OBJ (folder)...',         click: send('import-obj-folder') },
             { type: 'separator' },
@@ -391,6 +690,7 @@ function createWindow(pendingDocJson) {
           submenu: [
             { label: 'OBJ...',    click: send('export-obj') },
             { label: '3DM (Rhino)...', click: send('export-3dm') },
+            { label: 'glTF (.glb)...', click: send('export-glb') },
             { label: 'STL (3D printing)...',    click: send('export-stl') },
             { type: 'separator' },
             { label: 'Section / Elevation SVG...', click: send('export-svg') },
@@ -572,6 +872,18 @@ function createWindow(pendingDocJson) {
         { label: 'Onboarding Tour', click: send('start-onboarding') },
         { type: 'separator' },
         { label: 'Shortcuts & Help', click: send('help') },
+        { type: 'separator' },
+        {
+          label: 'Reveal Error Log…',
+          click: () => {
+            try {
+              const { shell } = require('electron');
+              const p = path.join(app.getPath('userData'), 'td-errors.log');
+              if (!fs.existsSync(p)) fs.writeFileSync(p, '', 'utf8');
+              shell.showItemInFolder(p);
+            } catch (_) {}
+          },
+        },
       ],
     },
   ];
@@ -625,7 +937,7 @@ function _dispatchFileOpen(filePath) {
   catch (e) { return; }
   const filename = path.basename(filePath);
   const dispatch = (win) => {
-    try { win.webContents.send('menu-action', 'file-open-data', { docJson, filename }); } catch (_) {}
+    try { win.webContents.send('menu-action', 'file-open-data', { docJson, filename, fullPath: filePath }); } catch (_) {}
   };
   let target = (BrowserWindow.getFocusedWindow && BrowserWindow.getFocusedWindow())
             || BrowserWindow.getAllWindows().find(w => !w.isDestroyed() && w.isVisible());
@@ -662,10 +974,17 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 // Mark a CLEAN exit in every renderer so the crash-recovery check on the next
 // launch knows this shutdown was intentional. beforeunload covers the red-X /
 // menu-quit paths, but app.exit(0) below bypasses it, so set the flag here too.
+// Set by confirmDiscardIfDirty when dirty tabs remain after a partial save —
+// the exit must NOT be marked clean, so the next launch offers recovery.
+let _skipCleanExit = false;
 async function _markCleanExit() {
+  if (_skipCleanExit) return;
   for (const w of BrowserWindow.getAllWindows()) {
     if (w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue;
     try { await w.webContents.executeJavaScript("try{localStorage.setItem('turtle_clean_exit_v1','1')}catch(e){}", true); } catch (_) {}
+    // app.exit() below skips the per-window 'closed' cleanup — remove the
+    // autosave snapshots here so a clean quit never triggers recovery.
+    try { fs.unlinkSync(_autosavePathFor(w.webContents.id)); } catch (_) {}
   }
 }
 let _quitArmedUntil = 0;
@@ -723,39 +1042,83 @@ async function confirmDiscardIfDirty() {
       (function(){
         try {
           if (typeof sceneToDoc !== 'function') return null;
+          // Same guards as the in-app save path: block on NaN vertices (a file
+          // with null coordinates may never reopen), warn on mesh-health issues.
+          if (typeof _saveNaNScan === 'function') {
+            const nan = _saveNaNScan();
+            if (nan && nan.bad > 0) return { nanBlocked: true, names: nan.names };
+          }
+          try { if (typeof _saveIntegrityCheck === 'function') _saveIntegrityCheck(); } catch (_) {}
           const doc = sceneToDoc();
           const defName = (currentFileName || 'drawing').replace(/\\.tt$/i, '') + '.tt';
-          return { json: JSON.stringify(doc, null, 2), defaultName: defName };
+          const known = (typeof currentFilePath !== 'undefined' && currentFilePath) ? currentFilePath : null;
+          return { json: JSON.stringify(doc), defaultName: defName, knownPath: known };
         } catch (e) { return null; }
       })()
     `, true);
   } catch (_) { payload = null; }
+  if (payload && payload.nanBlocked) {
+    dialog.showErrorBox('저장 차단됨',
+      '좌표가 손상된(NaN) 객체가 있어 저장하면 파일이 다시 열리지 않을 수 있습니다.\n\n' +
+      '손상된 객체: ' + (payload.names || []).join(', ') + '\n\n' +
+      '실행 취소(Cmd+Z)로 되돌리거나 해당 객체를 삭제한 뒤 다시 저장하세요.');
+    return false;  // cancel the quit so the user can fix and save
+  }
   if (!payload || !payload.json) return false;
-  const res = dialog.showSaveDialogSync(win, {
-    title: 'Save',
-    defaultPath: payload.defaultName,
-    filters: [{ name: 'Turtle Drawing', extensions: ['tt'] }],
-  });
-  if (!res) return false;  // user cancelled
+  let target = (payload.knownPath && fs.existsSync(path.dirname(payload.knownPath))) ? payload.knownPath : null;
+  if (!target) {
+    target = dialog.showSaveDialogSync(win, {
+      title: 'Save',
+      defaultPath: payload.defaultName,
+      filters: [{ name: 'Turtle Drawing', extensions: ['tt'] }],
+    });
+  }
+  if (!target) return false;  // user cancelled
   try {
-    fs.writeFileSync(res, payload.json, 'utf8');
+    writeTTSafely(target, payload.json);
   } catch (e) {
     dialog.showErrorBox('Save failed', String(e));
     return false;
   }
-  // Mark all tabs clean & update filename in renderer.
+  const res = target;
+  // Mark ONLY the tab we actually wrote as clean — the old forEach marked
+  // every tab (including dirty background tabs that were never saved) clean,
+  // and the clean-exit path then deleted the autosave that still held them.
   const basename = path.basename(res);
   try {
     await win.webContents.executeJavaScript(`
       (function(){
         try { if (typeof currentFileName !== 'undefined') currentFileName = ${JSON.stringify(basename)}; } catch(_){}
+        try { window.currentFilePath = ${JSON.stringify(res)}; } catch(_){}
         try {
           const T = window.AD && window.AD.Tabs;
-          if (T && T.list) T.list.forEach(function(t){ t.dirty = false; });
+          if (T && T.list && T.activeId) {
+            const t = T.list.find(function(x){ return x.id === T.activeId; });
+            if (t) { t.dirty = false; t.filePath = ${JSON.stringify(res)}; }
+          }
           if (T && T.rename && T.activeId) T.rename(T.activeId, ${JSON.stringify(basename)});
         } catch(_){}
       })()
     `, true);
+  } catch (_) {}
+  // If ANY tab anywhere is still dirty (background tabs, other windows),
+  // preserve every window's autosave snapshot so the next launch can offer
+  // recovery of the unsaved documents — only the active tab was written.
+  try {
+    let stillDirty = false;
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue;
+      try {
+        const r = await w.webContents.executeJavaScript(`
+          (function(){ try { const T = window.AD && window.AD.Tabs; return !!(T && T.list && T.list.some(function(t){ return !!t.dirty; })); } catch (_) { return false; } })()
+        `, true);
+        if (r) { stillDirty = true; break; }
+      } catch (_) {}
+    }
+    if (stillDirty) {
+      for (const w of BrowserWindow.getAllWindows()) { try { w._preserveAutosave = true; } catch (_) {} }
+      _skipCleanExit = true;
+    }
   } catch (_) {}
   return true;
 }

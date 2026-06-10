@@ -22,6 +22,34 @@ window.electronReadFont = async (fontPath) => {
   catch (e) { console.error('[preload] read-font failed:', e); return null; }
 };
 
+// Safe .tt save: silent overwrite of knownPath (with .bak + atomic write),
+// or a native save dialog when no path is known / Save As.
+window.electronSaveTT = async (json, suggestedName, knownPath, forceDialog) => {
+  try { return await ipcRenderer.invoke('save-tt-file', { json, suggestedName, knownPath, forceDialog }); }
+  catch (e) { console.error('[preload] save-tt failed:', e); return { error: String(e) }; }
+};
+// Disk autosave (crash recovery) — atomic claim prevents double-restore.
+window.electronAutosaveWrite = async (json) => {
+  try { return await ipcRenderer.invoke('autosave-write', json); } catch (_) { return false; }
+};
+window.electronAutosaveClaim = async () => {
+  try { return await ipcRenderer.invoke('autosave-claim'); } catch (_) { return null; }
+};
+window.electronAutosaveResolve = async (claimId, success) => {
+  try { return await ipcRenderer.invoke('autosave-resolve', claimId, success); } catch (_) { return false; }
+};
+window.electronAutosaveClear = async () => {
+  try { return await ipcRenderer.invoke('autosave-clear'); } catch (_) { return false; }
+};
+// Vendored binary assets (rhino3dm.wasm etc.) — renderer can't fetch file://.
+window.electronReadVendor = async (name) => {
+  try { return await ipcRenderer.invoke('read-vendor-file', name); } catch (_) { return null; }
+};
+// Always-on error journal (rotating td-errors.log in userData).
+window.electronErrorLog = async (lines) => {
+  try { return await ipcRenderer.invoke('error-journal-append', lines); } catch (_) { return false; }
+};
+
 // Detach the current tab's document into a new top-level window.
 window.electronDetachTab = async (docJson) => {
   try { return await ipcRenderer.invoke('detach-tab', { docJson }); }
@@ -60,6 +88,18 @@ window.addEventListener('DOMContentLoaded', () => {
   ipcRenderer.on('menu-action', (_ev, act, payload) => {
     if (act === 'file-open-data' && payload && payload.docJson != null) {
       const T = window.AD && window.AD.Tabs;
+      // Remember the on-disk path AFTER the open call (openTT/receiveDoc null
+      // the global for pathless opens) so Cmd+S silently overwrites this file
+      // (with a .tt.bak backup) instead of prompting. Also stamp the tab.
+      const stampPath = () => {
+        try {
+          window.currentFilePath = payload.fullPath || null;
+          if (T && T.list && T.activeId) {
+            const t = T.list.find(x => x.id === T.activeId);
+            if (t) t.filePath = payload.fullPath || null;
+          }
+        } catch (_) {}
+      };
       // If the active tab is Untitled and empty (no doc), REPLACE it
       // instead of creating another tab.
       let replaced = false;
@@ -77,7 +117,7 @@ window.addEventListener('DOMContentLoaded', () => {
           }
         }
       } catch (err) { console.error(err); }
-      if (replaced) return;
+      if (replaced) { stampPath(); return; }
       // Otherwise: open in a new tab.
       if (T && typeof T.receiveDoc === 'function') {
         try {
@@ -85,11 +125,12 @@ window.addEventListener('DOMContentLoaded', () => {
           if (payload.filename && T.activeId && typeof T.rename === 'function') {
             T.rename(T.activeId, payload.filename);
           }
+          stampPath();
         } catch (err) { console.error(err); }
         return;
       }
       if (typeof window.openTT === 'function') {
-        try { window.openTT(payload.docJson, payload.filename); } catch (err) { console.error(err); }
+        try { window.openTT(payload.docJson, payload.filename); stampPath(); } catch (err) { console.error(err); }
       }
       return;
     }

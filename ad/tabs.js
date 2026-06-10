@@ -39,7 +39,15 @@
   const RKEY = 'turtle_recovery_v1';
   const CLEAN_KEY = 'turtle_clean_exit_v1';
   const AUTOSAVE_MS = 20000;
+  // Disk autosave (Electron) has no localStorage 5 MB quota; only truly huge
+  // models are skipped (string-building cost), and the skip is surfaced.
+  const FACE_CAP_DISK = 800000;
+  const FACE_CAP_LOCALSTORAGE = 150000;
   const _rlog = (s) => { try { if (window.__TD_DEV) console.log('[recovery] ' + s); } catch (_) {} };
+  let _autosaveGen = 0;          // bumped on every pushHistory (edit)
+  let _lastSavedGen = -1;        // generation last written to the snapshot
+  let _warnedSkip = false;       // surface "autosave off" once, not every 20s
+  Tabs._bumpAutosaveGen = function () { _autosaveGen++; };
   function _docHasContent(doc) {
     try {
       return !!(doc && ((doc.objects && doc.objects.length) ||
@@ -48,51 +56,141 @@
                         (doc.annotations && doc.annotations.length)));
     } catch (_) { return false; }
   }
+  function _validSnap(snap) {
+    return !!(snap && Array.isArray(snap.tabs) && snap.tabs.some(t => _docHasContent(t && t.doc)));
+  }
+  function _surfaceSkip(reason) {
+    _rlog('autosave skipped: ' + reason);
+    if (_warnedSkip) return;
+    _warnedSkip = true;
+    try { if (typeof setStatus === 'function') setStatus('msg', '⚠ 자동 저장 꺼짐 — ' + reason + ' (수동 저장(Cmd+S)을 권장합니다)'); } catch (_) {}
+  }
   function _writeAutosave() {
     try {
       if (typeof Tabs.serialize !== 'function') return;
-      // Pre-flight: a very large model serialises past the 4.5 MB cap below and
-      // gets skipped anyway — but building that multi-MB string every 20s is
-      // heavy memory churn (it was running right before the paint OOM crash).
-      // Skip cheaply by face count BEFORE serialising.
+      // Re-arm the crash flag EVERY tick, before the gen skip — a session that
+      // loads a doc and never edits would otherwise stay marked "clean" and
+      // its crash would discard the recovery snapshot.
+      try { localStorage.setItem(CLEAN_KEY, '0'); } catch (_) {}
+      // Skip when nothing changed since the last snapshot — no point paying
+      // the serialize cost (and on big models it's the dominant cost).
+      if (_autosaveGen === _lastSavedGen) return;
+      const disk = !!window.electronAutosaveWrite;
+      // Pre-flight by face count BEFORE serialising: building a multi-MB string
+      // every 20s is heavy churn (it was running right before a paint OOM).
       try {
         if (typeof Model !== 'undefined' && Model.objects) {
           let _f = 0;
           for (const o of Model.objects) if (o && o.em && o.em.faces) _f += o.em.faces.length;
-          if (_f > 150000) { _rlog('model too large to autosave (' + _f + ' faces); skipped'); return; }
+          const cap = disk ? FACE_CAP_DISK : FACE_CAP_LOCALSTORAGE;
+          if (_f > cap) { _surfaceSkip('모델이 너무 큼 (' + _f.toLocaleString() + ' faces)'); return; }
         }
       } catch (_) {}
       const snap = Tabs.serialize();
       snap.tabs = (snap.tabs || []).filter(t => _docHasContent(t.doc));
-      if (!snap.tabs.length) { try { localStorage.removeItem(RKEY); } catch (_) {} return; }
+      if (!snap.tabs.length) {
+        if (disk) { try { window.electronAutosaveClear(); } catch (_) {} }
+        try { localStorage.removeItem(RKEY); } catch (_) {}
+        _lastSavedGen = _autosaveGen;
+        return;
+      }
       snap.ts = Date.now();
       const json = JSON.stringify(snap);
-      // localStorage caps near 5 MB; very large docs (e.g. imported textures)
-      // can blow the quota. Skip rather than throw — don't disrupt editing.
-      if (json.length > 4500000) { _rlog('session too large to autosave (' + json.length + ' bytes); skipped'); return; }
+      if (disk) {
+        const gen = _autosaveGen;
+        window.electronAutosaveWrite(json).then((ok) => { if (ok) _lastSavedGen = gen; });
+        try { localStorage.setItem(CLEAN_KEY, '0'); } catch (_) {}
+        return;
+      }
+      // localStorage fallback (plain-browser dev): quota caps near 5 MB.
+      if (json.length > 4500000) { _surfaceSkip('문서가 너무 큼 (' + (json.length / 1e6).toFixed(1) + ' MB)'); return; }
       localStorage.setItem(RKEY, json);
       localStorage.setItem(CLEAN_KEY, '0');
+      _lastSavedGen = _autosaveGen;
     } catch (e) { _rlog('autosave failed: ' + (e && e.message)); }
   }
-  function _maybeRecover() {
-    let raw = null, clean = null;
-    try { raw = localStorage.getItem(RKEY); } catch (_) {}
-    try { clean = localStorage.getItem(CLEAN_KEY); } catch (_) {}
-    try { localStorage.setItem(CLEAN_KEY, '0'); } catch (_) {}   // this session: not yet cleanly exited
-    let snap = null; try { snap = JSON.parse(raw || 'null'); } catch (_) {}
-    if (!snap || !snap.tabs || !snap.tabs.length) { _rlog('no recovery data'); return; }
-    // Claim the recovery data immediately (clear it before doing anything else)
-    // so a second window or a re-entry can't double-handle the same snapshot.
-    try { localStorage.removeItem(RKEY); } catch (_) {}
-    if (clean === '1') { _rlog('previous exit clean — discarding stale recovery'); return; }
+  function _promptAndRestore(snap, rawLen, onDone) {
+    // onDone(status): 'restored' | 'declined' | 'failed'
     const n = snap.tabs.length;
-    _rlog('unexpected previous exit — offering to restore ' + n + ' doc(s) (rawLen=' + (raw ? raw.length : 0) + ')');
-    if (window.__TD_RECOVERY_TEST) { _rlog('TEST mode: would prompt; not prompting/restoring'); return; }
+    _rlog('unexpected previous exit — offering to restore ' + n + ' doc(s) (rawLen=' + rawLen + ')');
+    if (window.__TD_RECOVERY_TEST) { _rlog('TEST mode: would prompt; not prompting/restoring'); onDone('declined'); return; }
     let when = ''; try { if (snap.ts) when = new Date(snap.ts).toLocaleString(); } catch (_) {}
     const msg = 'Turtle Drawing didn’t close normally last time.\n\nRestore ' + n + ' unsaved document' + (n > 1 ? 's' : '') + (when ? '\n(from ' + when + ')' : '') + '?';
     let ok = false; try { ok = window.confirm(msg); } catch (_) {}
     _rlog('prompt result ok=' + ok);
-    if (ok) { try { Tabs.restoreSession(snap); _rlog('restored ' + n + ' doc(s)'); } catch (e) { _rlog('restore failed: ' + (e && e.message)); } }
+    if (!ok) { onDone('declined'); return; }
+    let restored = false;
+    try { restored = !!Tabs.restoreSession(snap); }
+    catch (e) { _rlog('restore failed: ' + (e && e.message)); }
+    if (restored) { _rlog('restored ' + n + ' doc(s)'); onDone('restored'); }
+    else {
+      try { window.alert('복구에 실패했습니다. 스냅샷은 보존되어 다음 실행 때 다시 시도할 수 있습니다.'); } catch (_) {}
+      onDone('failed');
+    }
+  }
+  function _maybeRecover() {
+    let clean = null;
+    try { clean = localStorage.getItem(CLEAN_KEY); } catch (_) {}
+    try { localStorage.setItem(CLEAN_KEY, '0'); } catch (_) {}   // this session: not yet cleanly exited
+    // ---- Disk autosave path (Electron). Claim returns an ARRAY (per-window
+    // snapshots + claims orphaned by a crash during a previous prompt). File
+    // presence alone means "not cleanly exited" — a clean close deletes the
+    // file in the main process — so no localStorage clean-flag dependence.
+    // restored → snapshot deleted; declined/failed → PARKED (kept on disk,
+    // not re-offered) so one "Cancel" can never destroy the only copy.
+    if (window.electronAutosaveClaim) {
+      window.electronAutosaveClaim().then((claims) => {
+        if (claims && !Array.isArray(claims)) claims = [claims];   // legacy single-claim shape
+        if (!claims || !claims.length) { _legacyLocalStorageRecover(clean); return; }
+        // Merge every claimed snapshot's tabs into one recovery session.
+        const merged = { activeId: null, tabs: [], ts: 0 };
+        const valid = [];
+        for (const c of claims) {
+          let snap = null; try { snap = JSON.parse(c.json); } catch (_) {}
+          if (!_validSnap(snap)) {
+            _rlog('a disk snapshot was invalid/empty — discarding it');
+            window.electronAutosaveResolve(c.claimId, true);
+            continue;
+          }
+          valid.push(c);
+          merged.tabs.push(...snap.tabs.filter(t => _docHasContent(t && t.doc)));
+          if (!merged.activeId) merged.activeId = snap.activeId;
+          if (snap.ts && snap.ts > merged.ts) merged.ts = snap.ts;
+        }
+        if (!valid.length || !merged.tabs.length) return;
+        const rawLen = valid.reduce((n, c) => n + c.json.length, 0);
+        _promptAndRestore(merged, rawLen, (status) => {
+          for (const c of valid) window.electronAutosaveResolve(c.claimId, status === 'restored');
+        });
+      }).catch(() => { _legacyLocalStorageRecover(clean); });
+      return;
+    }
+    _legacyLocalStorageRecover(clean);
+  }
+  function _legacyLocalStorageRecover(clean) {
+    let raw = null;
+    try { raw = localStorage.getItem(RKEY); } catch (_) {}
+    let snap = null; try { snap = JSON.parse(raw || 'null'); } catch (_) {}
+    if (!_validSnap(snap)) { _rlog('no recovery data'); return; }
+    if (clean === '1') {
+      _rlog('previous exit clean — discarding stale recovery');
+      try { localStorage.removeItem(RKEY); } catch (_) {}
+      return;
+    }
+    // Claim flag (not deletion!) so a second window doesn't double-prompt,
+    // while the snapshot itself survives a failed restore.
+    const CLAIM = RKEY + '_claim';
+    try {
+      const prev = parseInt(localStorage.getItem(CLAIM) || '0', 10);
+      if (prev && Date.now() - prev < 60000) { _rlog('another window is handling recovery'); return; }
+      localStorage.setItem(CLAIM, String(Date.now()));
+    } catch (_) {}
+    _promptAndRestore(snap, raw ? raw.length : 0, (status) => {
+      try {
+        if (status !== 'failed') localStorage.removeItem(RKEY);
+        localStorage.removeItem(CLAIM);
+      } catch (_) {}
+    });
   }
   function _setupAutosave() {
     try { window.addEventListener('beforeunload', () => { try { localStorage.setItem(CLEAN_KEY, '1'); } catch (_) {} }); } catch (_) {}
@@ -100,11 +198,26 @@
     try { setInterval(_writeAutosave, AUTOSAVE_MS); } catch (_) {}
   }
 
+  /* The on-disk path (window.currentFilePath) is PER-DOCUMENT state, but the
+     global is per-window — without syncing it at every tab change, Cmd+S's
+     silent-overwrite path writes the ACTIVE tab's content into the file some
+     OTHER tab was opened from. Each tab carries its own filePath; this swaps
+     the global to match the active tab. */
+  function syncFilePath() {
+    try {
+      const t = Tabs.list.find(x => x.id === Tabs.activeId);
+      window.currentFilePath = (t && t.filePath) || null;
+    } catch (_) {}
+  }
+  Tabs._syncFilePath = syncFilePath;
+
   Tabs.save = function () {
     const t = Tabs.list.find(x => x.id === Tabs.activeId);
     if (!t) return;
     const d = currentDoc();
     if (d) t.doc = d;
+    // Capture the active tab's on-disk path before any switch.
+    try { t.filePath = window.currentFilePath || null; } catch (_) {}
   };
   Tabs.switchTo = function (id) {
     if (id === Tabs.activeId) return;
@@ -112,6 +225,7 @@
     const t = Tabs.list.find(x => x.id === id);
     if (!t) return;
     Tabs.activeId = id;
+    syncFilePath();
     if (t.doc) loadDoc(t.doc);
     else {
       // Empty tab — clear scene.
@@ -120,6 +234,7 @@
         for (const o of Model.objects.slice()) removeObject(o);
       }
     }
+    Tabs._bumpAutosaveGen();
     render();
   };
   Tabs.newTab = function (name) {
@@ -127,10 +242,14 @@
     // then create a fresh blank one.
     Tabs.save();
     const id = uid();
-    Tabs.list.push({ id, name: name || ('Untitled ' + (Tabs.list.length + 1)), doc: null });
+    Tabs.list.push({ id, name: name || ('Untitled ' + (Tabs.list.length + 1)), doc: null, filePath: null });
     Tabs.activeId = id;
-    // Blank scene.
-    if (typeof Model !== 'undefined') {
+    syncFilePath();   // new tab has no on-disk path — Cmd+S must show a dialog
+    // Blank scene — clearSceneAll also resets undo history, dimensions,
+    // annotations and components so Cmd+Z can't resurrect the previous doc.
+    if (typeof clearSceneAll === 'function') {
+      clearSceneAll();
+    } else if (typeof Model !== 'undefined') {
       for (const o of Model.objects.slice()) removeObject(o);
       for (const sp of (Model.sectionPlanes || []).slice()) {
         try { removeSectionPlane(sp); } catch (_) {}
@@ -139,6 +258,7 @@
       if (typeof renderLayers === 'function') renderLayers();
       if (typeof applyLayerVisibility === 'function') applyLayerVisibility();
     }
+    Tabs._bumpAutosaveGen();
     render();
   };
   Tabs.close = function (id) {
@@ -175,8 +295,10 @@
     Tabs.list.splice(idx, 1);
     if (Tabs.activeId && Tabs.activeId !== id) {
       const cur = Tabs.list.find(x => x.id === Tabs.activeId);
-      if (cur && cur.doc) loadDoc(cur.doc);
+      if (wasActive) syncFilePath();
+      if (wasActive && cur && cur.doc) loadDoc(cur.doc);
     }
+    Tabs._bumpAutosaveGen();
     render();
   };
   Tabs.rename = function (id, newName) {
@@ -189,14 +311,16 @@
   /* Full-session serialize/restore (every tab) — used for crash recovery. */
   Tabs.serialize = function () {
     try { Tabs.save(); } catch (_) {}   // flush the active tab's live scene into its doc
-    return { activeId: Tabs.activeId, tabs: Tabs.list.map(t => ({ id: t.id, name: t.name, doc: t.doc || null })) };
+    return { activeId: Tabs.activeId, tabs: Tabs.list.map(t => ({ id: t.id, name: t.name, doc: t.doc || null, filePath: t.filePath || null })) };
   };
   Tabs.restoreSession = function (snap) {
     if (!snap || !Array.isArray(snap.tabs) || !snap.tabs.length) return false;
-    Tabs.list = snap.tabs.map(t => ({ id: t.id || uid(), name: t.name || 'Untitled', doc: t.doc || null, dirty: true }));
+    Tabs.list = snap.tabs.map(t => ({ id: t.id || uid(), name: t.name || 'Untitled', doc: t.doc || null, filePath: t.filePath || null, dirty: true }));
     Tabs.activeId = snap.tabs.some(t => t.id === snap.activeId) ? snap.activeId : Tabs.list[0].id;
+    syncFilePath();
     const cur = Tabs.list.find(x => x.id === Tabs.activeId);
     if (cur && cur.doc) loadDoc(cur.doc);
+    Tabs._bumpAutosaveGen();
     render();
     return true;
   };
@@ -362,9 +486,11 @@
     Tabs.save();
     const id = uid();
     const name = 'Untitled ' + (Tabs.list.length + 1);
-    Tabs.list.push({ id, name, doc });
+    Tabs.list.push({ id, name, doc, filePath: null });
     Tabs.activeId = id;
+    syncFilePath();   // no disk path yet — preload's menu-open handler stamps it after
     loadDoc(doc);
+    Tabs._bumpAutosaveGen();
     render();
   };
 
@@ -405,6 +531,7 @@
       window.pushHistory = function (label) {
         orig(label);
         try { Tabs.save(); } catch (_) {}
+        try { Tabs._bumpAutosaveGen(); } catch (_) {}
       };
       window.pushHistory._adTabsWrapped = true;
     }

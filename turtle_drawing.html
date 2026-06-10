@@ -5,7 +5,8 @@
 <title>Turtle Drawing</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600;700&family=Kalam:wght@300;400;700&display=swap" rel="stylesheet">
+<!-- Sketch-style fonts (Caveat/Kalam) — vendored woff2 so the app is fully offline. -->
+<link href="vendor/fonts/sketch-fonts.css" rel="stylesheet">
 <style>
 /* ============================================================
    Turtle Drawing — CSS
@@ -1165,28 +1166,36 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         <span><span class="arrow">▸</span>
         <svg class="panel-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="6" width="18" height="3"/><rect x="3" y="11" width="18" height="3"/><rect x="3" y="16" width="18" height="3"/>
-        </svg> Wall Layers</span>
+        </svg> Assembly Layers</span>
       </div>
       <div class="panel-body" id="wallLayerBody" style="display:none; padding:6px 8px; font-size:11px;">
         <button id="wallLayerPickBtn" style="width:100%; padding:4px 6px; font-size:11px; border:0.5px solid rgba(0,0,0,0.18); border-radius:5px; background:#fff; cursor:pointer; margin-bottom:4px;">⊙ Pick face</button>
         <div id="wallLayerStatus" style="font-size:10px; color:#888; margin-bottom:6px;">No face selected</div>
-        <div style="display:flex; gap:3px; margin-bottom:6px; flex-wrap:wrap;">
-          <button class="wl-preset" data-preset="rc"        style="flex:1; min-width:46px; font-size:10px; padding:3px 4px; border:0.5px solid rgba(0,0,0,0.15); border-radius:4px; background:#f4f4f6; cursor:pointer;">RC</button>
-          <button class="wl-preset" data-preset="brick"     style="flex:1; min-width:46px; font-size:10px; padding:3px 4px; border:0.5px solid rgba(0,0,0,0.15); border-radius:4px; background:#f4f4f6; cursor:pointer;">Brick</button>
-          <button class="wl-preset" data-preset="insulated" style="flex:1; min-width:46px; font-size:10px; padding:3px 4px; border:0.5px solid rgba(0,0,0,0.15); border-radius:4px; background:#f4f4f6; cursor:pointer;">Insul.</button>
-          <button class="wl-preset" data-preset="curtain"   style="flex:1; min-width:46px; font-size:10px; padding:3px 4px; border:0.5px solid rgba(0,0,0,0.15); border-radius:4px; background:#f4f4f6; cursor:pointer;">Curtain</button>
+        <div style="display:flex; gap:4px; margin-bottom:6px;">
+          <select id="wlTypeSel" title="Element type (auto-set from the picked face)" style="flex:1; font-size:10px; padding:3px; border:0.5px solid rgba(0,0,0,0.18); border-radius:4px; background:#fff; cursor:pointer;">
+            <option value="wall">Wall</option>
+            <option value="floor">Floor</option>
+            <option value="ceiling">Ceiling</option>
+            <option value="roof">Roof</option>
+            <option value="foundation">Foundation</option>
+          </select>
+          <select id="wlPresetSel" title="Assembly preset" style="flex:1.4; font-size:10px; padding:3px; border:0.5px solid rgba(0,0,0,0.18); border-radius:4px; background:#fff; cursor:pointer;"></select>
         </div>
-        <div style="display:grid; grid-template-columns:1fr 58px 18px; gap:3px; font-size:9px; color:#888; padding:0 0 2px;">
-          <div>Name</div><div style="text-align:right;">mm</div><div></div>
+        <div style="display:grid; grid-template-columns:1fr 40px 48px 14px 14px; gap:3px; font-size:9px; color:#888; padding:0 0 2px;">
+          <div>Name</div><div style="text-align:right;">mm</div><div>Hatch</div><div title="구조체(기준) 층" style="text-align:center;">⌂</div><div></div>
         </div>
         <div id="wallLayerList" style="margin-bottom:6px;"></div>
+        <label id="wlDatumModeLabel" title="픽한 면을 기존 구조체로 보고, 구조체 층(⌂)은 다시 만들지 않으며 마감을 면 바깥(빈 공간)으로 생성합니다." style="display:flex; align-items:center; gap:4px; margin:0 0 6px; font-size:10px; color:#444; cursor:pointer;">
+          <input type="checkbox" id="wlDatumMode" checked> 픽한 면 = 구조체 <span style="color:#999;">(구조체 층 제외·바깥으로 생성)</span>
+        </label>
         <div style="display:flex; gap:4px;">
           <button id="wallLayerAddBtn" style="flex:1; padding:4px 6px; font-size:11px; border:0.5px solid rgba(0,0,0,0.18); border-radius:5px; background:#fff; cursor:pointer;">+ Layer</button>
           <button id="wallLayerApplyBtn" style="flex:1; padding:4px 6px; font-size:11px; border:0.5px solid #0a84ff; border-radius:5px; background:#0a84ff; color:#fff; cursor:pointer;">Generate</button>
         </div>
-        <div style="display:flex; gap:6px; margin-top:6px; font-size:10px;">
-          <label style="display:flex; align-items:center; gap:3px;"><input type="radio" name="wlDir" value="outward" checked> Outward</label>
-          <label style="display:flex; align-items:center; gap:3px;"><input type="radio" name="wlDir" value="inward"> Inward</label>
+        <div id="wlDirRow" style="display:flex; gap:6px; margin-top:6px; font-size:10px; align-items:center;">
+          <span style="color:#aaa;" title="구조체 모드가 꺼졌을 때만 적용 (참조면 기준 방향)">Ref dir:</span>
+          <label style="display:flex; align-items:center; gap:3px;"><input type="radio" name="wlDir" value="outward" checked> Out</label>
+          <label style="display:flex; align-items:center; gap:3px;"><input type="radio" name="wlDir" value="inward"> In</label>
           <label style="display:flex; align-items:center; gap:3px;"><input type="radio" name="wlDir" value="both"> Both</label>
         </div>
       </div>
@@ -1492,26 +1501,34 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
 <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none;" />
 <input type="file" id="objFileInput" accept=".obj,.mtl,.png,.jpg,.jpeg,.bmp,.gif,.tga" multiple style="display:none;" />
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- All third-party libraries are VENDORED in vendor/ (pinned versions) so the
+     packaged app boots offline. Previously every one of these — including
+     THREE core — loaded from a CDN at runtime. -->
+<script src="vendor/three.min.js"></script>
 <!-- Fat-line utilities (needed for variable stroke widths in WebGL). -->
-<script src="https://unpkg.com/three@0.128.0/examples/js/lines/LineSegmentsGeometry.js"></script>
-<script src="https://unpkg.com/three@0.128.0/examples/js/lines/LineSegments2.js"></script>
-<script src="https://unpkg.com/three@0.128.0/examples/js/lines/LineMaterial.js"></script>
-<!-- Mesh format loaders -->
-<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
-<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
-<!-- Font loading + extruded text geometry (jsdelivr serves correct MIME) -->
-<script src="https://unpkg.com/three@0.137.0/examples/js/loaders/FontLoader.js"></script>
-<script src="https://unpkg.com/three@0.137.0/examples/js/geometries/TextGeometry.js"></script>
+<script src="vendor/LineSegmentsGeometry.js"></script>
+<script src="vendor/LineSegments2.js"></script>
+<script src="vendor/LineMaterial.js"></script>
+<!-- Mesh format loaders / exporters (three r128) -->
+<script src="vendor/GLTFLoader.js"></script>
+<script src="vendor/STLLoader.js"></script>
+<script src="vendor/ColladaLoader.js"></script>
+<script src="vendor/GLTFExporter.js"></script>
+<!-- three-mesh-bvh 0.5.24 — O(log n) raycasting on heavy meshes (global MeshBVHLib) -->
+<script src="vendor/three-mesh-bvh.umd.js"></script>
+<!-- Font loading + extruded text geometry (three 0.137 versions) -->
+<script src="vendor/FontLoader.js"></script>
+<script src="vendor/TextGeometry.js"></script>
 <!-- opentype.js — parse system .ttf/.otf so 3D Text can use any installed font -->
-<script src="https://unpkg.com/opentype.js@1.3.4/dist/opentype.min.js"></script>
+<script src="vendor/opentype.min.js"></script>
 <!-- Evan Wallace's CSG (BSP-tree Boolean) — used for proper
      Union / Subtract / Intersect on triangulated meshes. Exposes global `CSG`. -->
-<script src="https://cdn.jsdelivr.net/gh/evanw/csg.js@master/csg.js"></script>
-<!-- rhino3dm.js — write native Rhino .3dm files (lazy-init on first export) -->
-<script src="https://cdn.jsdelivr.net/npm/rhino3dm@8.4.0/rhino3dm.min.js"></script>
+<script src="vendor/csg.js"></script>
+<!-- rhino3dm.js 8.4.0 — read/write native Rhino .3dm (lazy-init; wasm bytes
+     are fed via IPC because fetch() cannot read file:// URLs). -->
+<script src="vendor/rhino3dm.min.js"></script>
 <!-- pdf-lib for PDF export -->
-<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="vendor/pdf-lib.min.js"></script>
 <!-- Turtle Drawing's architectural-drawing layer (AD.*). Loaded here
      so these files see THREE + CSG. The individual modules register
      themselves on `window.AD`; AD.UI.install() is called from
@@ -1529,6 +1546,18 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
 <script src="ad/onboarding.js"></script>
 <script src="ad/ui.js"></script>
 <script>
+/* BVH-accelerated raycasting (three-mesh-bvh). Patched FIRST so every
+   Raycaster.intersectObject in the app benefits. acceleratedRaycast falls back
+   to the stock linear scan on meshes without a boundsTree, so only heavy
+   geometries (see SketchObject.rebuild) pay the build cost. */
+try {
+  if (window.MeshBVHLib && window.THREE) {
+    THREE.BufferGeometry.prototype.computeBoundsTree = MeshBVHLib.computeBoundsTree;
+    THREE.BufferGeometry.prototype.disposeBoundsTree = MeshBVHLib.disposeBoundsTree;
+    THREE.Mesh.prototype.raycast = MeshBVHLib.acceleratedRaycast;
+    window.__TD_BVH = true;
+  }
+} catch (e) { console.warn('[bvh] install failed', e); }
 /* ============================================================================
    Turtle Drawing — JavaScript
    ----------------------------------------------------------------------------
@@ -1591,7 +1620,7 @@ camera.up.set(0, 1, 0);
 // render loop). Safe here: PNG/print export renders to an OFFSCREEN target and
 // reads it via readRenderTargetPixels (ad/export.js), and no code captures the
 // main canvas (CAN) via toDataURL/toBlob — so nothing reads this buffer late.
-const renderer = new THREE.WebGLRenderer({ canvas: CAN, antialias: true, alpha: true, preserveDrawingBuffer: false });
+const renderer = new THREE.WebGLRenderer({ canvas: CAN, antialias: true, alpha: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
 // Cap device-pixel-ratio at 2. On a Retina laptop dpr is already 2 (no-op),
 // but external 4K/5K or scaled displays report 2.5–3, which renders 6–9× the
 // pixels of a 1× buffer for no visible gain. 2 keeps text/edges crisp.
@@ -1601,6 +1630,11 @@ renderer.setClearColor(0x000000, 0);
 // Shadow mapping
 renderer.shadowMap.enabled = false; // toggled on by shadow panel
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Re-render shadow maps only when geometry/lights change (needsUpdate is
+// already set at every mutation site) — re-rendering the shadow pass every
+// frame roughly doubled draw work whenever shadows were on.
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 
 // Brighten an already-loaded texture so it matches the source image when
 // rendered through MeshLambertMaterial (linear pipeline darkens sRGB
@@ -5461,23 +5495,78 @@ class EditableMesh {
 
   /* Weld duplicate vertices (by spatial hash) so shared edges are detectable.
      Called after OBJ import to enable smooth shading and coplanar edge hiding. */
-  weldVertices(eps = 1e-4) {
-    const invEps = 1 / eps;
-    const hash = new Map();
+  /* Merge coincident vertices.
+     staticKeys (optional): Set of exact "x|y|z" position keys captured BEFORE
+     the current edit. When given, two pre-existing vertices are NEVER merged
+     across a gap — a generous commit-time eps (5–10mm) used to collapse real
+     sub-centimeter detail (12mm board edges, 6mm panel gaps) anywhere on the
+     mesh. Exact-duplicate positions still weld (lossless), and moved/new
+     vertices snap to anything within eps (closing a pushed face onto the wall
+     it meets — the intended use). */
+  weldVertices(eps = 1e-4, staticKeys = null) {
+    const exactKey = (v) => v.x + '|' + v.y + '|' + v.z;
     const map = new Array(this.vertices.length);
     const newVerts = [];
-    for (let i = 0; i < this.vertices.length; i++) {
-      const v = this.vertices[i];
-      const key = Math.round(v.x * invEps) + ':' + Math.round(v.y * invEps) + ':' + Math.round(v.z * invEps);
-      const existing = hash.get(key);
-      if (existing != null) {
-        map[i] = existing;
-      } else {
-        const ni = newVerts.length;
-        newVerts.push(v);
-        hash.set(key, ni);
+    if (!staticKeys) {
+      // Legacy mode: bucket by eps-cell, merge same-cell.
+      const invEps = 1 / eps;
+      const hash = new Map();
+      for (let i = 0; i < this.vertices.length; i++) {
+        const v = this.vertices[i];
+        const key = Math.round(v.x * invEps) + ':' + Math.round(v.y * invEps) + ':' + Math.round(v.z * invEps);
+        const existing = hash.get(key);
+        if (existing != null) map[i] = existing;
+        else { const ni = newVerts.length; newVerts.push(v); hash.set(key, ni); map[i] = ni; }
+      }
+    } else {
+      // Guarded mode. Pass 1: exact-duplicate dedupe (always safe).
+      const exact = new Map();
+      const kept = [];           // {v, isStatic, cellKey}
+      for (let i = 0; i < this.vertices.length; i++) {
+        const v = this.vertices[i];
+        const k = exactKey(v);
+        const e = exact.get(k);
+        if (e != null) { map[i] = e; continue; }
+        const ni = kept.length;
+        kept.push({ v, isStatic: staticKeys.has(k) });
+        exact.set(k, ni);
         map[i] = ni;
       }
+      // Pass 2: snap each MOVED/NEW vertex to the nearest kept vertex within
+      // eps (searching neighbouring cells); static verts are anchors only.
+      const invEps = 1 / eps;
+      const cellOf = (v) => [Math.round(v.x * invEps), Math.round(v.y * invEps), Math.round(v.z * invEps)];
+      const cells = new Map();   // cellKey -> [kept index]
+      const remap = new Array(kept.length);
+      const placed = [];         // final vertex list
+      const place = (ki) => {
+        const ni = placed.length;
+        placed.push(kept[ki].v);
+        remap[ki] = ni;
+        const c = cellOf(kept[ki].v), ck = c[0] + ':' + c[1] + ':' + c[2];
+        let arr = cells.get(ck); if (!arr) { arr = []; cells.set(ck, arr); }
+        arr.push(ki);
+      };
+      for (let ki = 0; ki < kept.length; ki++) if (kept[ki].isStatic) place(ki);
+      for (let ki = 0; ki < kept.length; ki++) {
+        if (kept[ki].isStatic) continue;
+        const v = kept[ki].v;
+        const c = cellOf(v);
+        let best = -1, bestD = eps;
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+          const arr = cells.get((c[0] + dx) + ':' + (c[1] + dy) + ':' + (c[2] + dz));
+          if (!arr) continue;
+          for (const kj of arr) {
+            const u = kept[kj].v;
+            const d = Math.sqrt((u.x - v.x) ** 2 + (u.y - v.y) ** 2 + (u.z - v.z) ** 2);
+            if (d <= bestD) { bestD = d; best = kj; }
+          }
+        }
+        if (best >= 0) remap[ki] = remap[best];
+        else place(ki);
+      }
+      for (let i = 0; i < map.length; i++) map[i] = remap[map[i]];
+      newVerts.push(...placed);
     }
     if (newVerts.length === this.vertices.length) return; // nothing to weld
     this.vertices = newVerts;
@@ -5486,6 +5575,50 @@ class EditableMesh {
       if (f.holes) f.holes = f.holes.map(h => h.map(vi => map[vi]));
     }
     for (const e of this.edges) { e.a = map[e.a]; e.b = map[e.b]; }
+    this._postWeldCleanup();
+  }
+
+  /* After a weld, merged indices can leave collapsed face cycles, duplicate
+     faces, and zero-length edges behind. Every weld caller needs this (the
+     VCB push/pull path used to skip it), so it lives here. */
+  _postWeldCleanup() {
+    const dedupeCycle = (arr) => {
+      const out = [];
+      for (const vi of arr) { if (out.length && out[out.length - 1] === vi) continue; out.push(vi); }
+      while (out.length > 1 && out[0] === out[out.length - 1]) out.pop();
+      return out;
+    };
+    for (const f of this.faces) {
+      f.verts = dedupeCycle(f.verts);
+      if (f.holes && f.holes.length) {
+        f.holes = f.holes.map(dedupeCycle).filter(h => new Set(h).size >= 3);
+      }
+    }
+    this.faces = this.faces.filter(f => f.verts.length >= 3 && new Set(f.verts).size >= 3);
+    // Duplicate faces with the SAME winding (rotation-invariant). Opposite
+    // winding pairs are kept — burn-through detects those intentionally.
+    const seen = new Set();
+    const cycKey = (verts) => {
+      let mi = 0;
+      for (let i = 1; i < verts.length; i++) if (verts[i] < verts[mi]) mi = i;
+      const out = [];
+      for (let i = 0; i < verts.length; i++) out.push(verts[(mi + i) % verts.length]);
+      return out.join(',');
+    };
+    this.faces = this.faces.filter(f => {
+      const k = cycKey(f.verts);
+      if (seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+    if (this.edges && this.edges.length) {
+      const ek = new Set();
+      this.edges = this.edges.filter(e => {
+        if (e.a === e.b) return false;
+        const k = Math.min(e.a, e.b) + ':' + Math.max(e.a, e.b);
+        if (ek.has(k)) return false;
+        ek.add(k); return true;
+      });
+    }
   }
 
   /* Build a 3-vertex buffer geometry for rendering all faces triangulated. */
@@ -6064,8 +6197,27 @@ class SketchObject {
     // outer boundary (turns a hole-edge-on-boundary into a notched outline).
     try { this.em.mergeAdjacentHolesAllFaces(); } catch (_) {}
     try { this.em.mergeHolesWithOuter(); } catch (_) {}
+    try { if (this.mesh.geometry.boundsTree) this.mesh.geometry.disposeBoundsTree(); } catch (_) {}
     this.mesh.geometry.dispose();
     this.mesh.geometry  = this.em.toBufferGeometry();
+    // BVH for heavy meshes: O(log n) picking/snapping instead of a linear
+    // per-triangle scan. Light meshes skip the build cost (fallback is fine).
+    try {
+      if (window.__TD_BVH && this.em.faces && this.em.faces.length > 5000) {
+        this.mesh.geometry.computeBoundsTree();
+        // computeBoundsTree adds an index that PERMUTES triangle order, but
+        // raycast results report faceIndex in the NEW order — remap the
+        // per-triangle faceIdxMap (used by all picking code) to match, else
+        // every pick on a BVH mesh selects the wrong face.
+        const _bidx = this.mesh.geometry.index;
+        const _old = this.mesh.geometry.userData && this.mesh.geometry.userData.faceIdxMap;
+        if (_bidx && _old) {
+          const _m = new Array(_bidx.count / 3);
+          for (let t = 0; t < _m.length; t++) _m[t] = _old[_bidx.getX(t * 3) / 3];
+          this.mesh.geometry.userData.faceIdxMap = _m;
+        }
+      }
+    } catch (_) {}
     if (this._featureEdges) {
       try {
         this.edges.geometry.dispose();
@@ -6082,8 +6234,10 @@ class SketchObject {
       this.edges.geometry = edgeGeom;
     }
     // Refresh cross-section fills because this object's geometry may
-    // intersect an active section plane. Guarded to avoid recursion.
-    if (typeof rebuildSectionFills === 'function') rebuildSectionFills();
+    // intersect an active section plane. Guarded to avoid recursion, and
+    // suppressed during bulk restores (undo/file-load rebuild N objects —
+    // the caller runs ONE rebuildSectionFills at the end).
+    if (!window._bulkRestore && typeof rebuildSectionFills === 'function') rebuildSectionFills();
   }
   setVisible(v) { this.visible = v; this.group.visible = v; }
   /* Heavy-object low-detail proxy: replaces the full mesh+edges with a single
@@ -6575,10 +6729,34 @@ let _bimRebuildInProgress = false;
 // Re-entry guard for component auto-sync (pushHistory → updateComponent →
 // removeObject → maybe pushHistory again). When true, skip auto-sync.
 let _propagatingComponents = false;
+/* Bulk-restore mode: undo/redo, tab switches, and file loads remove N objects
+   one by one — without this flag each removal triggers a full outliner DOM
+   rebuild (O(N²)) and, with a section plane active, a full section-fill
+   recompute. Set true for the batch, then call renderOutliner() +
+   rebuildSectionFills() exactly once at the end. */
+window._bulkRestore = false;
+
 function removeObject(obj) {
   const i = Model.objects.indexOf(obj);
   if (i >= 0) Model.objects.splice(i, 1);
   worldRoot.remove(obj.group);
+  // Free GPU buffers NOW. Without this every undo / redo / tab switch / file
+  // open leaked the entire previous model's WebGL geometry until the context
+  // died ("blank canvas" on big models). Materials are per-object too.
+  try {
+    if (obj.mesh) {
+      if (obj.mesh.geometry) obj.mesh.geometry.dispose();
+      if (obj.mat && obj.mat.dispose) obj.mat.dispose();
+    }
+    if (obj.edges) {
+      if (obj.edges.geometry) obj.edges.geometry.dispose();
+      if (obj.edgeMat && obj.edgeMat.dispose) obj.edgeMat.dispose();
+    }
+    if (obj._proxy) {
+      if (obj._proxy.geometry) obj._proxy.geometry.dispose();
+      if (obj._proxy.material && obj._proxy.material.dispose) obj._proxy.material.dispose();
+    }
+  } catch (_) {}
   // Drop matching BIM data unless we're inside BIM.rebuild
   if (!_bimRebuildInProgress) {
     try {
@@ -6591,7 +6769,37 @@ function removeObject(obj) {
       }
     } catch (_) {}
   }
-  renderOutliner();
+  if (!window._bulkRestore) renderOutliner();
+}
+
+/* Reset the whole document state to a blank scene. Called by Tabs.newTab and
+   the empty-tab switch — previously missing, which let Cmd+Z in a new tab
+   resurrect the PREVIOUS document (and autosave the contamination). */
+function clearSceneAll() {
+  window._bulkRestore = true;
+  try {
+    for (const o of Model.objects.slice()) { try { removeObject(o); } catch (_) {} }
+    for (const sp of (Model.sectionPlanes || []).slice()) { try { removeSectionPlane(sp); } catch (_) {} }
+    try { if (Model.dimensions) Model.dimensions.length = 0; } catch (_) {}
+    try { if (Model.annotations) Model.annotations.length = 0; } catch (_) {}
+    try { if (Model.components) Model.components.length = 0; } catch (_) {}
+    try { clearSelection(); } catch (_) {}
+    // Undo history must not span documents.
+    try {
+      if (typeof History !== 'undefined') { History.past = []; History.future = []; }
+      if (typeof _lastSnapshot !== 'undefined') {
+        _lastSnapshot = (typeof snapshot === 'function') ? snapshot() : null;
+      }
+      try { renderHistoryList && renderHistoryList(); } catch (_) {}
+    } catch (_) {}
+    try { if (typeof renderLayers === 'function') renderLayers(); } catch (_) {}
+    try { if (typeof applyLayerVisibility === 'function') applyLayerVisibility(); } catch (_) {}
+  } finally {
+    window._bulkRestore = false;
+  }
+  try { renderOutliner(); } catch (_) {}
+  try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {}
+  try { drawOverlay(); } catch (_) {}
 }
 
 /* User-initiated delete: also drop BIM data records so the wall doesn't
@@ -6750,6 +6958,11 @@ function applyLayerVisibility() {
   }
   // Keep dim layer dropdown in sync with the latest layer list
   try { if (typeof refreshDimLayerSelector === 'function') refreshDimLayerSelector(); } catch (_) {}
+  // Shadow maps are manually updated (autoUpdate=false). This function is the
+  // single choke point every scene-swap path runs through — undo/redo
+  // (restore), file open (loadDocIntoScene), new/empty tab (clearSceneAll),
+  // and layer eye toggles — so invalidate here.
+  try { if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true; } catch (_) {}
 }
 
 /* ----- Group editing (standard "enter group" context) ----- */
@@ -7042,6 +7255,8 @@ function pushHistory(label) {
       if (seen.size) try { renderComponentList && renderComponentList(); } catch (_) {}
     }
   } catch (_) {}
+  // Geometry changed → refresh the (manually-updated) shadow maps once.
+  try { if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true; } catch (_) {}
   // Save the PRE-edit snapshot (captured last time), then re-snapshot the post-edit state.
   if (_lastSnapshot) {
     History.past.push({ label, ..._lastSnapshot });
@@ -7056,6 +7271,10 @@ function restore(entry) {
   // Defensive: a state-less entry (shouldn't happen now that null snapshots are
   // never pushed, but guard anyway) would otherwise crash on entry.layers/state.
   if (!entry || !entry.state || !entry.layers) { try { renderHistoryList && renderHistoryList(); } catch (_) {} return; }
+  // Bulk mode: one outliner render + one section-fill rebuild at the END,
+  // not per removed/recreated object (O(N²) DOM + N fill recomputes before).
+  window._bulkRestore = true;
+  try {
   for (const o of Model.objects.slice()) removeObject(o);
   Model.layers = JSON.parse(JSON.stringify(entry.layers));
   if (entry.activeLayerId) Model.activeLayerId = entry.activeLayerId;
@@ -7227,6 +7446,11 @@ function restore(entry) {
     faces: c.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
     edges: (c.edges || []).map(e => ({ a: e.a, b: e.b })),
   }));
+  } finally {
+    window._bulkRestore = false;
+  }
+  try { renderOutliner(); } catch (_) {}
+  try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {}
   applyLayerVisibility();
   if (typeof renderComponentList === 'function') renderComponentList();
 }
@@ -7579,11 +7803,14 @@ function raycastObjects(e, opts = {}) {
 }
 
 function raycastGround() {
-  // intersect with y = 0 plane
+  // intersect with y = 0 plane. Returns null when the ray misses (e.g. the
+  // cursor points at the sky) — callers must not treat that as the origin:
+  // the old behavior silently returned (0,0,0) and let sky-clicks commit
+  // geometry at the world origin.
   const p = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
   const hit = new THREE.Vector3();
-  raycaster.ray.intersectPlane(p, hit);
-  return hit;
+  const ok = raycaster.ray.intersectPlane(p, hit);
+  return ok ? hit : null;
 }
 
 function snapToGrid(v, size=1) {
@@ -9599,10 +9826,14 @@ function computeSnap(e, opts = {}) {
   // Total faces in the visible scene — used to short-circuit expensive
   // per-vertex / per-edge raycast occlusion tests on heavy imports where
   // they would otherwise lock the cursor.
+  // With three-mesh-bvh installed, each occlusion raycast is O(log n) instead
+  // of a per-triangle scan, so occlusion-correct snapping stays on for models
+  // ~100× larger than the old 2,500-face cutoff.
+  const _snapFaceCap = window.__TD_BVH ? 250000 : 2500;
   let _snapTotalFaces = 0;
   for (const oCount of Model.objects) {
     if (oCount && oCount.em && oCount.em.faces) _snapTotalFaces += oCount.em.faces.length;
-    if (_snapTotalFaces > 2500) break;   // early-out once we know _snapHeavy will trip
+    if (_snapTotalFaces > _snapFaceCap) break;   // early-out once we know _snapHeavy will trip
   }
   // Occlusion raycasts (hidden-point rejection) used to be disabled above 500
   // faces, which is most real architectural scenes — so the cursor would
@@ -9610,8 +9841,9 @@ function computeSnap(e, opts = {}) {
   // occlusion budget on candidates already INSIDE the snap radius (a tiny
   // handful per frame, not every vertex), the per-frame cost no longer scales
   // with scene size, so we can keep occlusion on for mid-size models and raise
-  // the cutoff to 2500. Front-face pre-filter still culls back-of-mesh verts.
-  const _snapHeavy = _snapTotalFaces > 2500;
+  // the cutoff to 2500 (250k with BVH). Front-face pre-filter still culls
+  // back-of-mesh verts.
+  const _snapHeavy = _snapTotalFaces > _snapFaceCap;
 
   // Snap-source object set. Background underlay (imported DXF) is excluded from
   // every snap scanner — endpoints, midpoints, edges, extensions, parallels,
@@ -10084,6 +10316,10 @@ function computeSnap(e, opts = {}) {
   //        is the classic "straight continuation of an existing line" snap.
   //        Rendered magenta.
   let bestAxis = null, bestAxisDist = SNAP_PX_AXIS;
+  // Catch radius (screen px) for "Extension Intersect" snaps. Defaults to a
+  // wide 100 px so the Line tool can "extend across the scene"; tools that want
+  // the marker to stay ON the cursor (e.g. the Tape Measure) pass a small value.
+  const _extIntersectRadius = (opts.extIntersectRadius != null) ? opts.extIntersectRadius : 100;
   const fromPts = opts.from
     ? (Array.isArray(opts.from) ? opts.from.filter(Boolean) : [opts.from])
     : [];
@@ -10320,7 +10556,7 @@ function computeSnap(e, opts = {}) {
           const sp = worldToScreen(h.point);
           if (sp.z > 1) continue;
           const dPix = Math.hypot(sp.x - mx, sp.y - my);
-          const AXIS_INTERSECT_RADIUS = 100;
+          const AXIS_INTERSECT_RADIUS = _extIntersectRadius;
           if (dPix < AXIS_INTERSECT_RADIUS) {
             bestAxisDist = Math.min(bestAxisDist, dPix);
             bestAxis = {
@@ -10353,7 +10589,7 @@ function computeSnap(e, opts = {}) {
           const dPix = Math.hypot(sp.x - mx, sp.y - my);
           // Give intersection snaps a much larger catch radius — they're the
           // main "extend across the scene" snap the user is looking for.
-          const INTERSECT_RADIUS = 100;
+          const INTERSECT_RADIUS = _extIntersectRadius;
           if (dPix < INTERSECT_RADIUS) {
             bestAxisDist = Math.min(bestAxisDist, dPix);
             bestAxis = {
@@ -10425,7 +10661,7 @@ function computeSnap(e, opts = {}) {
           const sp = worldToScreen(h.point);
           if (sp.z > 1) continue;
           const dPix = Math.hypot(sp.x - mx, sp.y - my);
-          const PERP_INTERSECT_RADIUS = 100;
+          const PERP_INTERSECT_RADIUS = _extIntersectRadius;
           if (dPix < PERP_INTERSECT_RADIUS) {
             bestAxisDist = Math.min(bestAxisDist, dPix);
             bestAxis = {
@@ -13439,7 +13675,14 @@ Tools.move = {
       const o = targets[ti];
       const origObj = this.objs[ti];
       const orig = this.origVertsByObj.get(origObj);
+      // Respect the selection mask: when only a FACE/EDGE is selected, move just
+      // those vertices — NOT the whole object. (Bug: typing a distance moved the
+      // entire object because this loop translated every vertex, unlike the drag
+      // path which masks via _applyMoveDelta.) copyMode clones are already the
+      // partial selection, so they move whole (mask = null).
+      const mask = (!this.copyMode && this.origMaskByObj) ? this.origMaskByObj.get(origObj) : null;
       for (let i = 0; i < o.em.vertices.length; i++) {
+        if (mask && !mask.has(i)) { o.em.vertices[i].copy(orig[i]); continue; }
         o.em.vertices[i].copy(orig[i]).addScaledVector(dir, signedD);
       }
       if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
@@ -14879,10 +15122,14 @@ Tools.pp = {
             // inner tunnel wall pushed to the opposite wall to fill a drilled
             // hole. Without this pre-step the burn pass mangles the overlapping
             // pair, leaving holes open and walls missing (the reported bug).
-            try { obj.em.weldVertices(0.005); } catch (_) {}
+            // Guarded weld: pre-op vertex positions are anchors — only verts
+            // moved/created by THIS push may snap, so the generous 5mm eps can
+            // no longer collapse sub-centimeter detail elsewhere on the mesh.
+            const _statics = this._staticVertKeys();
+            try { obj.em.weldVertices(0.005, _statics); } catch (_) {}
             try { obj.em.splitFaceByCoplanarFace && obj.em.splitFaceByCoplanarFace(); } catch (_) {}
             try { _closeCoplanarHoleCaps(obj.em); } catch (_) {}
-            try { this._runBurnThrough(obj.em); } catch (_) {}
+            try { this._runBurnThrough(obj.em, _statics); } catch (_) {}
           }
           // Phase 4: HalfEdge-based coplanar cleanup. After push, a small face
           // can land coplanar with a larger neighbour and share at least one
@@ -15135,6 +15382,9 @@ Tools.pp = {
         verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId,
         holes: (f.holes || []).map(h => h.slice()),
       }));
+      // Standalone edges too — the commit-time weld remaps edge indices, so a
+      // _commitGuard rollback must restore them alongside verts/faces.
+      this.origEdges = (this.hoverObj.em.edges || []).map(e => ({ a: e.a, b: e.b }));
       const vs = this.faceCopy.verts.map(i => this.hoverObj.em.vertices[i]);
       this.faceCentroid = vs.reduce((a,b) => a.add(b), new THREE.Vector3()).multiplyScalar(1/vs.length);
       this.anchorNDC = ndc(e).clone();
@@ -15163,6 +15413,10 @@ Tools.pp = {
       // instant a push/pull commit produces it. Gated to dev builds (?dev).
       if (window.__TD_DEV) { try { const _h = _meshHealth(this.hoverObj.em);
         if (_h.fail) console.log('[health] pushpull faces='+_h.faces+' open='+_h.open+' nonman='+_h.nonman+' winding='+_h.winding+' degen='+_h.degenerate+' dup='+_h.dup); } catch (_) {} }
+      // PRODUCTION transaction guard: if this commit introduced new mesh
+      // defects, restore the pre-op copy instead of baking corruption into
+      // the undo baseline.
+      const _rolledBack = _commitGuard(this.hoverObj, { verts: this.origVerts, faces: this.origFaces, edges: this.origEdges }, 'Push/Pull');
       // Clear selection so the pushed face's edges don't stay highlighted.
       try {
         Selection.objects.clear();
@@ -15171,13 +15425,13 @@ Tools.pp = {
         refreshSelectionVisuals();
         renderEntityInfo();
       } catch (_) {}
-      pushHistory('Extrude');
+      if (!_rolledBack) pushHistory('Extrude');
       this.lastDistance = this.currentDistance || this.lastDistance;
       this.active = false;
       this.faceCopy = null;
       this.snapTarget = null;
       helperRoot.clear();
-      setStatus('msg', 'Extrude done: ' + Units.format(this.lastDistance));
+      if (!_rolledBack) setStatus('msg', 'Extrude done: ' + Units.format(this.lastDistance));
     }
   },
   onDoubleClick(e) {
@@ -15219,37 +15473,45 @@ Tools.pp = {
     }));
     const face = obj.em.faces.find(f => sameVerts(f.verts, this.faceCopy.verts));
     if (face) obj.em.extrudeFace(face, d);
-    // Cleanup after fill/push: weld coincident verts, CSG-subtract coplanar
-    // overlap, close coplanar hole-caps (fills a drilled tunnel cleanly),
-    // burn-through, then merge + heal topology.
-    try { obj.em.weldVertices(0.005); } catch (_) {}
+    // Cleanup after fill/push: weld coincident verts (guarded — pre-op verts
+    // are anchors, see _staticVertKeys), CSG-subtract coplanar overlap, close
+    // coplanar hole-caps (fills a drilled tunnel cleanly), burn-through, then
+    // merge + heal topology.
+    const _statics = this._staticVertKeys();
+    try { obj.em.weldVertices(0.005, _statics); } catch (_) {}
     try { obj.em.splitFaceByCoplanarFace && obj.em.splitFaceByCoplanarFace(); } catch (_) {}
     try { _closeCoplanarHoleCaps(obj.em); } catch (_) {}
-    try { this._runBurnThrough(obj.em); } catch (_) {}
+    try { this._runBurnThrough(obj.em, _statics); } catch (_) {}
     try { mergeCoplanarAdjacentFaces(obj.em); } catch (_) {}
     try { _healMeshTopology(obj.em); } catch (_) {}
     obj.rebuild();
-    pushHistory('Extrude ' + Units.format(d));
+    // PRODUCTION transaction guard (same as the click-commit path).
+    const _rolledBack = _commitGuard(obj, { verts: this.origVerts, faces: this.origFaces, edges: this.origEdges }, 'Push/Pull');
+    if (!_rolledBack) pushHistory('Extrude ' + Units.format(d));
     this.lastDistance = d;
     this.active = false; helperRoot.clear();
+  },
+
+  /* Exact "x|y|z" position keys of the pre-operation vertex set — the anchor
+     set for guarded welds: any vertex still at one of these positions existed
+     BEFORE this push/pull and must never be merged across a gap. Survives
+     index remapping (welds/splits) because it's keyed on position, not index. */
+  _staticVertKeys() {
+    try {
+      if (!this.origVerts || !this.origVerts.length) return null;
+      const s = new Set();
+      for (const v of this.origVerts) s.add(v.x + '|' + v.y + '|' + v.z);
+      return s;
+    } catch (_) { return null; }
   },
 
   /* Burn-through cleanup: detect a face that lies inside another coplanar
      face with opposite normal — punch it as a hole or remove the duplicate
      pair. Run once at commit time (heavy O(n²) scan). */
-  _runBurnThrough(em) {
-    // Weld with generous tolerance so almost-coincident verts unify
-    try { em.weldVertices && em.weldVertices(0.01); } catch (_) {}
-    try {
-      console.log('[burn-start] faces:', em.faces.length);
-      em.faces.forEach((f, i) => {
-        const vstr = f.verts.map(vi => {
-          const v = em.vertices[vi];
-          return `(${v.x.toFixed(0)},${v.y.toFixed(0)},${v.z.toFixed(0)})`;
-        }).join(' ');
-        console.log(`  pre-f${i} n=(${f.normal.x.toFixed(2)},${f.normal.y.toFixed(2)},${f.normal.z.toFixed(2)}) verts=${vstr}`);
-      });
-    } catch (_) {}
+  _runBurnThrough(em, staticKeys) {
+    // Weld with generous tolerance so almost-coincident verts unify — guarded
+    // by the pre-op anchor set so it can't eat sub-centimeter detail.
+    try { em.weldVertices && em.weldVertices(0.01, staticKeys || null); } catch (_) {}
     // BBOX-CAP CLEANUP: remove faces that lie on the model's bounding box
     // surface but whose normals point INTO the box (residual slot caps).
     try {
@@ -17976,20 +18238,40 @@ Tools.pan = { name: 'pan', label: 'Pan', cursor: 'pan',
 Tools.tape = {
   name: 'tape', label: 'Tape Measure', cursor: 'measure',
   a: null,
-  onActivate() { setStatus('msg', 'Click two points to measure distance.'); },
+  onActivate() { setStatus('msg', 'Click two points to measure distance. Second point snaps to the X/Y/Z axes from the first.'); this.a = null; },
   onDeactivate() { this.a = null; helperRoot.clear(); },
+  // Resolve the cursor to a measured point. Once the first point is set, the
+  // second point snaps to a world axis through it — the SAME mouse inference
+  // (8° angular cone) + axis-constrain the Line tool uses, reusing its helpers
+  // — so a roughly axis-aligned measurement locks dead-on to X/Y/Z, like
+  // drawing a line. A real endpoint/midpoint/edge snap still wins.
+  _resolve(e) {
+    // extIntersectRadius:18 keeps "Extension Intersect" snaps right at the
+    // cursor instead of grabbing distant intersections (100px) — so the snap
+    // marker stays under the crosshair when measuring.
+    const snap = computeSnap(e, { skipOuterGroups: true, from: this.a, extIntersectRadius: 18 });
+    if (!snap) return null;
+    if (!this.a) return { point: snap.point.clone(), axis: null, snap };
+    ndc(e); raycaster.setFromCamera(pointer, camera);
+    const ray = raycaster.ray.clone();
+    let p = snap.point.clone(), axis = null;
+    const t = snap.type || '';
+    if (!t || /Ground|Face|Grid/i.test(t)) axis = Tools.line._inferAxis.call({ firstPoint: this.a }, e);
+    if (axis) p = Tools.line._closestOnAxis(this.a, axis.vec, ray);
+    return { point: p, axis, snap };
+  },
   onPointerDown(e) {
     if (e.button !== 0) return;
-    const snap = computeSnap(e, { skipOuterGroups: true, from: this.a });
-    if (!snap) return;
-    if (!this.a) this.a = snap.point.clone();
+    const r = this._resolve(e);
+    if (!r) return;
+    if (!this.a) { this.a = r.point.clone(); }
     else {
-      const d = this.a.distanceTo(snap.point);
-      setStatus('msg', 'Distance: ' + Units.format(d));
+      const d = this.a.distanceTo(r.point);
+      setStatus('msg', 'Distance: ' + Units.format(d) + (r.axis ? ' · ' + r.axis.name + ' Axis' : ''));
       VCB.set(Units.format(d, { noSuffix: true }));
-      // Leave dashed guide
-      const g = new THREE.BufferGeometry().setFromPoints([this.a, snap.point]);
-      const mat = new THREE.LineDashedMaterial({ color: 0x00cccc, dashSize:0.15, gapSize:0.1 });
+      // Leave dashed guide (axis-coloured when constrained)
+      const g = new THREE.BufferGeometry().setFromPoints([this.a, r.point]);
+      const mat = new THREE.LineDashedMaterial({ color: r.axis ? r.axis.color : 0x00cccc, dashSize:0.15, gapSize:0.1 });
       const line = new THREE.Line(g, mat); line.computeLineDistances();
       helperRoot.add(line);
       this.a = null;
@@ -17997,15 +18279,15 @@ Tools.tape = {
   },
   onPointerMove(e) {
     if (!this.a) return;
-    const snap = computeSnap(e, { skipOuterGroups: true, from: this.a });
-    if (!snap) return;
+    const r = this._resolve(e);
+    if (!r) return;
     helperRoot.clear();
-    drawInferenceHelper(snap);
-    // Live preview line
-    const g = new THREE.BufferGeometry().setFromPoints([this.a, snap.point]);
-    const line = new THREE.Line(g, new THREE.LineDashedMaterial({ color: 0x00cccc, dashSize:0.15, gapSize:0.1 }));
+    if (!r.axis) drawInferenceHelper(r.snap);
+    // Live preview line (axis-coloured when constrained)
+    const g = new THREE.BufferGeometry().setFromPoints([this.a, r.point]);
+    const line = new THREE.Line(g, new THREE.LineDashedMaterial({ color: r.axis ? r.axis.color : 0x00cccc, dashSize:0.15, gapSize:0.1 }));
     line.computeLineDistances(); helperRoot.add(line);
-    setStatus('msg', 'Distance: ' + Units.format(this.a.distanceTo(snap.point)) + (snap.axis ? ' · ' + snap.axis + 'Axis' : ''));
+    setStatus('msg', 'Distance: ' + Units.format(this.a.distanceTo(r.point)) + (r.axis ? ' · ' + r.axis.name + ' Axis' : ''));
   },
   onPointerUp(){},
 };
@@ -18784,6 +19066,255 @@ function removeLevelAt(screenX, screenY, threshold) {
   return true;
 }
 
+/* ==================== ASSEMBLY (BUILD-UP) LIBRARY ====================
+   Per element-type presets for the Assembly Layers panel. Each layer is
+   {name, thickness(m), hatch(id|null), color, [kind], [datum]}.
+   `datum:true` marks the STRUCTURAL layer that coincides with the picked face
+   (e.g. an existing RC slab/wall). In datum mode (default) that layer is NOT
+   regenerated — the finishes build outward from the picked face into the open
+   space (datum-adjacent first), and any layers past the datum continue into the
+   structure side. Add types/presets/layers freely. */
+const AssemblyLibrary = {
+  wall: [
+    { id: 'rc', label: 'RC + insulation', layers: [
+      { name: 'Interior finish', thickness: 0.02, hatch: 'poche_solid',      color: '#cccccc' },
+      { name: 'Insulation',      thickness: 0.08, hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'RC wall',         thickness: 0.20, hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+      { name: 'Exterior finish', thickness: 0.03, hatch: 'poche_solid',      color: '#d0d0d0' },
+    ] },
+    { id: 'brick', label: 'Brick', layers: [
+      { name: 'Interior finish', thickness: 0.015, hatch: 'poche_solid', color: '#cccccc' },
+      { name: 'Masonry wall',    thickness: 0.19,  hatch: 'brick',       color: '#c8a080', datum: true },
+      { name: 'Exterior finish', thickness: 0.02,  hatch: 'poche_solid', color: '#d0c0b0' },
+    ] },
+    { id: 'insulated', label: 'Insulated (double)', layers: [
+      { name: 'Interior finish',     thickness: 0.012, hatch: 'poche_solid',      color: '#cccccc' },
+      { name: 'Interior insulation', thickness: 0.10,  hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'Structure',           thickness: 0.18,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+      { name: 'Exterior insulation', thickness: 0.10,  hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'Exterior finish',     thickness: 0.03,  hatch: 'poche_solid',      color: '#d0d0d0' },
+    ] },
+    { id: 'curtain', label: 'Curtain wall', layers: [
+      { name: 'Glass',   thickness: 0.012, hatch: null,    color: '#a0d0e8' },
+      { name: 'Air gap', thickness: 0.016, hatch: null,    color: '#e8f4ff' },
+      { name: 'Glass',   thickness: 0.006, hatch: null,    color: '#a0d0e8' },
+      { name: 'Mullion', thickness: 0.05,  hatch: 'metal', color: '#888888' },
+    ] },
+    // ── A-102 실내재료마감상세도 (datum = 픽한 RC 구조벽) ──
+    { id: 'w01a', label: 'W-01a 지하 외벽 (소매점/창고)', layers: [
+      { name: '석고보드',        thickness: 0.0095, hatch: 'plaster',          color: '#eeeeee' },
+      { name: '보강블럭 쌓기',   thickness: 0.10,   hatch: 'concrete_block',   color: '#c9c4b8' },
+      { name: '공간 띄우기',     thickness: 0.03,   hatch: null,              color: '#f4f8ff' },
+      { name: '압출법 보온판',   thickness: 0.05,   hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'RC 벽체',         thickness: 0.20,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'w01b', label: 'W-01b 지하 창고벽', layers: [
+      { name: '석고보드',      thickness: 0.0095, hatch: 'plaster',          color: '#eeeeee' },
+      { name: '보강블럭 쌓기', thickness: 0.10,   hatch: 'concrete_block',   color: '#c9c4b8' },
+      { name: '공간 띄우기',   thickness: 0.03,   hatch: null,              color: '#f4f8ff' },
+      { name: 'RC 벽체',       thickness: 0.20,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'w02', label: 'W-02 석고보드 2겹 (일반)', layers: [
+      { name: '전면 퍼티',     thickness: 0.002,  hatch: null,              color: '#f0f0f0' },
+      { name: '석고보드 두겹', thickness: 0.019,  hatch: 'plaster',          color: '#eeeeee' },
+      { name: '압출법 보온판', thickness: 0.05,   hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'RC 벽체',       thickness: 0.20,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'w03', label: 'W-03 주방벽 (강판 마감)', layers: [
+      { name: '강판',          thickness: 0.0045, hatch: 'metal',            color: '#9aa0a8' },
+      { name: '전면 퍼티',     thickness: 0.002,  hatch: null,              color: '#f0f0f0' },
+      { name: '석고보드 두겹', thickness: 0.019,  hatch: 'plaster',          color: '#eeeeee' },
+      { name: '압출법 보온판', thickness: 0.05,   hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'RC 벽체',       thickness: 0.20,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'w04a', label: 'W-04a 화장실 방수벽 (타일)', layers: [
+      { name: '지정 마감 (타일)', thickness: 0.009,  hatch: 'tile',            color: '#d8d2c8' },
+      { name: '우레탄 도막방수',  thickness: 0.003,  hatch: 'poche_solid',     color: '#5a4a6a' },
+      { name: '방수석고보드',     thickness: 0.0095, hatch: 'plaster',         color: '#e8ecea' },
+      { name: 'RC 벽체',          thickness: 0.20,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'w04b', label: 'W-04b 화장실 방수벽', layers: [
+      { name: '지정 마감 (타일)', thickness: 0.009,  hatch: 'tile',            color: '#d8d2c8' },
+      { name: '우레탄 도막방수',  thickness: 0.003,  hatch: 'poche_solid',     color: '#5a4a6a' },
+      { name: '방수석고보드',     thickness: 0.0095, hatch: 'plaster',         color: '#e8ecea' },
+      { name: 'RC 벽체',          thickness: 0.20,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'w05', label: 'W-05 화장실/샤워실 방수벽', layers: [
+      { name: '도기질 타일',    thickness: 0.008, hatch: 'tile',            color: '#dcd6cc' },
+      { name: '시멘트 몰탈',    thickness: 0.024, hatch: 'poche_solid',     color: '#cfcabf' },
+      { name: '액체방수 (종)',  thickness: 0.005, hatch: 'poche_solid',     color: '#5a4a6a' },
+      { name: 'RC 벽체',        thickness: 0.20,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+  ],
+  floor: [
+    { id: 'floor_rc', label: 'RC slab + finish', layers: [
+      { name: 'Floor finish (tile)', thickness: 0.01, hatch: 'tile',             color: '#d8d2c8' },
+      { name: 'Screed',              thickness: 0.05, hatch: 'poche_solid',      color: '#cfcabf' },
+      { name: 'Insulation',          thickness: 0.03, hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'RC slab',             thickness: 0.15, hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'floor_wood', label: 'Wood floor', layers: [
+      { name: 'Wood finish', thickness: 0.015, hatch: 'timber_grain',     color: '#c8a060' },
+      { name: 'Plywood',     thickness: 0.018, hatch: 'plywood',          color: '#d8c098' },
+      { name: 'Screed',      thickness: 0.04,  hatch: 'poche_solid',      color: '#cfcabf' },
+      { name: 'RC slab',     thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    // ── A-102 실내재료마감상세도 (datum = 픽한 RC 슬래브, 마감은 위로) ──
+    { id: 'f01', label: 'F-01 지하 바닥 (방수)', layers: [
+      { name: '콘크리트 폴리싱',   thickness: 0.005, hatch: 'concrete_exposed', color: '#c2c6cc' },
+      { name: '무근 콘크리트',     thickness: 0.08,  hatch: 'concrete_exposed', color: '#b8bcc4' },
+      { name: '배수판',            thickness: 0.02,  hatch: null,              color: '#d8dde2' },
+      { name: '보호 몰탈',         thickness: 0.024, hatch: 'poche_solid',     color: '#cfcabf' },
+      { name: '침투식 액체방수',   thickness: 0.003, hatch: 'poche_solid',     color: '#5a4a6a' },
+      { name: 'RC 슬래브',         thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f02', label: 'F-02 폴리싱 바닥 (일반)', layers: [
+      { name: '콘크리트 폴리싱', thickness: 0.005, hatch: 'concrete_exposed', color: '#c2c6cc' },
+      { name: '시멘트 몰탈',     thickness: 0.04,  hatch: 'poche_solid',     color: '#cfcabf' },
+      { name: 'RC 슬래브',       thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f03', label: 'F-03 주방 바닥 (타일)', layers: [
+      { name: '지정 타일 마감', thickness: 0.01, hatch: 'tile',            color: '#d8d2c8' },
+      { name: '시멘트 몰탈',    thickness: 0.04, hatch: 'poche_solid',     color: '#cfcabf' },
+      { name: 'RC 슬래브',      thickness: 0.15, hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f04a', label: 'F-04a 화장실 바닥 (방수)', layers: [
+      { name: '자기질 타일',   thickness: 0.01,  hatch: 'tile',            color: '#d6d0c6' },
+      { name: '시멘트 몰탈',   thickness: 0.04,  hatch: 'poche_solid',     color: '#cfcabf' },
+      { name: '액체방수 (종)', thickness: 0.005, hatch: 'poche_solid',     color: '#5a4a6a' },
+      { name: 'RC 슬래브',     thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f04b', label: 'F-04b 화장실 바닥 (방수)', layers: [
+      { name: '자기질 타일',   thickness: 0.01,  hatch: 'tile',            color: '#d6d0c6' },
+      { name: '시멘트 몰탈',   thickness: 0.04,  hatch: 'poche_solid',     color: '#cfcabf' },
+      { name: '액체방수 (종)', thickness: 0.005, hatch: 'poche_solid',     color: '#5a4a6a' },
+      { name: 'RC 슬래브',     thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f04c', label: 'F-04c 샤워실 바닥 (방수)', layers: [
+      { name: '자기질 타일',   thickness: 0.01,  hatch: 'tile',            color: '#d6d0c6' },
+      { name: '시멘트 몰탈',   thickness: 0.04,  hatch: 'poche_solid',     color: '#cfcabf' },
+      { name: '액체방수 (종)', thickness: 0.005, hatch: 'poche_solid',     color: '#5a4a6a' },
+      { name: 'RC 슬래브',     thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f05', label: 'F-05 사무실 온돌마루', layers: [
+      { name: '지정 마루',      thickness: 0.015, hatch: 'timber_grain',     color: '#c8a060' },
+      { name: '시멘트 몰탈',    thickness: 0.04,  hatch: 'poche_solid',     color: '#cfcabf' },
+      { name: '전기 온돌판넬',  thickness: 0.03,  hatch: 'poche_solid',     color: '#e0d8c8' },
+      { name: '열반사 단열재',  thickness: 0.01,  hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'RC 슬래브',      thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f07', label: 'F-07 조경 바닥 (식재)', layers: [
+      { name: '토심 (식재토)',   thickness: 0.30,  hatch: 'earth',           color: '#8a6f4a' },
+      { name: '조경용 부직포',   thickness: 0.002, hatch: null,              color: '#d8d8d0' },
+      { name: '조경용 배수판',   thickness: 0.04,  hatch: null,              color: '#d8dde2' },
+      { name: '시트 방수',       thickness: 0.003, hatch: 'poche_solid',     color: '#444a55' },
+      { name: 'RC 슬래브',       thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f11', label: 'F-11 주출입구 바닥', layers: [
+      { name: '콘크리트 폴리싱', thickness: 0.005, hatch: 'concrete_exposed', color: '#c2c6cc' },
+      { name: '무근 콘크리트',   thickness: 0.08,  hatch: 'concrete_exposed', color: '#b8bcc4' },
+      { name: '시트 방수',       thickness: 0.003, hatch: 'poche_solid',     color: '#444a55' },
+      { name: 'RC 슬래브',       thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f12', label: 'F-12 중정 바닥', layers: [
+      { name: '자갈 깔기',       thickness: 0.08,  hatch: 'gravel',          color: '#b8b0a0' },
+      { name: '투수 방근시트',   thickness: 0.002, hatch: 'poche_solid',     color: '#4a5a4a' },
+      { name: '투수펫',          thickness: 0.005, hatch: null,              color: '#d8d8d0' },
+      { name: '시트 방수',       thickness: 0.003, hatch: 'poche_solid',     color: '#444a55' },
+      { name: 'RC 슬래브',       thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f13', label: 'F-13 테라스 데크', layers: [
+      { name: '지정 페데스탈 데크',  thickness: 0.03,   hatch: 'timber_grain',     color: '#b08a5a' },
+      { name: '쇄석 깔기',           thickness: 0.10,   hatch: 'gravel',           color: '#b8b0a0' },
+      { name: '지붕용 투습방수지',   thickness: 0.0015, hatch: 'poche_solid',      color: '#c8ccd0' },
+      { name: '압출법 보온판 두겹',  thickness: 0.10,   hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: '시트 방수',           thickness: 0.003,  hatch: 'poche_solid',      color: '#444a55' },
+      { name: 'RC 슬래브',           thickness: 0.15,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f14', label: 'F-14 테라스 석재타일', layers: [
+      { name: '지정 석재타일',     thickness: 0.03,  hatch: 'tile',            color: '#c8c2b8' },
+      { name: '무근 컬러콘크리트', thickness: 0.08,  hatch: 'concrete_exposed', color: '#c8b8a0' },
+      { name: '시트 방수',         thickness: 0.003, hatch: 'poche_solid',     color: '#444a55' },
+      { name: 'RC 슬래브',         thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'f15', label: 'F-15 지붕층 (쇄석)', layers: [
+      { name: '쇄석 깔기',          thickness: 0.10,   hatch: 'gravel',           color: '#b8b0a0' },
+      { name: '토목용 부직포',      thickness: 0.002,  hatch: null,              color: '#d8d8d0' },
+      { name: '배수판',             thickness: 0.02,   hatch: null,              color: '#d8dde2' },
+      { name: '지붕용 투습방수지',  thickness: 0.0015, hatch: 'poche_solid',      color: '#c8ccd0' },
+      { name: '압출법 보온판 두겹', thickness: 0.10,   hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: '시트 방수',          thickness: 0.003,  hatch: 'poche_solid',      color: '#444a55' },
+      { name: 'RC 슬래브',          thickness: 0.15,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+  ],
+  ceiling: [
+    { id: 'mbar', label: 'M-bar gypsum (엠바 달대)', layers: [
+      { name: 'Gypsum board (석고 9.5T)',   thickness: 0.0095, kind: 'board', cellU: 0.3, cellV: 0.6, hatch: 'plaster', color: '#eeeeee' },
+      { name: 'Suspension — M-bar + rods', thickness: 0.20,   kind: 'suspension', system: 'mbar', hatch: 'metal', color: '#8a8f98' },
+      { name: 'RC slab',                   thickness: 0.15,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'tbar', label: 'T-bar lay-in (티바)', layers: [
+      { name: 'Ceiling tile (텍스 15T)',     thickness: 0.015, kind: 'board', cellU: 0.6, cellV: 0.6, hatch: 'plaster', color: '#f0f0ec' },
+      { name: 'Suspension — T-grid + rods', thickness: 0.20,  kind: 'suspension', system: 'tbar', hatch: 'metal', color: '#9aa0a8' },
+      { name: 'RC slab',                    thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'ceil_susp', label: 'Suspended (flat plenum)', layers: [
+      { name: 'Ceiling finish',   thickness: 0.012, hatch: 'plaster',          color: '#e8e8e8' },
+      { name: 'Plenum / air gap', thickness: 0.30,  hatch: null,              color: '#f4f8ff' },
+      { name: 'RC slab',          thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    { id: 'ceil_direct', label: 'Direct plaster', layers: [
+      { name: 'Plaster finish', thickness: 0.015, hatch: 'plaster',          color: '#e8e8e8' },
+      { name: 'RC slab',        thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+    // ── A-102 실내재료마감상세도 ──
+    { id: 'c03', label: 'C-03 화장실 천장 (엠바+방수석고)', layers: [
+      { name: '방수석고보드',          thickness: 0.0095, kind: 'board', cellU: 0.3, cellV: 0.6, hatch: 'plaster', color: '#e8ecea' },
+      { name: '달대 (M-bar+전산볼트)', thickness: 0.20,   kind: 'suspension', system: 'mbar', hatch: 'metal', color: '#8a8f98' },
+      { name: 'RC 슬래브',             thickness: 0.15,   hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+    ] },
+  ],
+  roof: [
+    { id: 'roof_flat', label: 'Flat roof', layers: [
+      { name: 'Waterproof membrane', thickness: 0.01,  hatch: 'poche_solid',      color: '#444444' },
+      { name: 'Insulation',          thickness: 0.12,  hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'RC deck',             thickness: 0.18,  hatch: 'concrete_exposed', color: '#b0b8c8', datum: true },
+      { name: 'Ceiling finish',      thickness: 0.012, hatch: 'plaster',          color: '#e8e8e8' },
+    ] },
+    { id: 'roof_pitch', label: 'Pitched (tiled)', layers: [
+      { name: 'Roof tile',     thickness: 0.03, hatch: 'roof_tile',        color: '#9a6a55' },
+      { name: 'Batten / air',  thickness: 0.05, hatch: null,              color: '#eeeeee' },
+      { name: 'Insulation',    thickness: 0.12, hatch: 'insulation_rigid', color: '#ffe8a0' },
+      { name: 'Rafter / deck', thickness: 0.04, hatch: 'timber_grain',     color: '#c8a060', datum: true },
+    ] },
+  ],
+  foundation: [
+    { id: 'mat', label: 'Mat (raft) foundation', layers: [
+      { name: 'Floor finish',          thickness: 0.05,  hatch: 'poche_solid',      color: '#cfcabf' },
+      { name: 'RC mat slab',           thickness: 0.40,  hatch: 'concrete_exposed', color: '#b0b8c8' },
+      { name: 'Waterproofing',         thickness: 0.005, hatch: 'poche_solid',      color: '#444444' },
+      { name: 'Blinding (lean conc.)', thickness: 0.05,  hatch: 'concrete_exposed', color: '#c8c8c0' },
+      { name: 'Gravel base',           thickness: 0.20,  hatch: 'gravel',           color: '#b8b0a0' },
+      { name: 'Compacted earth',       thickness: 0.40,  hatch: 'earth',            color: '#a08868' },
+    ] },
+    { id: 'sog', label: 'Slab on grade', layers: [
+      { name: 'Floor finish',    thickness: 0.02,  hatch: 'tile',            color: '#d8d2c8' },
+      { name: 'RC slab',         thickness: 0.15,  hatch: 'concrete_exposed', color: '#b0b8c8' },
+      { name: 'Vapor barrier',   thickness: 0.003, hatch: 'poche_solid',     color: '#444444' },
+      { name: 'Gravel base',     thickness: 0.15,  hatch: 'gravel',          color: '#b8b0a0' },
+      { name: 'Compacted earth', thickness: 0.40,  hatch: 'earth',           color: '#a08868' },
+    ] },
+    // ── 상세도: 경질우레탄 단열 매트기초 (슬래브에서 아래로) ──
+    { id: 'mat_pu', label: '기초 (경질우레탄 단열 매트)', layers: [
+      { name: 'RC 매트 슬래브',     thickness: 0.30,  hatch: 'concrete_exposed', color: '#b0b8c8' },
+      { name: '경질우레탄보드 T80', thickness: 0.08,  hatch: 'insulation_board', color: '#ffe0c0' },
+      { name: '버림 콘크리트 T60',  thickness: 0.06,  hatch: 'concrete_exposed', color: '#c8c8c0' },
+      { name: 'PE필름 2겹',         thickness: 0.001, hatch: 'poche_solid',      color: '#444444' },
+      { name: '잡석 다짐',          thickness: 0.20,  hatch: 'rubble_compact',   color: '#a8a098' },
+    ] },
+  ],
+};
+
 /* ==================== WALL LAYER OFFSET ==================== */
 const WallLayer = {
   // State
@@ -18791,6 +19322,7 @@ const WallLayer = {
   refFaceIdx: -1,      // face index within em
   refNormal: null,     // THREE.Vector3 (world space)
   refVerts: null,      // world-space vertex positions of the face
+  activeType: 'wall',  // 'wall'|'floor'|'ceiling'|'roof'|'foundation'
 
   // Layer definitions [{name, thickness(m), hatch, color}]
   layers: [
@@ -18843,6 +19375,131 @@ const WallLayer = {
     return obj;
   },
 
+  /* Build a 3D suspended-ceiling support layer inside the plenum [offset,
+     offset+depth] along `normal`: threaded-rod hangers (전산볼트) on a grid plus
+     either M-bar furring + carrying channels (엠바, system:'mbar') or an exposed
+     T-grid (티바, system:'tbar') near the finish. Real boxes, so a section cut
+     through the ceiling shows the rods/channels. Returns [SketchObject]. */
+  _makeSuspension(wVerts, normal, depth, layerDef, offset, structAtOffset) {
+    if (wVerts.length < 3 || depth <= 0) return [this._makeSlab(wVerts, normal, depth, layerDef, offset)];
+    const system = layerDef.system || 'mbar';
+    // Too-thin plenum to fit the hardware stack → just a flat slab (symmetric
+    // along the extrude axis, so structAtOffset is moot).
+    if (depth < ((system === 'tbar') ? 0.045 : 0.06)) return [this._makeSlab(wVerts, normal, depth, layerDef, offset)];
+    const col = layerDef.color || '#8a8f98';
+    const n = normal.clone().normalize();
+    // In-plane axes (u from first edge, projected perpendicular to n; v = n×u)
+    let u = wVerts[1].clone().sub(wVerts[0]);
+    u.addScaledVector(n, -u.dot(n));
+    if (u.lengthSq() < 1e-9) { u = (Math.abs(n.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0)); u.addScaledVector(n, -u.dot(n)); }
+    u.normalize();
+    const v = new THREE.Vector3().crossVectors(n, u).normalize();
+    const origin = wVerts[0].clone();
+    const poly2 = wVerts.map(w => { const d = w.clone().sub(origin); return [d.dot(u), d.dot(v)]; });
+    let minU=Infinity,maxU=-Infinity,minV=Infinity,maxV=-Infinity;
+    for (const [a,b] of poly2){ if(a<minU)minU=a; if(a>maxU)maxU=a; if(b<minV)minV=b; if(b>maxV)maxV=b; }
+    const spanU = maxU-minU, spanV = maxV-minV;
+    if (spanU <= 0 || spanV <= 0) return [this._makeSlab(wVerts, normal, depth, layerDef, offset)];
+    const pip = (x,y) => { let inside=false;
+      for(let i=0,j=poly2.length-1;i<poly2.length;j=i++){ const xi=poly2[i][0],yi=poly2[i][1],xj=poly2[j][0],yj=poly2[j][1];
+        if(((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi+1e-12)+xi)) inside=!inside; }
+      return inside; };
+    const em = new EditableMesh();
+    // Box centred at local (cu,cv), half-extents (hu,hv) in-plane, spanning
+    // [lo,hi] along n measured from `offset`. Verts pushed directly (no weld).
+    const addBox = (cu, cv, hu, hv, lo, hi) => {
+      // Clamp the band into [0,depth] so a thin plenum can't invert or poke out.
+      lo = Math.max(0, Math.min(lo, depth)); hi = Math.max(0, Math.min(hi, depth));
+      if (hi - lo < 1e-5) return;
+      // When the structure (slab) is at the offset end, mirror the layout along
+      // the plenum so rods anchor at the slab and channels sit at the finish.
+      if (structAtOffset) { const _t = depth - lo; lo = depth - hi; hi = _t; }
+      const P = (du, dv, dn) => origin.clone().addScaledVector(u, cu+du).addScaledVector(v, cv+dv).addScaledVector(n, offset+dn);
+      const i = em.vertices.length;
+      em.vertices.push(P(-hu,-hv,lo),P(hu,-hv,lo),P(hu,hv,lo),P(-hu,hv,lo),P(-hu,-hv,hi),P(hu,-hv,hi),P(hu,hv,hi),P(-hu,hv,hi));
+      em.addFace([i,i+1,i+2,i+3],col); em.addFace([i+7,i+6,i+5,i+4],col);
+      em.addFace([i,i+4,i+5,i+1],col); em.addFace([i+1,i+5,i+6,i+2],col);
+      em.addFace([i+2,i+6,i+7,i+3],col); em.addFace([i+3,i+7,i+4,i],col);
+    };
+    const CAP = 500;            // safety cap on total members (huge faces)
+    const cu0=(minU+maxU)/2, cv0=(minV+maxV)/2;
+    let count = 0;
+    if (system === 'tbar') {
+      const TILE=0.6, TEE=0.025, TEE_H=0.038, ROD=0.009, ROD_SP=1.2;
+      const mainUs=[];
+      for (let a=minU; a<=maxU+1e-6 && count<CAP; a+=TILE) { addBox(a, cv0, TEE/2, spanV/2, 0, TEE_H); mainUs.push(a); count++; }   // main tees ∥ v
+      for (let b=minV; b<=maxV+1e-6 && count<CAP; b+=TILE) { addBox(cu0, b, spanU/2, TEE/2, 0, TEE_H); count++; }                    // cross tees ∥ u
+      if (!mainUs.length) { addBox(cu0, cv0, TEE/2, spanV/2, 0, TEE_H); mainUs.push(cu0); count++; }
+      let rods=0;                                                                                                                   // rods on the main tees
+      for (const a of mainUs) for (let b=minV+ROD_SP/2; b<=maxV && count<CAP; b+=ROD_SP){ if(pip(a,b)){ addBox(a,b,ROD/2,ROD/2,TEE_H,depth); count++; rods++; } }
+      if (!rods && pip(mainUs[0],cv0)) addBox(mainUs[0],cv0,ROD/2,ROD/2,TEE_H,depth);                                                // small face → 1 hanger
+    } else {
+      const FURR_H=0.019, FURR_W=0.05, FURR_SP=0.30;   // 엠바 furring @300 (board module)
+      const CARR_H=0.038, CARR_W=0.012, CARR_SP=0.90;  // 캐링채널 @900
+      const ROD=0.009, ROD_SP=0.90;                    // 전산볼트 @900 ALONG each carrier
+      // 엠바 furring ∥ u (carries the board), @300
+      for (let b=minV; b<=maxV+1e-6 && count<CAP; b+=FURR_SP) { addBox(cu0, b, spanU/2, FURR_W/2, 0, FURR_H); count++; }
+      // 캐링채널 ∥ v, @900 — remember their u positions so rods land ON them
+      const carrierUs=[];
+      for (let a=minU+CARR_SP/2; a<=maxU+1e-6 && count<CAP; a+=CARR_SP) { addBox(a, cv0, CARR_W/2, spanV/2, FURR_H, FURR_H+CARR_H); carrierUs.push(a); count++; }
+      if (!carrierUs.length) { addBox(cu0, cv0, CARR_W/2, spanV/2, FURR_H, FURR_H+CARR_H); carrierUs.push(cu0); count++; }
+      // 전산볼트 sit on the carriers (aligned in u), stepping along v
+      let rods=0;
+      for (const a of carrierUs) for (let b=minV+ROD_SP/2; b<=maxV && count<CAP; b+=ROD_SP){ if(pip(a,b)){ addBox(a,b,ROD/2,ROD/2,FURR_H+CARR_H,depth); count++; rods++; } }
+      if (!rods && pip(carrierUs[0],cv0)) addBox(carrierUs[0],cv0,ROD/2,ROD/2,FURR_H+CARR_H,depth);   // small face → 1 hanger
+    }
+    if (!em.faces.length) return [this._makeSlab(wVerts, normal, depth, layerDef, offset)];
+    const obj = new SketchObject(em, layerDef.name);
+    obj._pendingLayerDef = layerDef;
+    return [obj];
+  },
+
+  /* Board finish: a flat slab plus a joint grid (e.g. 석고보드 300×600) drawn on
+     its exposed (room-facing) surface. Returns [slab, gridObj]. */
+  _makeBoard(wVerts, normal, thickness, layerDef, offset, structAtOffset) {
+    const out = [this._makeSlab(wVerts, normal, thickness, layerDef, offset)];
+    const grid = this._makeFaceGrid(wVerts, normal, layerDef, offset + thickness,
+                                    layerDef.cellU || 0.3, layerDef.cellV || 0.6);
+    if (grid) out.push(grid);
+    return out;
+  },
+  /* Thin raised joint lines forming a cellU×cellV grid on the plane `planeOff`
+     (along normal, measured from the picked face). For board/tile layouts. */
+  _makeFaceGrid(wVerts, normal, layerDef, planeOff, cellU, cellV) {
+    if (wVerts.length < 3 || cellU <= 0 || cellV <= 0) return null;
+    const n = normal.clone().normalize();
+    let u = wVerts[1].clone().sub(wVerts[0]);
+    u.addScaledVector(n, -u.dot(n));
+    if (u.lengthSq() < 1e-9) { u = (Math.abs(n.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0)); u.addScaledVector(n, -u.dot(n)); }
+    u.normalize();
+    const v = new THREE.Vector3().crossVectors(n, u).normalize();
+    const origin = wVerts[0].clone();
+    const poly2 = wVerts.map(w => { const d = w.clone().sub(origin); return [d.dot(u), d.dot(v)]; });
+    let minU=Infinity,maxU=-Infinity,minV=Infinity,maxV=-Infinity;
+    for (const [a,b] of poly2){ if(a<minU)minU=a; if(a>maxU)maxU=a; if(b<minV)minV=b; if(b>maxV)maxV=b; }
+    const spanU=maxU-minU, spanV=maxV-minV;
+    if (spanU <= 0 || spanV <= 0) return null;
+    const col = '#777c85', LW = 0.002, lo = planeOff + 0.0003, hi = planeOff + 0.0015;  // fine line floating just off the face (no z-fight)
+    const em = new EditableMesh();
+    const cu0=(minU+maxU)/2, cv0=(minV+maxV)/2;
+    const addBox = (cu, cv, hu, hv) => {
+      const P = (du, dv, dn) => origin.clone().addScaledVector(u, cu+du).addScaledVector(v, cv+dv).addScaledVector(n, dn);
+      const i = em.vertices.length;
+      em.vertices.push(P(-hu,-hv,lo),P(hu,-hv,lo),P(hu,hv,lo),P(-hu,hv,lo),P(-hu,-hv,hi),P(hu,-hv,hi),P(hu,hv,hi),P(-hu,hv,hi));
+      em.addFace([i,i+1,i+2,i+3],col); em.addFace([i+7,i+6,i+5,i+4],col);
+      em.addFace([i,i+4,i+5,i+1],col); em.addFace([i+1,i+5,i+6,i+2],col);
+      em.addFace([i+2,i+6,i+7,i+3],col); em.addFace([i+3,i+7,i+4,i],col);
+    };
+    const CAP = 600; let c = 0;
+    for (let a=minU; a<=maxU+1e-6 && c<CAP; a+=cellU) { addBox(a, cv0, LW/2, spanV/2); c++; }   // joints ∥ v
+    for (let b=minV; b<=maxV+1e-6 && c<CAP; b+=cellV) { addBox(cu0, b, spanU/2, LW/2); c++; }   // joints ∥ u
+    if (!em.faces.length) return null;
+    const name = (layerDef.name || 'Board') + ' grid';
+    const o = new SketchObject(em, name);
+    o._pendingLayerDef = { name, color: col, hatch: null };
+    return o;
+  },
+
   /* ---------- apply ---------- */
   apply() {
     if (!this.refObj || this.refFaceIdx < 0 || !this.refNormal) {
@@ -18855,9 +19512,7 @@ const WallLayer = {
     if (typeof snapshot === 'function') _lastSnapshot = snapshot();
 
     const wVerts = this._faceWorldVerts(this.refObj, this.refFaceIdx);
-    const normal = this.refNormal.clone();
-    const dir    = document.querySelector('input[name="wlDir"]:checked');
-    const mode   = dir ? dir.value : 'outward'; // 'outward' | 'inward' | 'both'
+    const normal = this.refNormal.clone().normalize();
 
     const newObjs = [];
     // _assignLayer must run AFTER addObject() because addObject overwrites layerId
@@ -18868,31 +19523,185 @@ const WallLayer = {
       slab.layerId = layerId; // override what addObject set
       delete slab._pendingLayerDef;
     };
-    if (mode === 'outward' || mode === 'both') {
+    // A layer with kind:'suspension' generates 3D hanger geometry (rods +
+    // channels) instead of a flat slab; everything else is an offset slab.
+    // structAtOffset: the structure (datum) is on the layer's offset end, so a
+    // suspension layer mirrors its internal layout (rods at the slab side).
+    const _buildLayer = (nrm, L, cum, structAtOffset) =>
+      (L.kind === 'suspension') ? this._makeSuspension(wVerts, nrm, L.thickness, L, cum, structAtOffset)
+      : (L.kind === 'board')    ? this._makeBoard(wVerts, nrm, L.thickness, L, cum, structAtOffset)
+      : [this._makeSlab(wVerts, nrm, L.thickness, L, cum)];
+    const _emit = (nrm, L, cum, structAtOffset) => {
+      for (const part of _buildLayer(nrm, L, cum, structAtOffset)) { addObject(part); newObjs.push(part); _assignLayer(part); }
+    };
+
+    const datumChk  = document.getElementById('wlDatumMode');
+    const datumMode = datumChk ? datumChk.checked : true;
+    const datumIdx  = this.layers.findIndex(L => L.datum);
+
+    if (this.activeType === 'foundation') {
+      // Foundation: the picked face is the floor/top reference; build the WHOLE
+      // stack DOWNWARD into the ground (finish on top → mat → sub-base), not
+      // "into the open space" like cladding. Datum split does not apply here.
+      const dn = normal.clone().normalize();
+      const down = (dn.y < 0) ? dn : dn.negate();   // the ±normal that points down
       let cum = 0;
-      for (const L of this.layers) {
-        const slab = this._makeSlab(wVerts, normal, L.thickness, L, cum);
-        addObject(slab); newObjs.push(slab);
-        _assignLayer(slab); // after addObject
-        cum += L.thickness;
+      for (const L of this.layers) { _emit(down, L, cum, false); cum += L.thickness; }
+    } else if (datumMode) {
+      // The picked face IS the structure surface. Build finishes AWAY from the
+      // picked object's solid (into the open space). The datum layer is not
+      // regenerated; layers past the datum continue on the structure side. In
+      // datum mode the structure is always on each layer's offset end.
+      const away = this._awaySolidDir(normal);
+      const into = away.clone().negate();
+      if (datumIdx >= 0) {
+        const datumT = this._measureDatumThickness(into, this.layers[datumIdx].thickness || 0);
+        let cum = 0;                                            // before-datum: reversed, open-space side (datum-adjacent first)
+        for (let i = datumIdx - 1; i >= 0; i--) { _emit(away, this.layers[i], cum, true); cum += this.layers[i].thickness; }
+        cum = datumT;                                           // after-datum: list order, structure side (past the datum)
+        for (let i = datumIdx + 1; i < this.layers.length; i++) { _emit(into, this.layers[i], cum, true); cum += this.layers[i].thickness; }
+      } else {
+        let cum = 0;                                            // no datum: whole stack into open space (layers[0] at the face)
+        for (const L of this.layers) { _emit(away, L, cum, false); cum += L.thickness; }
       }
-    }
-    if (mode === 'inward' || mode === 'both') {
-      const invNorm = normal.clone().negate();
-      let cum = 0;
-      for (const L of this.layers) {
-        const slab = this._makeSlab(wVerts, invNorm, L.thickness, L, cum);
-        addObject(slab); newObjs.push(slab);
-        _assignLayer(slab); // after addObject
-        cum += L.thickness;
-      }
+    } else {
+      // Reference-plane mode: generate the FULL stack (incl. structure) along
+      // the chosen radio direction, layers[0] at the picked face.
+      const dir   = document.querySelector('input[name="wlDir"]:checked');
+      const rmode = dir ? dir.value : 'outward';
+      const run = (nrm) => { let cum = 0; for (const L of this.layers) { _emit(nrm, L, cum, false); cum += L.thickness; } };
+      if (rmode === 'outward' || rmode === 'both') run(normal);
+      if (rmode === 'inward'  || rmode === 'both') run(normal.clone().negate());
     }
     if (newObjs.length) {
       pushHistory('Wall Layer Offset');
       rebuildSectionFills();
       try { renderer && renderer.render(scene, camera); } catch (_) {}
-      setStatus('msg', `Wall layer ${newObjs.length} created`);
+      setStatus('msg', `Assembly: ${newObjs.length} layer(s) created`);
+    } else {
+      setStatus('msg', '생성할 마감 층이 없습니다 (구조체 층만 있음 — ⌂ 해제 또는 층 추가)');
     }
+  },
+
+  /* ---------- element-type detection + presets ---------- */
+  /* Guess the element type from the picked face: down-facing → ceiling;
+     up-facing → floor / roof / foundation (disambiguated by height in the
+     model); ~vertical → wall. */
+  autoDetectType() {
+    const n = this.refNormal;
+    if (!n) return null;
+    if (n.y < -0.6) return 'ceiling';
+    if (n.y > 0.6) {
+      try {
+        let minY = Infinity, maxY = -Infinity;
+        for (const o of Model.objects) {
+          if (!o.group || !o.group.visible || !o.computeBBox) continue;
+          const bb = o.computeBBox();
+          if (!bb || !isFinite(bb.min.y)) continue;
+          if (bb.min.y < minY) minY = bb.min.y;
+          if (bb.max.y > maxY) maxY = bb.max.y;
+        }
+        if (isFinite(minY) && maxY > minY && this.refVerts && this.refVerts.length) {
+          const cy = this.refVerts.reduce((s, v) => s + v.y, 0) / this.refVerts.length;
+          const rel = (cy - minY) / (maxY - minY);  // 0 = bottom, 1 = top
+          if (rel < 0.12) return 'foundation';
+          if (rel > 0.88) return 'roof';
+        }
+      } catch (_) {}
+      return 'floor';
+    }
+    return 'wall';
+  },
+  /* Unit direction pointing AWAY from the picked object's solid mass (toward the
+     open space), so finishes build off the structure face instead of being
+     buried in it. Computed from the object centroid vs the picked face; falls
+     back to the outward face normal. */
+  _awaySolidDir(normal) {
+    const n = normal.clone().normalize();
+    try {
+      const o = this.refObj;
+      if (o && o.mesh && this.refVerts && this.refVerts.length) {
+        const fc = new THREE.Vector3();
+        for (const v of this.refVerts) fc.add(v);
+        fc.multiplyScalar(1 / this.refVerts.length);
+        // LOCAL solid-side test: probe a ray each way from the face centroid.
+        // The structure is whichever side hits the object's geometry sooner
+        // (e.g. the slab back face); the open space is the opposite side. This
+        // is robust where a global-centroid test fails (large/imported meshes).
+        const probe = (dir) => {
+          const ray = new THREE.Raycaster(fc.clone().addScaledVector(dir, 1e-4), dir.clone().normalize(), 1e-4, 1e4);
+          const hits = ray.intersectObject(o.mesh, false);
+          return (hits && hits.length) ? hits[0].distance : Infinity;
+        };
+        const dInto = probe(n.clone().negate());   // into the presumed solid (−normal)
+        const dAway = probe(n);                     // into the presumed open space (+normal)
+        if (isFinite(dInto) || isFinite(dAway)) {
+          return (dInto <= dAway) ? n : n.clone().negate();
+        }
+      }
+    } catch (_) {}
+    return n;  // no geometry either way → trust the outward face normal
+  },
+  /* Measure the picked structure's real thickness by raycasting from the face
+     centroid into the solid (so layers placed past the datum land on its actual
+     back face, not the preset nominal). Falls back to `fallback`. */
+  _measureDatumThickness(intoDir, fallback) {
+    try {
+      const o = this.refObj;
+      if (o && o.mesh && this.refVerts && this.refVerts.length) {
+        const fc = new THREE.Vector3();
+        for (const v of this.refVerts) fc.add(v);
+        fc.multiplyScalar(1 / this.refVerts.length);
+        const dir = intoDir.clone().normalize();
+        const ray = new THREE.Raycaster(fc.clone().addScaledVector(dir, 1e-4), dir, 1e-4, 1e4);
+        const hits = ray.intersectObject(o.mesh, false);
+        if (hits && hits.length) {
+          const d = hits[0].distance + 1e-4;
+          if (isFinite(d) && d > 1e-3) return d;
+        }
+      }
+    } catch (_) {}
+    return fallback;
+  },
+  /* Called after a reference face is set. Auto-switches the type selector and
+     loads that type's default preset ONLY when the detected type changes, so
+     re-picking faces of the same type preserves the user's tweaks. (Build
+     direction is computed at generate time from the picked solid.) */
+  _onRefSet() {
+    const t = this.autoDetectType();
+    if (t && t !== this.activeType) {
+      this.activeType = t;
+      const sel = document.getElementById('wlTypeSel');
+      if (sel) sel.value = t;
+      this._populatePresets(t);
+      const first = AssemblyLibrary[t] && AssemblyLibrary[t][0];
+      if (first) this.loadAssembly(t, first.id);
+    } else {
+      this.renderPanel();
+    }
+  },
+  /* Fill the preset <select> with the presets for `type`. */
+  _populatePresets(type) {
+    const sel = document.getElementById('wlPresetSel');
+    if (!sel) return;
+    sel.innerHTML = '';
+    for (const p of (AssemblyLibrary[type] || [])) {
+      const opt = document.createElement('option');
+      opt.value = p.id; opt.textContent = p.label;
+      sel.appendChild(opt);
+    }
+  },
+  /* Load a preset's layers (deep-copied so edits don't mutate the library). */
+  loadAssembly(type, presetId) {
+    const presets = AssemblyLibrary[type] || [];
+    const p = presets.find(x => x.id === presetId) || presets[0];
+    if (!p) return;
+    this.activeType = type;
+    this.layers = p.layers.map(L => ({ ...L }));
+    let _seenDatum = false; for (const L of this.layers) { if (L.datum) { if (_seenDatum) delete L.datum; else _seenDatum = true; } }
+    const psel = document.getElementById('wlPresetSel');
+    if (psel) psel.value = p.id;
+    this.renderPanel();
   },
 
   /* ---------- UI render ---------- */
@@ -18900,21 +19709,40 @@ const WallLayer = {
     const list = document.getElementById('wallLayerList');
     if (!list) return;
     list.innerHTML = '';
+    const patterns = (window.AD && AD.Hatch && AD.Hatch.PATTERNS) ? AD.Hatch.PATTERNS : [];
     this.layers.forEach((L, i) => {
       const row = document.createElement('div');
-      row.style.cssText = 'display:grid; grid-template-columns:1fr 58px 18px; gap:3px; align-items:center; margin-bottom:2px;';
+      row.style.cssText = 'display:grid; grid-template-columns:1fr 40px 48px 14px 14px; gap:3px; align-items:center; margin-bottom:2px;' + (L.datum ? 'opacity:0.6;' : '');
       // Name
       const nameInp = document.createElement('input');
       nameInp.value = L.name;
-      nameInp.style.cssText = 'font-size:10px; padding:2px 4px; border:0.5px solid #ccc; border-radius:3px; width:100%;';
+      nameInp.style.cssText = 'font-size:10px; padding:2px 4px; border:0.5px solid #ccc; border-radius:3px; width:100%; box-sizing:border-box;';
       nameInp.oninput = () => { L.name = nameInp.value; };
       // Thickness (mm)
       const thkInp = document.createElement('input');
       thkInp.type = 'number'; thkInp.min = 1; thkInp.step = 5;
       thkInp.value = Math.round(L.thickness * 1000);
-      thkInp.style.cssText = 'font-size:10px; padding:2px 3px; border:0.5px solid #ccc; border-radius:3px; width:100%; text-align:right;';
-      thkInp.title = 'mm';
+      thkInp.style.cssText = 'font-size:10px; padding:2px 3px; border:0.5px solid #ccc; border-radius:3px; width:100%; text-align:right; box-sizing:border-box;';
+      thkInp.title = 'Thickness (mm)';
       thkInp.oninput = () => { L.thickness = parseFloat(thkInp.value) / 1000 || 0.01; };
+      // Section cut hatch
+      const hsel = document.createElement('select');
+      hsel.style.cssText = 'font-size:9px; padding:1px; border:0.5px solid #ccc; border-radius:3px; width:100%; box-sizing:border-box;';
+      hsel.title = 'Section cut hatch';
+      const none = document.createElement('option'); none.value = ''; none.textContent = '—'; hsel.appendChild(none);
+      for (const p of patterns) {
+        const opt = document.createElement('option');
+        opt.value = p.id; opt.textContent = p.label;
+        if (L.hatch === p.id) opt.selected = true;
+        hsel.appendChild(opt);
+      }
+      hsel.onchange = () => { L.hatch = hsel.value || null; };
+      // Datum (structure) toggle — at most one layer is the datum
+      const dat = document.createElement('button');
+      dat.textContent = '⌂';
+      dat.title = L.datum ? '구조체(기준) 층 — 생성 안 함. 클릭해 해제' : '이 층을 구조체(기준)로 지정';
+      dat.style.cssText = 'font-size:11px; line-height:1; border:none; background:none; cursor:pointer; padding:0; color:' + (L.datum ? '#0a84ff' : '#ccc') + ';';
+      dat.onclick = () => { const was = !!L.datum; this.layers.forEach(x => { delete x.datum; }); if (!was) L.datum = true; this.renderPanel(); };
       // Delete btn
       const del = document.createElement('button');
       del.textContent = '×';
@@ -18923,6 +19751,8 @@ const WallLayer = {
 
       row.appendChild(nameInp);
       row.appendChild(thkInp);
+      row.appendChild(hsel);
+      row.appendChild(dat);
       row.appendChild(del);
       list.appendChild(row);
     });
@@ -18943,38 +19773,35 @@ const WallLayer = {
       this.renderPanel();
     };
     if (applyBtn) applyBtn.onclick = () => this.apply();
-    // Presets
-    document.querySelectorAll('.wl-preset').forEach(btn => {
-      btn.onclick = () => {
-        const p = btn.dataset.preset;
-        if (p === 'rc') this.layers = [
-          { name: 'Interior finish', thickness: 0.02, hatch: 'poche_solid',      color: '#cccccc' },
-          { name: 'Insulation',   thickness: 0.08, hatch: 'insulation_rigid',  color: '#ffe8a0' },
-          { name: 'RCWall',   thickness: 0.20, hatch: 'concrete_exposed',  color: '#b0b8c8' },
-          { name: 'Exterior finish', thickness: 0.03, hatch: 'poche_solid',       color: '#d0d0d0' },
-        ];
-        else if (p === 'brick') this.layers = [
-          { name: 'Interior finish', thickness: 0.015, hatch: 'poche_solid', color: '#cccccc' },
-          { name: 'Masonry wall',   thickness: 0.19,  hatch: 'brick',       color: '#c8a080' },
-          { name: 'Exterior finish', thickness: 0.02,  hatch: 'poche_solid', color: '#d0c0b0' },
-        ];
-        else if (p === 'insulated') this.layers = [
-          { name: 'Interior finish', thickness: 0.012, hatch: 'poche_solid',      color: '#cccccc' },
-          { name: 'Insulation',   thickness: 0.10,  hatch: 'insulation_rigid',  color: '#ffe8a0' },
-          { name: 'Structure',   thickness: 0.18,  hatch: 'concrete_exposed',  color: '#b0b8c8' },
-          { name: 'Exterior insulation',   thickness: 0.10,  hatch: 'insulation_rigid',  color: '#ffe8a0' },
-          { name: 'Exterior finish', thickness: 0.03,  hatch: 'poche_solid',       color: '#d0d0d0' },
-        ];
-        else if (p === 'curtain') this.layers = [
-          { name: 'Glass',      thickness: 0.012, hatch: 'none',   color: '#a0d0e8' },
-          { name: 'Air gap',    thickness: 0.016, hatch: 'none',   color: '#e8f4ff' },
-          { name: 'Glass',      thickness: 0.006, hatch: 'none',   color: '#a0d0e8' },
-          { name: 'Mullion',    thickness: 0.05,  hatch: 'metal',  color: '#888888' },
-        ];
-        this.renderPanel();
-      };
-    });
-    this.renderPanel();
+    // Element-type + preset dropdowns
+    const typeSel   = document.getElementById('wlTypeSel');
+    const presetSel = document.getElementById('wlPresetSel');
+    if (typeSel) typeSel.onchange = () => {
+      const t = typeSel.value;
+      this.activeType = t;
+      this._populatePresets(t);
+      const first = AssemblyLibrary[t] && AssemblyLibrary[t][0];
+      this.loadAssembly(t, first && first.id);
+    };
+    if (presetSel) presetSel.onchange = () => this.loadAssembly(this.activeType, presetSel.value);
+    // Datum mode toggles the Ref-dir radios (only used when datum mode is off).
+    const datumChk = document.getElementById('wlDatumMode');
+    const dirRow   = document.getElementById('wlDirRow');
+    const syncDir  = () => {
+      const on = datumChk ? datumChk.checked : true;
+      if (dirRow) {
+        dirRow.style.opacity = on ? '0.4' : '1';
+        dirRow.querySelectorAll('input').forEach(r => { r.disabled = on; });
+      }
+    };
+    if (datumChk) datumChk.onchange = syncDir;
+    syncDir();
+    // Initial population — show the first Wall preset so the panel + dropdowns
+    // start consistent (face-picking auto-switches the type from there).
+    if (typeSel) typeSel.value = this.activeType;
+    this._populatePresets(this.activeType);
+    const firstP = AssemblyLibrary[this.activeType] && AssemblyLibrary[this.activeType][0];
+    this.loadAssembly(this.activeType, firstP && firstP.id);
   },
 };
 
@@ -19016,9 +19843,10 @@ Tools.walllayer = {
     WallLayer.refFaceIdx  = hit.fi;
     WallLayer.refNormal   = WallLayer._faceWorldNormal(hit.obj, hit.fi);
     WallLayer.refVerts    = WallLayer._faceWorldVerts(hit.obj, hit.fi);
+    try { WallLayer._onRefSet(); } catch (_) {}   // auto-detect type + load preset
     const n = WallLayer.refNormal;
     const el = document.getElementById('wallLayerStatus');
-    if (el) el.textContent = `Face selected (n: ${n.x.toFixed(2)}, ${n.y.toFixed(2)}, ${n.z.toFixed(2)})`;
+    if (el) el.textContent = `${WallLayer.activeType} face (n: ${n.x.toFixed(2)}, ${n.y.toFixed(2)}, ${n.z.toFixed(2)})`;
     // Reset pick button
     const pb = document.getElementById('wallLayerPickBtn');
     if (pb) { pb.style.background = '#e0f0e0'; pb.style.color = '#1a6e1a'; pb.textContent = '✓ Face selected'; }
@@ -19481,13 +20309,18 @@ Tools.erase = {
       if (usingFaces.length === 2) {
         // Merge the two adjacent faces into one polygon — the deleted edge
         // becomes interior of the new face. Use the existing helper.
+        // COPLANARITY GUARD: merging two non-coplanar faces would manufacture
+        // a bent (non-planar) polygon — one of the two known non-planar-face
+        // factories. Only merge when the faces share a plane.
         const f1 = usingFaces[0], f2 = usingFaces[1];
-        const i1 = findEdgeIdx(f1);
-        const a = f1.verts[i1], b = f1.verts[(i1 + 1) % f1.verts.length];
-        try {
-          const merged = mergeFacesAcrossEdge(obj.em, f1, f2, a, b);
-          if (merged) changed = true;
-        } catch (_) {}
+        if (f1.normal && f2.normal && f1.normal.dot(f2.normal) > 0.99) {
+          const i1 = findEdgeIdx(f1);
+          const a = f1.verts[i1], b = f1.verts[(i1 + 1) % f1.verts.length];
+          try {
+            const merged = mergeFacesAcrossEdge(obj.em, f1, f2, a, b);
+            if (merged) changed = true;
+          } catch (_) {}
+        }
       } else if (usingFaces.length === 1) {
         // Boundary edge of a single face — DON'T collapse (would degenerate
         // the face). Erasing a line on a flat face must keep the face. Use
@@ -20772,110 +21605,16 @@ function _makeSectionFillMesh(tris, normal, hatchId, renderOrder, offsetDist) {
   }
 }
 
+/* SHADOWED STUB — the LIVE rebuildSectionFills is installed by
+   ad/section_style.js as a window.rebuildSectionFills monkey-patch (it
+   REPLACES, not wraps, this function). The original ~100-line body that
+   lived here was dead code the moment that module loaded, and editing it
+   instead of the module already shipped one bug. Edit section-fill logic in
+   ad/section_style.js. This stub only covers the brief boot window before
+   the module installs (and keeps its `typeof === 'function'` install check
+   satisfied). */
 function rebuildSectionFills() {
-  if (_rebuildingFills) return;
-  _rebuildingFills = true;
-  try {
-    clearSectionFills();
-    const DEFAULT_LW = (window.AD && AD.Layers) ? AD.Layers.DEFAULT_WEIGHT : 0.50;
-    const _hasLine2 = (typeof THREE.LineSegments2 === 'function' &&
-                       typeof THREE.LineMaterial    === 'function' &&
-                       typeof THREE.LineSegmentsGeometry === 'function');
-
-    for (const sp of Model.sectionPlanes) {
-      if (!sp.enabled) continue;
-      const eoff = sp.plane.normal.clone().multiplyScalar(0.004);
-
-      // ─── Per-object: cut edges + hatched fills ───
-      for (const obj of Model.objects) {
-        if (!obj.group.visible || obj.locked) continue;
-        const objSegs = _dedupSegs(_objectCutSegs(obj, sp.plane));
-        if (window._sectionDebug) {
-          console.log('[sectionDbg]', obj.name, 'segs:', objSegs.length);
-        }
-        if (!objSegs.length) continue;
-
-        // Resolve layer
-        const _objLayer = obj.layerId ? getLayer(obj.layerId) : null;
-        const lineWeight = (_objLayer && _objLayer.lineWeight != null)
-          ? _objLayer.lineWeight : DEFAULT_LW;
-
-        // ── Cut edges with per-layer lineWeight ──
-        const pos = [];
-        for (const s of objSegs) {
-          pos.push(...s[0].clone().add(eoff).toArray());
-          pos.push(...s[1].clone().add(eoff).toArray());
-        }
-        if (_hasLine2) {
-          const geom = new THREE.LineSegmentsGeometry();
-          geom.setPositions(pos);
-          const pxWidth = Math.max(0.5, lineWeight / 0.25 * 1.1);
-          const vp = renderer && renderer.domElement;
-          const mat = new THREE.LineMaterial({
-            color: 0x000000,
-            linewidth: pxWidth,
-            resolution: new THREE.Vector2(vp ? vp.clientWidth : 1280, vp ? vp.clientHeight : 720),
-          });
-          mat.depthTest = true; mat.depthWrite = false;
-          const lmesh = new THREE.LineSegments2(geom, mat);
-          lmesh.renderOrder = 110;
-          sectionFillRoot.add(lmesh);
-        } else {
-          const eg = new THREE.BufferGeometry();
-          eg.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(pos), 3));
-          const emesh = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: 0x000000, depthWrite: false }));
-          emesh.renderOrder = 110;
-          sectionFillRoot.add(emesh);
-        }
-
-        if (!Model.sectionFills) continue;
-
-        // ── Hatched fill ──
-        const loops = segmentsToLoops(objSegs);
-        if (!loops.length) continue;
-        // DEBUG: report loop info to spot phantom loops.
-        if (window._sectionDebug) {
-          for (let li = 0; li < loops.length; li++) {
-            const loop = loops[li];
-            // Bounding box + centroid of loop in world coords.
-            const c = new THREE.Vector3();
-            const bbMin = new THREE.Vector3( Infinity,  Infinity,  Infinity);
-            const bbMax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
-            for (const p of loop) { c.add(p); bbMin.min(p); bbMax.max(p); }
-            c.multiplyScalar(1 / loop.length);
-            const sz = bbMax.clone().sub(bbMin);
-            // Approximate planar area via shoelace projected onto plane normal.
-            let area2 = 0;
-            for (let i = 0; i < loop.length; i++) {
-              const a = loop[i], b = loop[(i + 1) % loop.length];
-              area2 += new THREE.Vector3().crossVectors(a, b).dot(sp.plane.normal);
-            }
-            const area = Math.abs(area2) * 0.5;
-            console.log('[sectionDbg]', obj.name, 'loop', li,
-              'verts:', loop.length,
-              'area(m²):', area.toFixed(4),
-              'bbox(m):', sz.x.toFixed(2), sz.y.toFixed(2), sz.z.toFixed(2),
-              'centroid:', c.x.toFixed(2), c.y.toFixed(2), c.z.toFixed(2));
-          }
-        }
-        const tris = [];
-        for (const loop of loops) {
-          ensureLoopWinding(loop, sp.plane.normal);
-          for (const v of earcutTriangulateLoop(loop, sp.plane.normal)) tris.push(v);
-        }
-        if (!tris.length) continue;
-        // Resolve hatch: per-object cutHatchId → layer cutHatch → hatchAt map for this SP
-        const hatchId = (obj.ad && obj.ad.cutHatchId) ||
-                        (_objLayer && _objLayer.cutHatch) ||
-                        (obj.ad && obj.ad.hatchAt && obj.ad.hatchAt.get(sp)) ||
-                        null;
-        const m = _makeSectionFillMesh(tris, sp.plane.normal, hatchId, 100, 0.007);
-        if (m) sectionFillRoot.add(m);
-      }
-    }
-  } finally {
-    _rebuildingFills = false;
-  }
+  try { clearSectionFills(); } catch (_) {}
 }
 
 /* ========================================================================== */
@@ -21529,6 +22268,10 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
       geo.setIndex(new THREE.BufferAttribute(idx, 1));
     }
     geo.applyMatrix4(m.matrixWorld);
+    // A mirrored node (negative-determinant transform, common in GLB/DAE
+    // components) flips the winding when baked — emit reversed triangles so
+    // normals still face outward.
+    const mirrored = m.matrixWorld.determinant() < 0;
     const pos = geo.attributes.position;
     const idx = geo.index;
     const em = new EditableMesh();
@@ -21545,7 +22288,7 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
     for (let t = 0; t < idx.count; t += 3) {
       const a = idx.getX(t), b = idx.getX(t+1), c = idx.getX(t+2);
       if (a === b || b === c || a === c) continue;
-      em.addFace([a, b, c], 0xffffff, Model.activeLayerId || 'Layer0');
+      em.addFace(mirrored ? [a, c, b] : [a, b, c], 0xffffff, Model.activeLayerId || 'Layer0');
     }
     // Edges. Legacy default mirrors every triangle edge. For heavily
     // tessellated geometry (e.g. 3D text) that's a wall of internal lines, so
@@ -21583,7 +22326,8 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
       made.push(new SketchObject(em, (m.name || 'Mesh') + ' (' + (filename || 'imported') + ')'));
     }
     for (const so of made) {
-      so.layerId = Model.activeLayerId || 'Layer0';
+      // layerOf: per-source-mesh layer mapping (e.g. Rhino layer table).
+      so.layerId = (opts.layerOf && opts.layerOf(m)) || Model.activeLayerId || 'Layer0';
       if (placeMode) { so.rebuild(); placeObjs.push(so); }   // build for ghost; placed on click
       else { addObject(so); so.rebuild(); }
     }
@@ -21649,6 +22393,68 @@ function importGLB(arrayBuffer, filename) {
   });
 }
 
+/* Import a Collada .dae file (SketchUp's native export — available even in
+   the free Web edition). r128 ColladaLoader honors the file's <unit> scale
+   and Z_UP axis itself, so the scene comes in upright at real size. */
+function importDAE(text, filename) {
+  if (typeof THREE.ColladaLoader !== 'function') {
+    showError('ColladaLoader is not loaded.'); return;
+  }
+  try {
+    const collada = new THREE.ColladaLoader().parse(text, '');
+    if (!collada || !collada.scene) { showError('Could not parse ' + filename); return; }
+    _importMeshTreeIntoScene(collada.scene, filename, 1, { placeMode: true });
+  } catch (err) {
+    showError('Collada import failed: ' + err.message);
+  }
+}
+
+/* Export every visible object as a binary glTF (.glb) — the one format both
+   SketchUp 2024+ and Rhino 8 read natively with hierarchy intact. glTF has no
+   layers, so nodes are named "<layer>/<object>" and grouped objects are
+   parented under a shared "group_<id>" node. Meters, Y-up: glTF == THREE. */
+function exportGLB() {
+  if (typeof THREE.GLTFExporter !== 'function') {
+    showError('GLTFExporter is not loaded.'); return;
+  }
+  const root = new THREE.Group();
+  root.name = (currentFileName || 'drawing').replace(/\.tt$/i, '');
+  const groupNodes = new Map();
+  let count = 0;
+  for (const obj of Model.objects) {
+    if (!obj || !obj.em || !obj.em.faces || !obj.em.faces.length) continue;
+    const layer = Model.layers.find(l => l.id === obj.layerId);
+    if (layer && layer.visible === false) continue;
+    if (!obj.mesh || !obj.mesh.geometry) continue;
+    const mesh = new THREE.Mesh(
+      obj.mesh.geometry,
+      new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0, roughness: 0.9 })
+    );
+    mesh.name = (layer ? (layer.name + '/') : '') + (obj.name || 'Object');
+    if (obj.groupId) {
+      let g = groupNodes.get(obj.groupId);
+      if (!g) { g = new THREE.Group(); g.name = 'group_' + obj.groupId; groupNodes.set(obj.groupId, g); root.add(g); }
+      g.add(mesh);
+    } else {
+      root.add(mesh);
+    }
+    count++;
+  }
+  if (!count) { showError('No visible objects to export.'); return; }
+  new THREE.GLTFExporter().parse(root, (result) => {
+    try {
+      const blob = new Blob([result], { type: 'model/gltf-binary' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (currentFileName || 'drawing').replace(/\.(tt|glb)$/i, '') + '.glb';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      setStatus('msg', `Exported ${a.download} (${count} objects).`);
+    } catch (e) { showError('glTF export failed: ' + e.message); }
+  }, { binary: true });
+}
+
 function importDXF(text, filename) {
   try {
     document.getElementById('loading').style.display = 'block';
@@ -21682,6 +22488,11 @@ function importDXF(text, filename) {
 
 /* Track the current file name for Save (vs Save As). */
 let currentFileName = null;
+/* Full path on disk (Electron) — set when opening via the native dialog /
+   double-click, and after every save; lets Cmd+S silently overwrite the same
+   file (with .tt.bak) instead of prompting. window property so preload.js
+   (shared context, but separate script) can set it too. */
+window.currentFilePath = window.currentFilePath || null;
 
 /* Serialize the scene to a plain object for JSON encoding. Stores lengths in
    millimeters (matching the user-facing display unit) so the file is
@@ -21841,6 +22652,10 @@ function loadDocIntoScene(doc) {
   if (!doc || doc.format !== 'turtle-drawing') {
     throw new Error('Not a Turtle Drawing (.tt) file.');
   }
+  // Bulk mode: one outliner render + one section-fill rebuild at the END
+  // (was O(N²) outliner DOM + per-object fill recomputes on big files).
+  window._bulkRestore = true;
+  try {
   // Clear current scene
   for (const o of Model.objects.slice()) removeObject(o);
   clearSelection();
@@ -22176,30 +22991,72 @@ function loadDocIntoScene(doc) {
   } else {
     console.log('[tt-load] doc has no importedMaterials section');
   }
+  } finally {
+    window._bulkRestore = false;
+  }
+  try { renderOutliner(); } catch (_) {}
+  try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {}
   drawOverlay();
 }
 
-/* Save scene as a .tt (JSON) file and trigger a browser download. */
-function saveTT(name) {
+/* Save scene as a .tt (JSON) file.
+   In Electron: safe-save IPC — silent overwrite of the known path with a
+   .tt.bak backup + atomic write, or a native dialog when no path is known.
+   In a plain browser: legacy blob download. */
+function _markSavedAs(fname) {
+  currentFileName = fname;
+  try {
+    const T = window.AD && window.AD.Tabs;
+    if (T && T.rename && T.activeId) T.rename(T.activeId, fname);
+    if (T && T.list && T.activeId) {
+      const t = T.list.find(x => x.id === T.activeId);
+      if (t) {
+        t.dirty = false;
+        // Keep the per-tab disk path in sync with the save that just happened.
+        t.filePath = window.currentFilePath || null;
+      }
+    }
+  } catch (_) {}
+  setStatus('msg', 'Saved ' + fname);
+}
+function saveTT(name, opts) {
+  // Hard guard: NaN vertices serialize as null and the file may never reopen.
+  // Block the save outright — the model is fixable (undo / delete the object),
+  // a corrupted .tt overwriting the last good save is not.
+  try {
+    const nan = _saveNaNScan();
+    if (nan.bad > 0) {
+      showError('저장이 차단되었습니다 — 좌표가 손상된(NaN) 객체 ' + nan.bad + '개: ' +
+        nan.names.join(', ') + '\n실행 취소(Cmd+Z)로 되돌리거나 해당 객체를 삭제한 뒤 다시 저장하세요.');
+      return;
+    }
+  } catch (_) {}
   try { _saveIntegrityCheck(); } catch (_) {}
   const doc = sceneToDoc();
-  const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+  // Pretty-print small docs (diff-friendly); compact big ones — pretty JSON
+  // doubles both the file size and the stringify time on heavy models.
+  let json = JSON.stringify(doc, null, 2);
+  if (json.length > 8000000) json = JSON.stringify(doc);
+  const fname = (name || currentFileName || 'drawing').replace(/\.tt$/i, '') + '.tt';
+  if (window.electronSaveTT) {
+    const forceDialog = !!(opts && opts.forceDialog) || !!name;
+    const known = (!forceDialog && window.currentFilePath) ? window.currentFilePath : null;
+    window.electronSaveTT(json, fname, known, forceDialog).then((res) => {
+      if (!res || res.canceled) { setStatus('msg', 'Save cancelled'); return; }
+      if (res.error) { showError('Save failed: ' + res.error); return; }
+      window.currentFilePath = res.path;
+      _markSavedAs(res.name);
+    });
+    return;
+  }
+  const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = (name || currentFileName || 'drawing').replace(/\.tt$/i, '') + '.tt';
+  a.download = fname;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-  currentFileName = a.download;
-  try {
-    const T = window.AD && window.AD.Tabs;
-    if (T && T.rename && T.activeId) T.rename(T.activeId, a.download);
-    if (T && T.list && T.activeId) {
-      const t = T.list.find(x => x.id === T.activeId);
-      if (t) t.dirty = false;
-    }
-  } catch (_) {}
-  setStatus('msg', 'Saved ' + a.download);
+  _markSavedAs(a.download);
 }
 
 /* Parse a .tt file text and load it. */
@@ -22221,6 +23078,18 @@ function openTT(text, filename) {
   }
   try { loadDocIntoScene(doc); }
   catch (e) { showError('Failed to load: ' + e.message); return; }
+  // A document arriving as TEXT (drag-drop, file input) has no known disk
+  // path — clear any stale one so Cmd+S can't silently overwrite the
+  // PREVIOUSLY opened file. The native menu-open handler (preload.js)
+  // re-stamps the real path right after this call.
+  window.currentFilePath = null;
+  try {
+    const T = window.AD && window.AD.Tabs;
+    if (T && T.list && T.activeId) {
+      const t = T.list.find(x => x.id === T.activeId);
+      if (t) t.filePath = null;
+    }
+  } catch (_) {}
   currentFileName = (filename || 'drawing').replace(/\.tt$/i, '') + '.tt';
   // Retry rename a few times so it works whether AD.Tabs is initialized
   // before/after openTT, and so tab UI repaints reliably.
@@ -22286,9 +23155,206 @@ async function _ensureRhinoLib() {
   if (typeof rhino3dm !== 'function') {
     throw new Error('rhino3dm.js not loaded');
   }
+  // The page is served from file:// (both dev and packaged), where emscripten's
+  // fetch('rhino3dm.wasm') is blocked — feed the wasm bytes through IPC instead.
+  if (window.electronReadVendor) {
+    try {
+      const buf = await window.electronReadVendor('rhino3dm.wasm');
+      if (buf && buf.byteLength) {
+        const bytes = (buf instanceof Uint8Array) ? buf : new Uint8Array(buf);
+        _rhinoLib = await rhino3dm({ wasmBinary: bytes });
+        return _rhinoLib;
+      }
+    } catch (e) { console.warn('[rhino] wasm via IPC failed, falling back:', e); }
+  }
   _rhinoLib = await rhino3dm();
   return _rhinoLib;
 }
+/* Map a rhino3dm UnitSystem enum to meters-per-unit. */
+function _rhinoUnitToMeters(rhino, us) {
+  const pairs = [
+    ['Millimeters', 0.001], ['Centimeters', 0.01], ['Meters', 1],
+    ['Kilometers', 1000], ['Inches', 0.0254], ['Feet', 0.3048],
+    ['Microns', 1e-6], ['Miles', 1609.344],
+  ];
+  for (const [name, f] of pairs) {
+    try {
+      const e = rhino.UnitSystem[name];
+      if (e === undefined) continue;
+      if (us === e) return f;
+      if (us && e && us.value !== undefined && us.value === e.value) return f;
+    } catch (_) {}
+  }
+  return 1;
+}
+
+/* Import a native Rhino .3dm file (bytes from the Electron file picker).
+   Reads meshes directly, and the STORED render meshes of Breps/Extrusions
+   (openNURBS cannot mesh NURBS — files saved with "Save small" carry none).
+   Maps the 3dm layer table onto Turtle layers, scales by the file's unit
+   system, rotates Rhino Z-up → Turtle Y-up, and hands the result to the
+   shared placement flow (ghost preview → click to place). */
+async function importRhino3dm(bytes, filename) {
+  let rhino;
+  try {
+    setStatus('msg', 'Loading rhino3dm…');
+    rhino = await _ensureRhinoLib();
+  } catch (e) {
+    showError('rhino3dm Failed to load library: ' + e.message);
+    return;
+  }
+  if (bytes && bytes.buffer && !(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes.buffer);
+  let file3dm = null;
+  try { file3dm = rhino.File3dm.fromByteArray(bytes); } catch (_) {}
+  if (!file3dm) { showError('Could not read "' + filename + '" — not a valid .3dm file?'); return; }
+  try {
+    let scale = 1;
+    try { scale = _rhinoUnitToMeters(rhino, file3dm.settings().modelUnitSystem); } catch (_) {}
+    // Layer table → Turtle layers (created on demand, colour preserved).
+    const layerIdByIndex = new Map();
+    try {
+      const lt = file3dm.layers();
+      for (let i = 0; i < lt.count; i++) {
+        let L = null;
+        try {
+          L = lt.get(i);
+          let hex = '#888888';
+          try { const c = L.color; hex = '#' + ((1 << 24) | (c.r << 16) | (c.g << 8) | c.b).toString(16).slice(1); } catch (_) {}
+          layerIdByIndex.set(i, getOrAddLayer(L.name || ('3DM Layer ' + (i + 1)), { color: hex }));
+        } finally { try { L && L.delete(); } catch (_) {} }
+      }
+    } catch (_) {}
+    // Objects → one THREE.Mesh per 3dm object (Brep faces merged together).
+    const root = new THREE.Group();
+    let noMesh = 0;
+    const objs = file3dm.objects();
+    for (let i = 0; i < objs.count; i++) {
+      let ro = null, geo = null, attrs = null;
+      try { ro = objs.get(i); geo = ro.geometry(); attrs = ro.attributes(); } catch (_) { continue; }
+      const rMeshes = [];
+      try {
+        if (rhino.Mesh && geo instanceof rhino.Mesh) {
+          rMeshes.push(geo);
+        } else if (rhino.Brep && geo instanceof rhino.Brep) {
+          const fl = geo.faces();
+          for (let fi = 0; fi < fl.count; fi++) {
+            let bf = null;
+            try {
+              bf = fl.get(fi);
+              const m = bf.getMesh(rhino.MeshType.Any);
+              if (m) rMeshes.push(m);
+            } catch (_) {}
+            finally { try { bf && bf.delete(); } catch (_) {} }
+          }
+          if (!rMeshes.length) noMesh++;
+        } else if (rhino.Extrusion && geo instanceof rhino.Extrusion) {
+          let m = null;
+          try { m = geo.getMesh(rhino.MeshType.Any); } catch (_) {}
+          if (m) rMeshes.push(m); else noMesh++;
+        }
+      } catch (_) {}
+      if (!rMeshes.length) continue;
+      const positions = [], index = [];
+      for (const m of rMeshes) {
+        try {
+          const vl = m.vertices(), flf = m.faces();
+          const base = positions.length / 3;
+          for (let vi = 0; vi < vl.count; vi++) {
+            const p = vl.get(vi);
+            positions.push(p[0], p[2], -p[1]);          // Z-up → Y-up
+          }
+          for (let fi = 0; fi < flf.count; fi++) {
+            const f = flf.get(fi);                       // [a,b,c,d] (tri: d===c)
+            index.push(base + f[0], base + f[1], base + f[2]);
+            if (f[3] !== f[2]) index.push(base + f[0], base + f[2], base + f[3]);
+          }
+        } catch (_) {}
+        finally { try { m.delete && m.delete(); } catch (_) {} }
+      }
+      if (!index.length) continue;
+      const bg = new THREE.BufferGeometry();
+      bg.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      bg.setIndex(positions.length / 3 > 65535
+        ? new THREE.BufferAttribute(new Uint32Array(index), 1)
+        : new THREE.BufferAttribute(new Uint16Array(index), 1));
+      const tm = new THREE.Mesh(bg, new THREE.MeshStandardMaterial({ color: 0xffffff }));
+      let nm = '';
+      try { nm = attrs.name || ''; } catch (_) {}
+      tm.name = nm || ('Object ' + (i + 1));
+      let li = -1;
+      try { li = attrs.layerIndex; } catch (_) {}
+      tm.userData.ttLayerId = layerIdByIndex.get(li) || null;
+      root.add(tm);
+      try { attrs && attrs.delete(); } catch (_) {}
+    }
+    if (!root.children.length) {
+      showError('No mesh data in "' + filename + '".' + (noMesh
+        ? '\n\n이 파일은 렌더 메시 없이 저장된 NURBS만 담고 있습니다 (Rhino의 "Save small" 옵션).\nRhino에서 음영(Shaded) 뷰로 한 번 표시한 뒤 Save small을 끄고 다시 저장하면 가져올 수 있습니다.'
+        : ''));
+      return;
+    }
+    _importMeshTreeIntoScene(root, filename, scale, {
+      placeMode: true,
+      layerOf: (m) => m.userData && m.userData.ttLayerId,
+    });
+    if (noMesh) setStatus('msg', noMesh + ' NURBS object(s) had no stored render mesh and were skipped.');
+  } finally {
+    try { file3dm.delete(); } catch (_) {}
+  }
+}
+
+/* Export every visible object as a binary STL (millimeters, Z-up — the 3D
+   printing convention). Uses the earcut-based triangulateFace so holes stay
+   open and concave polygons don't emit overlapping fan triangles. */
+function exportSTL() {
+  const tris = [];
+  for (const obj of Model.objects) {
+    if (!obj || !obj.em || !obj.em.faces) continue;
+    const layer = Model.layers.find(l => l.id === obj.layerId);
+    if (layer && layer.visible === false) continue;
+    const em = obj.em;
+    for (const f of em.faces) {
+      let ftris;
+      try { ftris = em.triangulateFace(f); } catch (_) { continue; }
+      for (const t of ftris) {
+        const a = em.vertices[t[0]], b = em.vertices[t[1]], c = em.vertices[t[2]];
+        if (a && b && c) tris.push([a, b, c]);
+      }
+    }
+  }
+  if (!tris.length) { showError('No faces to export.'); return; }
+  const buf = new ArrayBuffer(84 + tris.length * 50);
+  const dv = new DataView(buf);
+  const header = 'Turtle Drawing binary STL (mm)';
+  for (let i = 0; i < header.length && i < 80; i++) dv.setUint8(i, header.charCodeAt(i));
+  dv.setUint32(80, tris.length, true);
+  let off = 84;
+  const wv = (v) => {   // Y-up meters → Z-up millimeters
+    dv.setFloat32(off, v.x * 1000, true);
+    dv.setFloat32(off + 4, -v.z * 1000, true);
+    dv.setFloat32(off + 8, v.y * 1000, true);
+    off += 12;
+  };
+  const _ab = new THREE.Vector3(), _ac = new THREE.Vector3();
+  for (const [a, b, c] of tris) {
+    const n = _ab.subVectors(b, a).cross(_ac.subVectors(c, a)).normalize();
+    dv.setFloat32(off, n.x, true);
+    dv.setFloat32(off + 4, -n.z, true);
+    dv.setFloat32(off + 8, n.y, true);
+    off += 12;
+    wv(a); wv(b); wv(c);
+    dv.setUint16(off, 0, true); off += 2;
+  }
+  const blob = new Blob([buf], { type: 'model/stl' });
+  const url = URL.createObjectURL(blob);
+  const a2 = document.createElement('a');
+  a2.href = url;
+  a2.download = (currentFileName || 'drawing').replace(/\.(tt|stl)$/i, '') + '.stl';
+  document.body.appendChild(a2); a2.click(); a2.remove();
+  URL.revokeObjectURL(url);
+  setStatus('msg', `Exported ${a2.download} (${tris.length.toLocaleString()} triangles).`);
+}
+
 async function export3DM() {
   let rhino;
   try {
@@ -22302,7 +23368,10 @@ async function export3DM() {
   file3dm.applicationName = 'Turtle Drawing';
   file3dm.applicationDetails = 'https://github.com/turtledrawing-lab/turtle-drawing';
   // Rhino default unit is meters; mirror that.
-  try { file3dm.settings.modelUnitSystem = rhino.UnitSystem.Meters; } catch (_) {}
+  // settings is a METHOD — `file3dm.settings.modelUnitSystem = …` silently
+  // assigned onto the function object, so every export was labeled with
+  // Rhino's default (Millimeters) while carrying meter coordinates (1000×).
+  try { const _s = file3dm.settings(); _s.modelUnitSystem = rhino.UnitSystem.Meters; } catch (_) {}
 
   // Build a layer table that mirrors Model.layers so objects inherit
   // their colour / visibility.
@@ -22315,7 +23384,9 @@ async function export3DM() {
         const c = parseInt((L.color || '#888888').slice(1), 16);
         rLayer.color = { r: (c >> 16) & 0xff, g: (c >> 8) & 0xff, b: c & 0xff, a: 255 };
       } catch (_) {}
-      const idx = file3dm.layers().add(rLayer, null);
+      // rhino3dm 8.x: layers().add takes exactly one argument — the 2-arg
+      // (layer, parentId) form throws a BindingError and killed the export.
+      const idx = file3dm.layers().add(rLayer);
       layerIndexById.set(L.id, idx);
       rLayer.delete();
     }
@@ -22329,7 +23400,9 @@ async function export3DM() {
     if (em.faces && em.faces.length) {
       const mesh = new rhino.Mesh();
       const verts = mesh.vertices();
-      for (const v of em.vertices) verts.add(v.x, v.y, v.z);
+      // Turtle Y-up → Rhino Z-up (mirrors importRhino3dm's inverse rotation,
+      // so Turtle→Rhino→Turtle round-trips exactly and models stand upright).
+      for (const v of em.vertices) verts.add(v.x, -v.z, v.y);
       const faces = mesh.faces();
       for (const f of em.faces) {
         const vs = f.verts;
@@ -22358,7 +23431,7 @@ async function export3DM() {
       for (const e of em.edges) {
         const a = em.vertices[e.a], b = em.vertices[e.b];
         if (!a || !b) continue;
-        const line = new rhino.Line([a.x, a.y, a.z], [b.x, b.y, b.z]);
+        const line = new rhino.Line([a.x, -a.z, a.y], [b.x, -b.z, b.y]);
         const lc = new rhino.LineCurve(line);
         const attr = new rhino.ObjectAttributes();
         attr.name = (obj.name || 'edge') + '_edge';
@@ -22751,7 +23824,49 @@ function _mergeCoplanarFacesEM(em, planeEps = 0.005, normalDotMin = 0.9995) {
   return newFaces;
 }
 
-function importOBJ(text, filename, mtlText, imageMap) {
+/* Unit-confirmation modal for unitless imports (OBJ/STL have no unit field).
+   Shows the raw bounding size interpreted in each unit so the user can
+   sanity-check; '자동' keeps the heuristic. Returns meters-per-unit.
+   Set window.__TD_UNIT_CHOICE ('mm'|'cm'|'m'|'in'|'ft'|'auto') to bypass the
+   modal (used by tests / power users). */
+const _UNIT_FACTORS = { mm: 0.001, cm: 0.01, m: 1, in: 0.0254, ft: 0.3048 };
+async function _confirmImportUnit(filename, rawSize, autoScale, autoLabel) {
+  if (window.__TD_UNIT_CHOICE) {
+    const c = window.__TD_UNIT_CHOICE;
+    return (c !== 'auto' && _UNIT_FACTORS[c]) ? _UNIT_FACTORS[c] : autoScale;
+  }
+  if (typeof showModal !== 'function') return autoScale;
+  const wrap = document.createElement('div');
+  const dims = (f) => {
+    const mm = (v) => { const x = v * f * 1000; return x >= 1000 ? (x / 1000).toFixed(1) + 'm' : Math.round(x) + 'mm'; };
+    return mm(rawSize.x) + ' × ' + mm(rawSize.y) + ' × ' + mm(rawSize.z);
+  };
+  const sel = document.createElement('select');
+  sel.style.cssText = 'width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box;';
+  const options = [
+    ['auto', '자동 — ' + autoLabel + ' → ' + dims(autoScale)],
+    ['in', 'inch (SketchUp 기본) → ' + dims(_UNIT_FACTORS.in)],
+    ['mm', 'mm → ' + dims(_UNIT_FACTORS.mm)],
+    ['cm', 'cm → ' + dims(_UNIT_FACTORS.cm)],
+    ['m', 'm → ' + dims(_UNIT_FACTORS.m)],
+    ['ft', 'ft → ' + dims(_UNIT_FACTORS.ft)],
+  ];
+  for (const [v, label] of options) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = label;
+    sel.appendChild(o);
+  }
+  const note = document.createElement('div');
+  note.style.cssText = 'font-size:11px;color:#777;margin-top:8px;';
+  note.textContent = '파일에 단위 정보가 없어 크기를 추정했습니다. 결과 크기가 맞는 항목을 선택하세요.';
+  wrap.appendChild(sel); wrap.appendChild(note);
+  const ok = await showModal('가져오기 단위 확인 — ' + filename, wrap);
+  if (!ok) return autoScale;
+  const v = sel.value;
+  return (v !== 'auto' && _UNIT_FACTORS[v]) ? _UNIT_FACTORS[v] : autoScale;
+}
+
+async function importOBJ(text, filename, mtlText, imageMap) {
   // Parse MTL if provided
   const materials = mtlText ? parseMTL(mtlText) : new Map();
   // Image lookup map (filename.toLowerCase() → dataURL) passed from the file
@@ -22819,20 +23934,26 @@ function importOBJ(text, filename, mtlText, imageMap) {
   const rawSize = new THREE.Vector3();
   rawBBox.getSize(rawSize);
   const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z);
-  // App unit is mm. Auto-scale OBJ to fit reasonable mm range.
-  // Target: final maxDim should be ~100–5000mm for typical models.
-  // App internal unit is ~meters (default box is 2×2×2).
-  // Auto-detect and convert to match app scale.
-  let scale = 1;
-  if      (maxDim > 10000)  scale = 0.001;  // mm → m (÷1000)
-  else if (maxDim > 1000)   scale = 0.01;   // cm-ish → m (÷100)
-  else if (maxDim > 100)    scale = 0.1;    // dm-ish → m (÷10)
-  // maxDim 1~100: likely already in meters, keep as-is
-  // maxDim < 1: very small, likely normalized — scale up
-  else if (maxDim < 0.01)   scale = 100;
-  else if (maxDim < 1)      scale = 10;
-  // else: 100~10000 → already mm-ish, keep as-is
-  console.log('[OBJ Import] rawSize=' + rawSize.x.toFixed(1) + '×' + rawSize.y.toFixed(1) + '×' + rawSize.z.toFixed(1) + ', maxDim=' + maxDim.toFixed(1) + ', scale=' + scale + ', finalMax=' + (maxDim*scale).toFixed(1));
+  // App internal unit is meters. OBJ is unitless — auto-detect, with two
+  // inch-specific fixes (SketchUp exports OBJ in INCHES by default; the old
+  // power-of-10 ladder mis-scaled those by ~2.5–4×):
+  //   1. a "SketchUp" header comment → suggest inches outright;
+  //   2. maxDim in the no-man's range 200–2000 (too big for meters, too small
+  //      for millimeters of a building) → likely inches.
+  // When the guess is ambiguous, ASK (unit-confirmation modal with sizes).
+  let scale = 1, scaleLabel = 'm 그대로';
+  if      (maxDim > 10000)  { scale = 0.001; scaleLabel = 'mm로 해석'; }
+  else if (maxDim > 1000)   { scale = 0.01;  scaleLabel = 'cm로 해석'; }
+  else if (maxDim > 100)    { scale = 0.1;   scaleLabel = 'dm로 해석'; }
+  else if (maxDim < 0.01)   { scale = 100;   scaleLabel = '×100'; }
+  else if (maxDim < 1)      { scale = 10;    scaleLabel = '×10'; }
+  const _suHeader = /sketchup/i.test(text.slice(0, 2000));
+  const _inchRange = maxDim >= 200 && maxDim <= 2000;
+  if (_suHeader) { scale = 0.0254; scaleLabel = 'inch (SketchUp 헤더 감지)'; }
+  if (_suHeader || _inchRange) {
+    try { scale = await _confirmImportUnit(filename, rawSize, scale, scaleLabel); } catch (_) {}
+  }
+  console.log('[OBJ Import] rawSize=' + rawSize.x.toFixed(1) + '×' + rawSize.y.toFixed(1) + '×' + rawSize.z.toFixed(1) + ', maxDim=' + maxDim.toFixed(1) + ', scale=' + scale + ' (' + scaleLabel + '), finalMax=' + (maxDim*scale).toFixed(1) + (_suHeader ? ', sketchupHeader' : ''));
   // Log sample vertex values after scale
   if (allVerts[1]) console.log('[OBJ Import] sample vertex after scale: ' + allVerts[1][0].toFixed(2) + ', ' + allVerts[1][1].toFixed(2) + ', ' + allVerts[1][2].toFixed(2));
   // Apply scale to all vertices
@@ -24609,7 +25730,11 @@ function _handleActionImpl(act) {
       openFileDialog('.tt');
       break;
     case 'file-save':
-      if (!currentFileName) {
+      if (window.electronSaveTT) {
+        // Electron: silent overwrite of the known path, or native dialog on
+        // first save — no in-app name prompt needed.
+        saveTT();
+      } else if (!currentFileName) {
         showPromptModal('Save as:', 'drawing').then(name => {
           if (name) saveTT(name);
         });
@@ -24618,9 +25743,13 @@ function _handleActionImpl(act) {
       }
       break;
     case 'file-save-as':
-      showPromptModal('Save as:', (currentFileName || 'drawing').replace(/\.tt$/i, '')).then(name => {
-        if (name) saveTT(name);
-      });
+      if (window.electronSaveTT) {
+        saveTT(null, { forceDialog: true });
+      } else {
+        showPromptModal('Save as:', (currentFileName || 'drawing').replace(/\.tt$/i, '')).then(name => {
+          if (name) saveTT(name);
+        });
+      }
       break;
     case 'import-dxf':
       openFileDialog('.dxf');
@@ -24665,6 +25794,12 @@ function _handleActionImpl(act) {
       break;
     case 'export-3dm':
       export3DM().catch(e => { console.error(e); showError('3DM export failed: ' + e.message); });
+      break;
+    case 'export-stl':
+      try { exportSTL(); } catch (e) { console.error(e); showError('STL export failed: ' + e.message); }
+      break;
+    case 'export-glb':
+      try { exportGLB(); } catch (e) { console.error(e); showError('glTF export failed: ' + e.message); }
       break;
     case 'export-svg':
       Promise.resolve().then(() => AD.Export.saveSVG()).catch(e => { console.error(e); showError('SVG export failed: ' + e.message); });
@@ -24952,12 +26087,48 @@ function _handleActionImpl(act) {
       if (typeof window.electronPickFile === 'function') {
         (async () => {
           const r = await window.electronPickFile({ filters: [{ name: '3DM', extensions: ['3dm'] }] });
-          if (r && r.dataBase64 && typeof importRhino3dm === 'function') {
-            try { await importRhino3dm(r.dataBase64, r.name); } catch (e) { console.error(e); }
+          if (r && r.bytes) {
+            try { await importRhino3dm(r.bytes, r.name); }
+            catch (e) { console.error(e); showError('3DM import failed: ' + (e && e.message || e)); }
           }
         })();
       } else if (typeof openFileDialog === 'function') {
         openFileDialog('.3dm');
+      }
+      break;
+    case 'import-glb':
+      if (typeof window.electronPickFile === 'function') {
+        (async () => {
+          const r = await window.electronPickFile({ filters: [{ name: 'glTF', extensions: ['glb', 'gltf'] }] });
+          if (r && r.bytes) {
+            const ab = r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength);
+            try { importGLB(ab, r.name); }
+            catch (e) { console.error(e); showError('glTF import failed: ' + (e && e.message || e)); }
+          }
+        })();
+      }
+      break;
+    case 'import-stl':
+      if (typeof window.electronPickFile === 'function') {
+        (async () => {
+          const r = await window.electronPickFile({ filters: [{ name: 'STL', extensions: ['stl'] }] });
+          if (r && r.bytes) {
+            const ab = r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength);
+            try { importSTL(ab, r.name); }
+            catch (e) { console.error(e); showError('STL import failed: ' + (e && e.message || e)); }
+          }
+        })();
+      }
+      break;
+    case 'import-dae':
+      if (typeof window.electronPickFile === 'function') {
+        (async () => {
+          const r = await window.electronPickFile({ filters: [{ name: 'Collada', extensions: ['dae'] }] });
+          if (r && r.bytes) {
+            try { importDAE(new TextDecoder().decode(r.bytes), r.name); }
+            catch (e) { console.error(e); showError('Collada import failed: ' + (e && e.message || e)); }
+          }
+        })();
       }
       break;
     case 'toggle-grid':  grid.visible = !grid.visible; break;
@@ -27684,11 +28855,11 @@ document.getElementById('fileInput').addEventListener('change', e => {
       new Promise((res, rej) => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.onerror = rej; r.readAsText(mtlFile); }),
       readImagesAsDataURLs(),
     ]).then(([objText, mtlText, imageMap]) => {
-      importOBJ(objText, objFile.name, mtlText, imageMap);
+      importOBJ(objText, objFile.name, mtlText, imageMap).catch(err => { console.error(err); showError('Import error: ' + err.message); });
     }).catch(err => { console.error(err); showError('Could not read files: ' + err.message); });
   } else if (objFile) {
     const reader = new FileReader();
-    reader.onload = ev => { try { importOBJ(ev.target.result, objFile.name); } catch(err) { console.error(err); showError('Import error: ' + err.message); } };
+    reader.onload = ev => { try { importOBJ(ev.target.result, objFile.name).catch(err => { console.error(err); showError('Import error: ' + err.message); }); } catch(err) { console.error(err); showError('Import error: ' + err.message); } };
     reader.onerror = () => showError('Could not read file: ' + objFile.name);
     reader.readAsText(objFile);
   } else {
@@ -27711,7 +28882,7 @@ document.getElementById('fileInput').addEventListener('change', e => {
         const text = ev.target.result;
         if      (name.endsWith('.tt'))  openTT(text, file.name);
         else if (name.endsWith('.dxf')) importDXF(text, file.name);
-        else if (name.endsWith('.obj')) importOBJ(text, file.name);
+        else if (name.endsWith('.obj')) importOBJ(text, file.name).catch(err => { console.error(err); showError('Import error: ' + err.message); });
         else if (name.endsWith('.mtl')) setStatus('msg', 'Please select both .obj and .mtl files together.');
         else showError('Unsupported file type: ' + file.name);
       };
@@ -27802,9 +28973,43 @@ document.getElementById('objFileInput').addEventListener('change', e => {
       for (let i = 0; i < dt.files.length; i++) collected.push(dt.files[i]);
     }
     if (!collected.length) return;
+    const hasObj = collected.some(f => /\.obj$/i.test(f.name || ''));
+    // No OBJ in the drop → dispatch the first recognized format directly
+    // (.tt, .glb/.gltf, .stl, .3dm, .dxf, .dae) instead of erroring
+    // "No .obj file found".
+    if (!hasObj) {
+      for (const f of collected) {
+        const ext = (((f.name || '').match(/\.([a-z0-9]+)$/i) || [])[1] || '').toLowerCase();
+        try {
+          if (ext === 'tt')   {
+            // Mirror the menu-open behavior: only REPLACE the active tab when
+            // it's a pristine Untitled; otherwise open in a NEW tab — dropping
+            // a .tt must never wipe an in-progress unsaved document.
+            f.text().then(t => {
+              const T = window.AD && window.AD.Tabs;
+              const cur = T && T.list && T.list.find(x => x.id === T.activeId);
+              const pristine = cur && /^Untitled/i.test(cur.name || '') && !cur.doc &&
+                               !(Model.objects && Model.objects.length);
+              if (pristine || !T || typeof T.receiveDoc !== 'function') {
+                openTT(t, f.name);
+              } else {
+                T.receiveDoc(t);
+                try { if (T.rename && T.activeId) T.rename(T.activeId, f.name); } catch (_) {}
+                try { currentFileName = f.name; } catch (_) {}
+              }
+            });
+            return;
+          }
+          if (ext === 'glb' || ext === 'gltf') { f.arrayBuffer().then(ab => importGLB(ab, f.name)); return; }
+          if (ext === 'stl')  { f.arrayBuffer().then(ab => importSTL(ab, f.name)); return; }
+          if (ext === '3dm')  { f.arrayBuffer().then(ab => importRhino3dm(new Uint8Array(ab), f.name)); return; }
+          if (ext === 'dxf')  { f.text().then(t => importDXF(t, f.name)); return; }
+          if (ext === 'dae')  { f.text().then(t => importDAE(t, f.name)); return; }
+        } catch (err) { console.error('[drop]', err); }
+      }
+    }
     // If the drop is purely images (no OBJ), treat each as a reference plane
     // object placed into the scene. Otherwise fall through to the OBJ importer.
-    const hasObj = collected.some(f => /\.obj$/i.test(f.name || ''));
     const images = collected.filter(_isImageFile);
     if (!hasObj && images.length) {
       if (typeof _handleImageDrop === 'function') {
@@ -27863,7 +29068,7 @@ function _handleImportFileList(files) {
       imageMap.set(base, dataURL);
     }
     setStatus('msg', `Loaded ${imageFiles.length} texture file(s) from folder.`);
-    importOBJ(objText, objFile.name, mtlText, imageMap);
+    return importOBJ(objText, objFile.name, mtlText, imageMap);
   }).catch(err => { console.error(err); showError('Import error: ' + err.message); });
 }
 
@@ -30866,8 +32071,44 @@ function _meshHealth(em) {
     const sig = (f.verts || []).slice().sort((x, y) => x - y).join(','); if (!sig) continue;
     const n = (seen.get(sig) || 0) + 1; seen.set(sig, n); if (n > 1) dup++;
   }
-  return { faces: F.length, open, nonman, winding, degenerate, dup,
-           fail: nonman > 0 || winding > 0 || degenerate > 0 || dup > 0 };
+  // Non-finite vertex coordinates: serialize as JSON null and poison every
+  // computation downstream — always a hard failure.
+  let nan = 0;
+  for (const v of V) { if (v && !(isFinite(v.x) && isFinite(v.y) && isFinite(v.z))) nan++; }
+  return { faces: F.length, open, nonman, winding, degenerate, dup, nan,
+           fail: nonman > 0 || winding > 0 || degenerate > 0 || dup > 0 || nan > 0 };
+}
+
+/* Commit-time transaction guard (active in PRODUCTION, unlike the dev canary).
+   Call after a kernel edit on ONE object with the pre-op {verts, faces} copy
+   the tool already holds. If the edit introduced NEW health failures, restore
+   the pre-op state, toast, journal, and return true — a half-applied operation
+   must never reach the undo baseline or the autosave. O(faces of one object). */
+function _commitGuard(obj, pre, label) {
+  try {
+    if (!obj || !obj.em || !pre || !pre.verts || !pre.faces || typeof _meshHealth !== 'function') return false;
+    const h = _meshHealth(obj.em);
+    const score = (x) => (x.winding || 0) + (x.degenerate || 0) + (x.dup || 0) + (x.nan || 0) * 1000;
+    const badNow = score(h);
+    if (!badNow) return false;
+    const preH = _meshHealth({ vertices: pre.verts, faces: pre.faces });
+    if (badNow <= score(preH)) return false;     // op didn't make things worse — keep it
+    obj.em.vertices = pre.verts.map(v => v.clone());
+    obj.em.faces = pre.faces.map(f => ({
+      verts: f.verts.slice(),
+      normal: f.normal ? f.normal.clone() : new THREE.Vector3(0, 1, 0),
+      color: f.color, layerId: f.layerId,
+      holes: (f.holes || []).map(hh => hh.slice()),
+    }));
+    // Standalone edges (optional in pre): the commit weld remapped their
+    // indices, so restoring verts/faces alone would leave edges pointing at
+    // the wrong vertices.
+    if (pre.edges) obj.em.edges = pre.edges.map(e => ({ a: e.a, b: e.b }));
+    obj.rebuild();
+    try { setStatus('msg', '⚠ ' + (label || 'Operation') + ' produced broken geometry — rolled back / 형상이 손상되어 작업을 되돌렸습니다'); } catch (_) {}
+    try { window._tdJournal && _tdJournal('[guard] ' + (label || 'op') + ' rolled back: winding=' + h.winding + ' degen=' + h.degenerate + ' dup=' + h.dup + ' nan=' + h.nan); } catch (_) {}
+    return true;
+  } catch (_) { return false; }
 }
 
 /* Save-time integrity guard (P1-3). Runs only on an explicit .tt save (not the
@@ -30878,13 +32119,39 @@ function _meshHealth(em) {
    non-manifold and inconsistently wound, which would false-positive. The
    warning is non-blocking (the save always proceeds) so a stray false positive
    never costs the user their save. */
+/* Scan EVERY object (imported included) for non-finite vertex coordinates.
+   NaN serializes to JSON null — a .tt written with nulls may never reopen —
+   so saveTT/quit-save BLOCK on a non-zero result. */
+function _saveNaNScan() {
+  const out = { bad: 0, names: [] };
+  try {
+    if (typeof Model === 'undefined' || !Model.objects) return out;
+    for (let i = 0; i < Model.objects.length; i++) {
+      const o = Model.objects[i];
+      if (!o || !o.em || !o.em.vertices) continue;
+      let broken = false;
+      for (const v of o.em.vertices) {
+        if (!v || !isFinite(v.x) || !isFinite(v.y) || !isFinite(v.z)) { broken = true; break; }
+      }
+      if (broken) {
+        out.bad++;
+        if (out.names.length < 8) out.names.push(o.name || ('객체 ' + (i + 1)));
+      }
+    }
+    if (out.bad > out.names.length) out.names.push('외 ' + (out.bad - out.names.length) + '개');
+  } catch (_) {}
+  return out;
+}
+
 function _saveIntegrityCheck() {
   if (typeof _meshHealth !== 'function' || typeof Model === 'undefined' || !Model.objects) return 0;
   let bad = 0; const details = [];
   for (let i = 0; i < Model.objects.length; i++) {
     const o = Model.objects[i];
     if (!o || !o.em || !o.em.faces || !o.em.faces.length) continue;
-    if (o.materialId || o._imported || o.isImagePlane || o.isEntourage || o.isUnderlay || o.faceCamera) continue;
+    // NOTE: painted-but-native objects (o.materialId) ARE checked — only truly
+    // imported soup meshes and special quads are exempt from edge-health rules.
+    if (o._imported || o.isImagePlane || o.isEntourage || o.isUnderlay || o.faceCamera) continue;
     let h; try { h = _meshHealth(o.em); } catch (_) { continue; }
     if (h.winding > 0 || h.degenerate > 0 || h.dup > 0) {
       bad++;
@@ -30893,6 +32160,7 @@ function _saveIntegrityCheck() {
   }
   if (bad > 0) {
     try { if (window.__TD_DEV) details.forEach(d => console.log('[health] save-guard: ' + d)); } catch (_) {}
+    try { if (window._tdJournal) details.forEach(d => _tdJournal('[save-guard] ' + d)); } catch (_) {}
     try { if (typeof setStatus === 'function') setStatus('msg', '⚠ ' + bad + ' object(s) may have geometry errors — saved anyway'); } catch (_) {}
   }
   return bad;
@@ -30967,6 +32235,67 @@ function _selfTest() {
     }
   } catch (e) { log('save_guard THREW ' + (e && e.message)); results.push({ name: 'save_guard', bad: true }); }
 
+  // Weld guard (R2): a generous commit weld must NOT merge two pre-existing
+  // vertices 5mm apart (sub-cm detail), must still merge exact duplicates,
+  // and must snap a vertex moved by the edit onto a nearby anchor.
+  try {
+    const em = new EditableMesh();
+    em.vertices.push(V3(0, 0, 0), V3(0.005, 0, 0), V3(1, 0, 0));        // pre-op detail: 5mm gap
+    const statics = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
+    em.vertices.push(V3(0.001, 0, 0));                                  // moved vert 1mm from anchor
+    em.vertices.push(V3(1, 0, 0));                                      // exact duplicate of an anchor
+    em.weldVertices(0.005, statics);
+    const okW = em.vertices.length === 3;                               // 5mm pair kept, others merged in
+    // Legacy (unguarded) behaviour: same-cell verts still merge.
+    const em2 = new EditableMesh();
+    em2.vertices.push(V3(0, 0, 0), V3(0.002, 0, 0));   // both round to cell 0 at eps 5mm
+    em2.weldVertices(0.005);
+    const okL = em2.vertices.length === 1;
+    const ok = okW && okL;
+    log('weld_guard: guarded=' + okW + ' legacy=' + okL + (ok ? '   ok' : '   <<< FAIL'));
+    results.push({ name: 'weld_guard', bad: !ok });
+  } catch (e) { log('weld_guard THREW ' + (e && e.message)); results.push({ name: 'weld_guard', bad: true }); }
+
+  // Commit guard (R5): an op that flips a face must roll back to the pre-op
+  // copy; a clean op must be kept.
+  try {
+    const mk = () => { const em = new EditableMesh(); const f = quad(em, V3(0,0,0), V3(0,0,2), V3(2,0,2), V3(2,0,0)); em.extrudeFace(f, 2); return em; };
+    const em = mk();
+    const pre = {
+      verts: em.vertices.map(v => v.clone()),
+      faces: em.faces.map(f => ({ verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId, holes: [] })),
+    };
+    em.faces[2].verts.reverse(); em.computeFaceNormal(em.faces[2]);   // simulate a corrupting op
+    const fakeObj = { em, rebuild() { this._rebuilt = true; }, name: 'GuardTestCommit' };
+    const rolled = _commitGuard(fakeObj, pre, 'SelfTest');
+    const hAfter = _meshHealth(fakeObj.em);
+    const okRoll = rolled && !hAfter.fail && fakeObj._rebuilt;
+    // clean op: no rollback
+    const em2 = mk();
+    const pre2 = { verts: em2.vertices.map(v => v.clone()), faces: em2.faces.map(f => ({ verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId, holes: [] })) };
+    em2.extrudeFace(em2.faces[0], 1);
+    const rolled2 = _commitGuard({ em: em2, rebuild() {} }, pre2, 'SelfTest');
+    const ok = okRoll && !rolled2;
+    log('commit_guard: rolledOnCorrupt=' + okRoll + ' keptCleanOp=' + !rolled2 + (ok ? '   ok' : '   <<< FAIL'));
+    results.push({ name: 'commit_guard', bad: !ok });
+  } catch (e) { log('commit_guard THREW ' + (e && e.message)); results.push({ name: 'commit_guard', bad: true }); }
+
+  // NaN-scan guard: an object with a non-finite vertex must be flagged (saveTT blocks on it).
+  try {
+    if (typeof _saveNaNScan === 'function' && typeof Model !== 'undefined' && Model.objects) {
+      const em2 = new EditableMesh(); const f2 = quad(em2, V3(0,0,0), V3(0,0,2), V3(2,0,2), V3(2,0,0)); em2.extrudeFace(f2, 2);
+      em2.vertices[0].x = NaN;
+      const fake = { em: em2, name: 'GuardTestNaN' };
+      const base = _saveNaNScan().bad;
+      let after = base;
+      Model.objects.push(fake); try { after = _saveNaNScan().bad; } finally { const i = Model.objects.indexOf(fake); if (i >= 0) Model.objects.splice(i, 1); }
+      const okN = (after - base === 1);
+      log('save_guard_nan: flagged=' + okN + (okN ? '   ok' : '   <<< FAIL'));
+      results.push({ name: 'save_guard_nan', bad: !okN });
+    } else log('save_guard_nan: SKIPPED');
+  } catch (e) { log('save_guard_nan THREW ' + (e && e.message)); results.push({ name: 'save_guard_nan', bad: true }); }
+
+  log('bvh: ' + (window.__TD_BVH ? 'installed (accelerated raycast active)' : 'NOT installed — linear raycast fallback'));
   const fails = results.filter(r => r.bad);
   log('==== DONE: ' + results.length + ' configs, ' + fails.length + ' FAILED' + (fails.length ? ': ' + fails.map(r => r.name).join(', ') : ''));
   return results;
@@ -31023,14 +32352,39 @@ try {
   window._meshHealth = _meshHealth;
   window._selfTest = _selfTest;
   window._perfTest = _perfTest;
-  // Dev-only: surface ESCAPED errors (the 285 catch(_) sites stay as graceful
-  // fallbacks; their important consequence — mesh corruption — is caught by the
-  // push/pull canary and the save-guard). This catches everything that slips
-  // past those: uncaught exceptions and unhandled promise rejections.
-  if (window.__TD_DEV) {
-    try { window.addEventListener('error', (ev) => { try { console.log('[dev-error] ' + ((ev && ev.message) || '?') + (ev && ev.filename ? ' @' + String(ev.filename).split('/').pop() + ':' + ev.lineno : '')); } catch (_) {} }); } catch (_) {}
-    try { window.addEventListener('unhandledrejection', (ev) => { try { console.log('[dev-error] unhandledrejection: ' + ((ev && ev.reason && ev.reason.message) || (ev && ev.reason) || '?')); } catch (_) {} }); } catch (_) {}
-  }
+  // Always-on error journal: ring-buffer uncaught errors, unhandled promise
+  // rejections, and geometry-guard verdicts, flushed via IPC to a rotating
+  // userData/td-errors.log (Help → Reveal Error Log…). Production builds were
+  // previously blind — ~300 silent catch sites and dev-gated diagnostics meant
+  // beta reports were undiagnosable.
+  (function () {
+    const buf = [];
+    let timer = null;
+    const flush = () => {
+      timer = null;
+      if (!buf.length || !window.electronErrorLog) return;
+      const batch = buf.splice(0, buf.length);
+      try { window.electronErrorLog(batch); } catch (_) {}
+    };
+    window._tdJournal = function (line) {
+      try {
+        buf.push(String(line));
+        if (buf.length > 200) buf.splice(0, buf.length - 200);   // ring cap
+        if (!timer) timer = setTimeout(flush, 3000);
+      } catch (_) {}
+    };
+    try { window.addEventListener('error', (ev) => {
+      const msg = ((ev && ev.message) || '?') + (ev && ev.filename ? ' @' + String(ev.filename).split('/').pop() + ':' + ev.lineno : '');
+      _tdJournal('[error] ' + msg);
+      try { if (window.__TD_DEV) console.log('[dev-error] ' + msg); } catch (_) {}
+    }); } catch (_) {}
+    try { window.addEventListener('unhandledrejection', (ev) => {
+      const msg = (ev && ev.reason && ev.reason.message) || (ev && ev.reason) || '?';
+      _tdJournal('[rejection] ' + msg);
+      try { if (window.__TD_DEV) console.log('[dev-error] unhandledrejection: ' + msg); } catch (_) {}
+    }); } catch (_) {}
+    try { window.addEventListener('beforeunload', flush); } catch (_) {}
+  })();
   // Dev-only crash-recovery dry run: seed a fake unsaved session BEFORE Tabs.boot
   // runs its recovery check (~700ms), and tell _maybeRecover to log its decision
   // instead of prompting. Verifies read → content-detect → decision end to end.

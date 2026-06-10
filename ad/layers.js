@@ -140,63 +140,9 @@
       // expandable sub-row in renderLayers (turtle_drawing.html). Skip the
       // legacy in-row injection so the layer panel stays narrow.
       return;
-      // eslint-disable-next-line no-unreachable
-      const list = document.getElementById('layersList');
-      if (!list) return;
-      const rows = list.querySelectorAll('.layer-row');
-      rows.forEach((row, i) => {
-        const L = Model.layers[i];
-        if (!L) return;
-        if (row.querySelector('.ad-weight')) return;
-        // Ensure the name stays visible by giving it a minimum width and
-        // clipping dropdowns don't collapse it entirely.
-        const nameEl = row.querySelector('.name');
-        if (nameEl) nameEl.style.minWidth = '40px';
-        // Line weight — used on cut edges only.
-        const sel = document.createElement('select');
-        sel.className = 'ad-weight';
-        sel.title = 'Cut-edge line weight (mm)';
-        sel.style.cssText =
-          'flex:0 0 auto;font-size:10px;padding:1px 2px;border:0.5px solid rgba(0,0,0,0.2);' +
-          'border-radius:4px;background:#fff;color:#222;cursor:pointer;width:52px;';
-        for (const w of WEIGHT_PRESETS) {
-          const opt = document.createElement('option');
-          opt.value = w;
-          opt.textContent = (w < 0.01 ? w.toFixed(4) : w.toFixed(2));
-          if (Math.abs(w - (L.lineWeight || DEFAULT_WEIGHT)) < 1e-9) opt.selected = true;
-          sel.appendChild(opt);
-        }
-        sel.onclick = (e) => e.stopPropagation();
-        sel.onchange = (e) => {
-          L.lineWeight = parseFloat(e.target.value);
-          if (typeof rebuildSectionFills === 'function') rebuildSectionFills();
-        };
-        row.appendChild(sel);
-        // Cut-hatch picker.
-        const hatch = document.createElement('select');
-        hatch.className = 'ad-cuthatch';
-        hatch.title = 'Cut fill hatch';
-        hatch.style.cssText = sel.style.cssText.replace('width:52px', 'width:62px') +
-          ';margin-left:4px;';
-        const none = document.createElement('option');
-        none.value = ''; none.textContent = '—';
-        hatch.appendChild(none);
-        if (window.AD && AD.Hatch && AD.Hatch.PATTERNS) {
-          for (const p of AD.Hatch.PATTERNS) {
-            const opt = document.createElement('option');
-            opt.value = p.id;
-            opt.textContent = p.label;
-            if (L.cutHatch === p.id) opt.selected = true;
-            hatch.appendChild(opt);
-          }
-        }
-        hatch.onclick = (e) => e.stopPropagation();
-        hatch.onchange = (e) => {
-          L.cutHatch = e.target.value || null;
-          if (typeof rebuildSectionFills === 'function') rebuildSectionFills();
-        };
-        row.appendChild(hatch);
-      });
+      /* The ~60-line legacy in-row injection that followed this return was
+         unreachable dead code (superseded by the expandable sub-row in
+         turtle_drawing.html's renderLayers) — removed. */
     };
     window.renderLayers._adPatched = true;
   }

@@ -58,7 +58,8 @@
       "build/icon.icns",
       "build/turtle.png",
       "build/turtle_square.png",
-      "ad/**/*"
+      "ad/**/*",
+      "vendor/**/*"
     ],
     "directories": { "output": "dist" },
     "publish": [
