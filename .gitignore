@@ -6,3 +6,4 @@ backups/
 .DS_Store
 .env
 *.p12
+.claude/settings.local.json

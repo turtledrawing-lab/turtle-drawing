@@ -160,6 +160,18 @@
               <path d="M0 5 q5 -5 10 0 t10 0" stroke="#5a3018" stroke-width="0.5" fill="none"/>
               <path d="M0 10 q5 -5 10 0 t10 0" stroke="#5a3018" stroke-width="0.5" fill="none"/>
             </pattern>` },
+    { id: 'insulation_board',
+      label: 'Insulation (board)',
+      svg: `<pattern id="h_insulb" patternUnits="userSpaceOnUse" width="9" height="16">
+              <rect width="9" height="16" fill="#fef6d5"/>
+              <path d="M0 1 L9 15 M0 15 L9 1" stroke="#b89a28" stroke-width="0.55" fill="none"/>
+            </pattern>` },
+    { id: 'rubble_compact',
+      label: 'Rubble base',
+      svg: `<pattern id="h_rubblec" patternUnits="userSpaceOnUse" width="15" height="20">
+              <rect width="15" height="20" fill="#e6e3da"/>
+              <path d="M5 19 L10 3 M5 19 L2 15 M5 19 L8 16" stroke="#5a554c" stroke-width="0.5" fill="none"/>
+            </pattern>` },
   ];
 
   AD.Hatch = {

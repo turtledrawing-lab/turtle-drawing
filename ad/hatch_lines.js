@@ -18,6 +18,67 @@
   AD.HatchLines.scale = 1.0;
   const S = () => Math.max(0.05, Math.min(20, AD.HatchLines.scale || 1.0));
 
+  /* Insulation symbol — interlocking SLIM TEARDROPS (물방울), the classic Korean
+     단열재 hatch. A round bulb sits flush on one edge and tapers to a sharp point
+     that stops just SHORT of the opposite edge, leaving a small gap (점 이격);
+     teardrops alternate up/down. The march spacing (w = (2·ht−H)·rt/L) makes each
+     teardrop's straight side the COMMON TANGENT running from its point through to the
+     next teardrop's point — neighbours' straight sides COINCIDE into one continuous
+     zig-zag line (직선구간 겹침), bulbs tangent to it on either side.
+       rt = 0.20·H (slim bulb),  ht = 0.90·H (length, gap = 0.10·H),  2w ≈ 0.48·H.
+     Orientation-robust: the band's THIN axis is cMin..cMax, the LONG axis aMin..aMax. */
+  const insulCoil = (bbox) => {
+    const segs = [];
+    const W = bbox.maxX - bbox.minX, Ht = bbox.maxY - bbox.minY;
+    if (W <= 0 || Ht <= 0) return segs;
+    const horiz = W >= Ht;
+    const aMin = horiz ? bbox.minX : bbox.minY;
+    const aMax = horiz ? bbox.maxX : bbox.maxY;
+    const cMin = horiz ? bbox.minY : bbox.minX;
+    const cMax = horiz ? bbox.maxY : bbox.maxX;
+    const H = cMax - cMin;
+    const rt = 0.20 * H;                       // bulb radius (slim, flush at its edge)
+    const ht = 0.90 * H;                       // teardrop length (< H) → point gap = 0.10·H
+    const d  = ht - rt;                        // point → bulb-centre distance
+    if (d <= rt) return segs;
+    const L = Math.sqrt(d * d - rt * rt);      // tangent length point→bulb
+    const sinb = rt / d, cosb = L / d;
+    const w = (2 * ht - H) * rt / L;            // march half-spacing → straight sides coincide
+    if (!(w > 0)) return segs;
+    const TAU = 2 * Math.PI, n = 40;
+    const emit = (a0, c0, a1, c1) => { horiz ? segs.push([a0, c0, a1, c1]) : segs.push([c0, a0, c1, a1]); };
+    const teardrop = (a, down) => {
+      let Cc, Pc, TRa, TRc, TLa, TLc, apex, sgn;
+      if (down) {                              // bulb flush at cMax, point near cMin (gap)
+        Cc = cMax - rt; Pc = cMax - ht; sgn = 1;
+        apex = Math.PI / 2;
+      } else {                                 // bulb flush at cMin, point near cMax (gap)
+        Cc = cMin + rt; Pc = cMin + ht; sgn = -1;
+        apex = -Math.PI / 2;
+      }
+      TRa = a + L * sinb; TRc = Pc + sgn * L * cosb;
+      TLa = a - L * sinb; TLc = Pc + sgn * L * cosb;
+      const aR = Math.atan2(TRc - Cc, TRa - a);
+      const aL = Math.atan2(TLc - Cc, TLa - a);
+      let ap = apex;  while (ap  <= aR) ap  += TAU;
+      let aLn = aL;   while (aLn <= aR) aLn += TAU;
+      if (!(aR < ap && ap < aLn)) aLn -= TAU;
+      emit(a, Pc, TRa, TRc);                   // point → right tangent (shared with next)
+      let pa = TRa, pc = TRc;
+      for (let k = 1; k <= n; k++) {           // bulb arc over the round side
+        const ang = aR + (aLn - aR) * k / n;
+        const na = a + rt * Math.cos(ang), nc = Cc + rt * Math.sin(ang);
+        emit(pa, pc, na, nc); pa = na; pc = nc;
+      }
+      emit(pa, pc, a, Pc);                      // left tangent → point (shared with prev)
+    };
+    let idx = 0;
+    for (let a = aMin - 2 * w; a <= aMax + 2 * w && segs.length < 8000; a += w) {
+      teardrop(a, idx % 2 === 0); idx++;
+    }
+    return segs;
+  };
+
   // -------------------------------------------------------------------- 2D generator
   /* Each entry returns an array of { type:'line'|'wave'|'dot',
      a:[x,y], b:[x,y], [amp,freq] } segments for a 2D tile of the given
@@ -60,20 +121,7 @@
       }
       return segs;
     },
-    insulation_rigid: (bbox) => {
-      const segs = [];
-      const sc = S();
-      const period = 0.08 * sc, amp = 0.03 * sc, step = 0.1 * sc;
-      for (let y = bbox.minY; y <= bbox.maxY; y += step) {
-        let prev = null;
-        for (let x = bbox.minX; x <= bbox.maxX; x += period / 10) {
-          const yy = y + Math.sin((x - bbox.minX) / period * Math.PI * 2) * amp;
-          if (prev) segs.push([prev[0], prev[1], x, yy]);
-          prev = [x, yy];
-        }
-      }
-      return segs;
-    },
+    insulation_rigid: insulCoil,
     brick: (bbox) => {
       const segs = [];
       const sc = S();
@@ -152,6 +200,142 @@
       const spacing = 0.015 * S();
       for (let y = bbox.minY; y <= bbox.maxY; y += spacing) {
         segs.push([bbox.minX, y, bbox.maxX, y]);
+      }
+      return segs;
+    },
+    stone_rubble: (bbox) => {
+      const segs = [];
+      const rnd = seeded(bbox.minX * 11 + bbox.minY * 19);
+      const step = 0.3 * S();
+      for (let y = bbox.minY; y <= bbox.maxY; y += step) {
+        for (let x = bbox.minX; x <= bbox.maxX; x += step) {
+          const cx = x + (rnd() - 0.5) * step * 0.5, cy = y + (rnd() - 0.5) * step * 0.5;
+          const r = step * (0.3 + rnd() * 0.18), N = 5 + Math.floor(rnd() * 3);
+          let prev = null, first = null;
+          for (let i = 0; i < N; i++) {
+            const a = (i / N) * Math.PI * 2 + rnd() * 0.5, rr = r * (0.7 + rnd() * 0.5);
+            const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr;
+            if (prev) segs.push([prev[0], prev[1], px, py]); else first = [px, py];
+            prev = [px, py];
+          }
+          if (prev && first) segs.push([prev[0], prev[1], first[0], first[1]]);
+        }
+      }
+      return segs;
+    },
+    concrete_block: (bbox) => {
+      const segs = [];
+      const sc = S(), h = 0.2 * sc, w = 0.4 * sc;
+      for (let y = bbox.minY; y <= bbox.maxY; y += h) segs.push([bbox.minX, y, bbox.maxX, y]);
+      let row = 0;
+      for (let y = bbox.minY; y <= bbox.maxY; y += h) {
+        const off = (row % 2) * (w / 2);
+        for (let x = bbox.minX + off; x <= bbox.maxX; x += w) segs.push([x, y, x, y + h]);
+        row++;
+      }
+      return segs;
+    },
+    plaster: (bbox) => {
+      const segs = [];
+      const rnd = seeded(bbox.minX * 23 + bbox.minY * 7), step = 0.05 * S();
+      for (let y = bbox.minY; y <= bbox.maxY; y += step)
+        for (let x = bbox.minX; x <= bbox.maxX; x += step)
+          if (rnd() < 0.4) {
+            const jx = x + (rnd() - 0.5) * step, jy = y + (rnd() - 0.5) * step, r = step * 0.12;
+            segs.push([jx - r, jy, jx + r, jy]);
+          }
+      return segs;
+    },
+    plywood: (bbox) => {
+      const segs = [], step = 0.03 * S();
+      for (let y = bbox.minY; y <= bbox.maxY; y += step) segs.push([bbox.minX, y, bbox.maxX, y]);
+      return segs;
+    },
+    sand: (bbox) => {
+      const segs = [];
+      const rnd = seeded(bbox.minX * 5 + bbox.minY * 29), step = 0.03 * S();
+      for (let y = bbox.minY; y <= bbox.maxY; y += step)
+        for (let x = bbox.minX; x <= bbox.maxX; x += step)
+          if (rnd() < 0.5) {
+            const jx = x + (rnd() - 0.5) * step, jy = y + (rnd() - 0.5) * step, r = step * 0.1;
+            segs.push([jx - r, jy, jx + r, jy]); segs.push([jx, jy - r, jx, jy + r]);
+          }
+      return segs;
+    },
+    glass: (bbox) => {
+      const segs = [], sp = 0.18 * S();
+      const diag = (bbox.maxX - bbox.minX) + (bbox.maxY - bbox.minY);
+      for (let k = -diag; k < diag; k += sp)
+        segs.push([bbox.minX + k, bbox.minY, bbox.minX + k + diag, bbox.minY + diag]);
+      return segs;
+    },
+    water: (bbox) => {
+      const segs = [];
+      const sc = S(), step = 0.12 * sc, amp = 0.02 * sc, period = 0.18 * sc, dx = period / 12;
+      for (let y = bbox.minY; y <= bbox.maxY; y += step) {
+        let prev = null;
+        for (let x = bbox.minX; x <= bbox.maxX; x += dx) {
+          const yy = y + Math.sin((x - bbox.minX) / period * Math.PI * 2) * amp;
+          if (prev) segs.push([prev[0], prev[1], x, yy]);
+          prev = [x, yy];
+        }
+      }
+      return segs;
+    },
+    crosshatch_45: (bbox) => {
+      const segs = [], sp = 0.06 * S();
+      const diag = (bbox.maxX - bbox.minX) + (bbox.maxY - bbox.minY);
+      for (let k = -diag; k < diag; k += sp) {
+        segs.push([bbox.minX + k, bbox.minY, bbox.minX + k + diag, bbox.minY + diag]);
+        segs.push([bbox.minX + k, bbox.maxY, bbox.minX + k + diag, bbox.maxY - diag]);
+      }
+      return segs;
+    },
+    diagonal_45: (bbox) => {
+      const segs = [], sp = 0.06 * S();
+      const diag = (bbox.maxX - bbox.minX) + (bbox.maxY - bbox.minY);
+      for (let k = -diag; k < diag; k += sp)
+        segs.push([bbox.minX + k, bbox.minY, bbox.minX + k + diag, bbox.minY + diag]);
+      return segs;
+    },
+    horizontal_lines: (bbox) => {
+      const segs = [], step = 0.08 * S();
+      for (let y = bbox.minY; y <= bbox.maxY; y += step) segs.push([bbox.minX, y, bbox.maxX, y]);
+      return segs;
+    },
+    vertical_lines: (bbox) => {
+      const segs = [], step = 0.08 * S();
+      for (let x = bbox.minX; x <= bbox.maxX; x += step) segs.push([x, bbox.minY, x, bbox.maxY]);
+      return segs;
+    },
+    roof_tile: (bbox) => {
+      const segs = [];
+      const sc = S(), step = 0.1 * sc, amp = 0.05 * sc, period = 0.2 * sc, dx = period / 12;
+      for (let y = bbox.minY; y <= bbox.maxY; y += step) {
+        let prev = null;
+        for (let x = bbox.minX; x <= bbox.maxX; x += dx) {
+          const yy = y + Math.abs(Math.sin((x - bbox.minX) / period * Math.PI)) * amp;
+          if (prev) segs.push([prev[0], prev[1], x, yy]);
+          prev = [x, yy];
+        }
+      }
+      return segs;
+    },
+    insulation_board: insulCoil,    // unified to the soft/coil insulation symbol
+    rubble_compact: (bbox) => {     // 잡석다짐: sparse main slash + small cross tick near BOTH ends (top & bottom)
+      const segs = [];
+      const H = bbox.maxY - bbox.minY;
+      if (H <= 0) return segs;
+      const gap = H * 0.9 * S(), run = H * 0.85;   // spacing ≈ band height (sparse); scale slider tunes density
+      const L = Math.hypot(run, H) || 1, px = -H / L, py = run / L;  // unit perpendicular to the stroke
+      const t1 = 0.15, t2 = 0.85;
+      for (let x = bbox.minX - run; x <= bbox.maxX; x += gap) {
+        segs.push([x, bbox.minY, x + run, bbox.maxY]);             // main slanted stroke
+        // small perpendicular strokes that meet the main and run out to the band edges (top & bottom)
+        const ax = x + t1 * run, ay = bbox.minY + t1 * H, sb = t1 * H * L / run;        // → bottom edge
+        segs.push([ax, ay, ax - px * sb, ay - py * sb]);
+        const bx = x + t2 * run, by = bbox.minY + t2 * H, st = (1 - t2) * H * L / run;  // → top edge
+        segs.push([bx, by, bx + px * st, by + py * st]);
       }
       return segs;
     },
