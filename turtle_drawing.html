@@ -8977,7 +8977,117 @@ function _healMeshTopology(em) {
     }
     f.holes = out;
   }
+  // Orientation first (it reverses holes together with their face), then the
+  // hole-vs-outer winding check.
+  _orientFacesConsistently(em);
   _fixHoleWindings(em);
+}
+
+/* Repair face ORIENTATION globally. Cutting a solid apart (e.g. pushing a
+   face past the body so one side splits off) can leave faces wound opposite
+   to their neighbours — they render with the blue back-face tint. The
+   half-edge orientNormalsConsistently only walks the component of faces[0]
+   (and its result is discarded unless the coplanar splice did work), so
+   detached pieces stayed broken. This version works on the EditableMesh:
+     1. per connected component (across MANIFOLD shared edges only), BFS and
+        flip faces so neighbours traverse every shared edge in opposite
+        directions;
+     2. pick each component's global side: closed solids orient OUTWARD
+        (signed volume > 0); open shells keep the MAJORITY of their existing
+        face directions (so the few flipped faces get corrected, not the
+        whole shell inverted).
+   Returns the number of faces flipped. Holes are reversed with their face
+   (and _fixHoleWindings afterwards re-checks them). */
+function _orientFacesConsistently(em) {
+  try {
+    if (!em || !em.faces || em.faces.length < 2) return 0;
+    const F = em.faces, V = em.vertices;
+    const edgeMap = new Map();             // undirected key -> [{fi, fwd}]
+    F.forEach((f, fi) => {
+      const loops = [f.verts].concat(f.holes || []);
+      for (const loop of loops) {
+        if (!loop || loop.length < 3) continue;
+        for (let i = 0; i < loop.length; i++) {
+          const a = loop[i], b = loop[(i + 1) % loop.length];
+          if (a === b) continue;
+          const k = a < b ? a + '_' + b : b + '_' + a;
+          let arr = edgeMap.get(k);
+          if (!arr) { arr = []; edgeMap.set(k, arr); }
+          arr.push({ fi, fwd: a < b });
+        }
+      }
+    });
+    const adj = F.map(() => []);
+    let openEdgeFaces = null;              // per-component openness via edge counts
+    for (const arr of edgeMap.values()) {
+      if (arr.length !== 2) continue;      // non-manifold/boundary: don't propagate
+      adj[arr[0].fi].push({ to: arr[1].fi, sameDir: arr[0].fwd === arr[1].fwd });
+      adj[arr[1].fi].push({ to: arr[0].fi, sameDir: arr[0].fwd === arr[1].fwd });
+    }
+    const seen = new Array(F.length).fill(false);
+    const flip = new Array(F.length).fill(false);
+    const compOf = new Array(F.length).fill(-1);
+    const comps = [];
+    for (let s = 0; s < F.length; s++) {
+      if (seen[s]) continue;
+      const comp = [];
+      seen[s] = true; compOf[s] = comps.length;
+      const q = [s];
+      while (q.length) {
+        const i = q.shift(); comp.push(i);
+        for (const { to, sameDir } of adj[i]) {
+          if (seen[to]) continue;
+          seen[to] = true; compOf[to] = comps.length;
+          // Consistent neighbours traverse a shared edge in OPPOSITE
+          // directions; sameDir means exactly one of the pair must flip.
+          flip[to] = sameDir ? !flip[i] : flip[i];
+          q.push(to);
+        }
+      }
+      comps.push(comp);
+    }
+    // Per-component openness: any edge used exactly once by the comp's faces?
+    const compOpen = comps.map(() => false);
+    for (const arr of edgeMap.values()) {
+      if (arr.length === 1) compOpen[compOf[arr[0].fi]] = true;
+    }
+    for (let ci = 0; ci < comps.length; ci++) {
+      const comp = comps[ci];
+      if (comp.length < 2) continue;
+      let invertAll = false;
+      if (!compOpen[ci]) {
+        // Closed solid: signed volume with the EFFECTIVE winding must be > 0
+        // (outward normals). Fan-triangulate outer loops against the origin.
+        let vol6 = 0;
+        for (const fi of comp) {
+          const vs = F[fi].verts;
+          for (let i = 1; i < vs.length - 1; i++) {
+            let a = V[vs[0]], b = V[vs[i]], c = V[vs[i + 1]];
+            if (!a || !b || !c) continue;
+            if (flip[fi]) { const t = b; b = c; c = t; }
+            vol6 += a.dot(new THREE.Vector3().crossVectors(b, c));
+          }
+        }
+        invertAll = vol6 < 0;
+      } else {
+        // Open shell: no outward — preserve the majority's current direction.
+        let nFlip = 0;
+        for (const fi of comp) if (flip[fi]) nFlip++;
+        invertAll = nFlip * 2 > comp.length;
+      }
+      if (invertAll) for (const fi of comp) flip[fi] = !flip[fi];
+    }
+    let flipped = 0;
+    for (let fi = 0; fi < F.length; fi++) {
+      if (!flip[fi]) continue;
+      const f = F[fi];
+      f.verts.reverse();
+      if (f.holes) for (const h of f.holes) h.reverse();
+      em.computeFaceNormal(f);
+      flipped++;
+    }
+    return flipped;
+  } catch (_) { return 0; }
 }
 
 /* Hole loops must be wound OPPOSITE to their face's outer boundary (see the
@@ -32378,6 +32488,48 @@ function _selfTest() {
     log('commit_guard: rolledOnDup=' + okRoll + ' keptCleanOp=' + !rolled2 + ' keptWindingOnly=' + !rolled3 + (ok ? '   ok' : '   <<< FAIL'));
     results.push({ name: 'commit_guard', bad: !ok });
   } catch (e) { log('commit_guard THREW ' + (e && e.message)); results.push({ name: 'commit_guard', bad: true }); }
+
+  // Orientation repair (blue-face fix): a flipped face inside a solid, a fully
+  // inverted DETACHED solid, and an open shell with a flipped minority face
+  // must all come back consistent + outward/majority.
+  try {
+    const mkBox = (em, x0) => {
+      const f = quad(em, V3(x0,0,0), V3(x0,0,4), V3(x0+4,0,4), V3(x0+4,0,0));
+      em.extrudeFace(f, 3);
+    };
+    // (a) one face reversed inside a closed box
+    const emA = new EditableMesh(); mkBox(emA, 0);
+    const topA = emA.faces.find(f => f.normal.y > 0.9);
+    topA.verts.reverse(); emA.computeFaceNormal(topA);
+    _orientFacesConsistently(emA);
+    const hA = _meshHealth(emA);
+    const okA = hA.winding === 0 && topA.normal.y > 0.9;   // reverse was in-place
+    // (b) two solids, second one ENTIRELY inverted (detached component)
+    const emB = new EditableMesh(); mkBox(emB, 0);
+    const n1 = emB.faces.length;
+    mkBox(emB, 10);
+    for (let i = n1; i < emB.faces.length; i++) {
+      emB.faces[i].verts.reverse(); emB.computeFaceNormal(emB.faces[i]);
+    }
+    _orientFacesConsistently(emB);
+    const hB = _meshHealth(emB);
+    const top2 = emB.faces.slice(n1).find(f => Math.abs(f.normal.y) > 0.9 &&
+      f.verts.every(vi => Math.abs(emB.vertices[vi].y - 3) < 1e-6));
+    const okB = hB.winding === 0 && top2 && top2.normal.y > 0.9;
+    // (c) open shell: two quads sharing an edge, one flipped → majority kept
+    const emC = new EditableMesh();
+    const a0 = emC.addVertex(V3(0,0,0)), a1 = emC.addVertex(V3(0,0,4)),
+          a2 = emC.addVertex(V3(4,0,4)), a3 = emC.addVertex(V3(4,0,0)),
+          a4 = emC.addVertex(V3(8,0,4)), a5 = emC.addVertex(V3(8,0,0));
+    emC.addFace([a0, a1, a2, a3], 0xffffff, 'Layer0');           // +Y
+    emC.addFace([a3, a2, a4, a5], 0xffffff, 'Layer0');           // +Y, shares a2-a3
+    emC.faces[1].verts.reverse(); emC.computeFaceNormal(emC.faces[1]);  // flip minority
+    _orientFacesConsistently(emC);
+    const okC = emC.faces[0].normal.y > 0.9 && emC.faces[1].normal.y > 0.9;
+    const ok = okA && okB && okC;
+    log('orient_repair: closed=' + okA + ' detachedSolid=' + okB + ' openShell=' + okC + (ok ? '   ok' : '   <<< FAIL'));
+    results.push({ name: 'orient_repair', bad: !ok });
+  } catch (e) { log('orient_repair THREW ' + (e && e.message)); results.push({ name: 'orient_repair', bad: true }); }
 
   // NaN-scan guard: an object with a non-finite vertex must be flagged (saveTT blocks on it).
   try {
