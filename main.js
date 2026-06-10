@@ -406,11 +406,92 @@ function createWindow(pendingDocJson) {
   if (_IS_DEV) {
     try {
       win.webContents.on('console-message', (_e, _l, message) => {
-        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0 || message.indexOf('[rhinotest]') === 0 || message.indexOf('[glbtest]') === 0 || message.indexOf('[objtest]') === 0)) {
+        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0 || message.indexOf('[rhinotest]') === 0 || message.indexOf('[glbtest]') === 0 || message.indexOf('[objtest]') === 0 || message.indexOf('[drilltest]') === 0)) {
           process.stdout.write('[RENDERER] ' + message + '\n');
         }
       });
     } catch (_) {}
+  }
+  // Dev-only repro for the drill-through bug: TD_DRILLTEST=1 replicates the
+  // push/pull VCB commit pipeline (rectangle on a box face pushed through to
+  // the opposite wall) in three variants and logs [drilltest] verdicts.
+  if (_IS_DEV && process.env.TD_DRILLTEST) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        win.webContents.executeJavaScript(`
+          (async () => {
+            try {
+              const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+              const mkScene = () => {
+                // Mirror Tools.rect.commit drawing a rectangle on a box face:
+                // findOrAddVertexAt + edges + createFaceFromCycle (island).
+                const em = new EditableMesh();
+                const a = em.addVertex(V3(0,0,0)), b = em.addVertex(V3(0,0,4)),
+                      c = em.addVertex(V3(4,0,4)), d = em.addVertex(V3(4,0,0));
+                const base = em.addFace([a,b,c,d], 0xffffff, 'Layer0');
+                em.extrudeFace(base, 3);                          // 4x3x4 box
+                const corners = [V3(1,3,1), V3(3,3,1), V3(3,3,3), V3(1,3,3)];
+                const idxs = corners.map(p => findOrAddVertexAt(em, p));
+                for (const i of idxs) splitEdgesAtPoint(em, i);
+                for (let i = 0; i < idxs.length; i++) {
+                  const p = idxs[i], q = idxs[(i + 1) % idxs.length];
+                  if (!edgeExists(em, p, q)) em.edges.push({ a: p, b: q });
+                }
+                const cycle = findShortestCycle(em, idxs[0], idxs[1]);
+                const inner = createFaceFromCycle(em, (cycle && cycle.length >= 3) ? cycle : idxs, 0xffffff, 'Layer0');
+                if (!inner) throw new Error('createFaceFromCycle failed');
+                return { em, inner };
+              };
+              const flipFace = (em, f) => { f.verts.reverse(); em.computeFaceNormal(f); };
+              const drilled = (em) => {
+                // ray from above through the tunnel centre — 0 hits = drilled through
+                const so = new SketchObject(em.clone ? em.clone() : em, 'DrillCheck');
+                so.mesh.updateMatrixWorld(true);
+                const rc = new THREE.Raycaster(V3(2, 10, 2), V3(0, -1, 0));
+                const hits = rc.intersectObject(so.mesh, false);
+                try { so.mesh.geometry.dispose(); so.edges.geometry.dispose(); } catch (_) {}
+                return { hits: hits.length, faces: em.faces.length };
+              };
+              const pipeline = (variant) => {
+                const { em, inner } = mkScene();
+                // 'flipped*': the island face wound the way Tools.rect actually
+                // creates it (normal negated toward the camera, i.e. INTO the
+                // solid) — the real interactive condition.
+                const flipped = variant.indexOf('flipped') === 0;
+                if (flipped) flipFace(em, inner);
+                const statics = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
+                const preVerts = em.vertices.map(v => v.clone());
+                const preFaces = em.faces.map(f => ({ verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId, holes: (f.holes||[]).map(h => h.slice()) }));
+                em.extrudeFace(inner, flipped ? 3 : -3);   // both = push INTO the box to the bottom
+                const s = (variant.indexOf('legacy') >= 0) ? null : statics;
+                try { em.weldVertices(0.005, s); } catch (e) { return 'weld THREW ' + e.message; }
+                try { em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace(); } catch (e) { return 'split THREW ' + e.message; }
+                try { _closeCoplanarHoleCaps(em); } catch (e) { return 'caps THREW ' + e.message; }
+                try { Tools.pp._runBurnThrough(em, s); } catch (e) { return 'burn THREW ' + e.message; }
+                try { mergeCoplanarAdjacentFaces(em); } catch (_) {}
+                try { _healMeshTopology(em); } catch (_) {}
+                const d = drilled(em);
+                const h = _meshHealth(em);
+                let guard = '-';
+                if (variant.indexOf('commitguard') >= 0) {
+                  const fakeObj = { em, rebuild() { this._r = true; } };
+                  guard = _commitGuard(fakeObj, { verts: preVerts, faces: preFaces }, 'DrillTest') ? 'ROLLED_BACK' : 'kept';
+                }
+                return 'hits=' + d.hits + ' (0=drilled) faces=' + d.faces +
+                  ' health{open=' + h.open + ' nonman=' + h.nonman + ' wind=' + h.winding + ' degen=' + h.degenerate + ' dup=' + h.dup + '}' +
+                  ' guard=' + guard;
+              };
+              console.log('[drilltest] legacy            : ' + pipeline('legacy'));
+              console.log('[drilltest] guarded           : ' + pipeline('guarded'));
+              console.log('[drilltest] guarded+commitgrd : ' + pipeline('guarded+commitguard'));
+              console.log('[drilltest] flipped legacy    : ' + pipeline('flipped legacy'));
+              console.log('[drilltest] flipped guarded   : ' + pipeline('flipped guarded'));
+              console.log('[drilltest] flipped+commitgrd : ' + pipeline('flipped guarded commitguard'));
+            } catch (e) { console.log('[drilltest] FAIL ' + (e && e.message)); }
+          })()
+        `, true).catch((e) => process.stdout.write('[drilltest] inject failed: ' + e + '\n'));
+      }, 6000);
+    });
   }
   // Dev-only E2E check for the OBJ inch heuristic: TD_OBJTEST=1 imports a
   // SketchUp-header OBJ (394 units ≈ a 10m wall in inches) with the unit

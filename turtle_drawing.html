@@ -8959,6 +8959,36 @@ function _healMeshTopology(em) {
     }
     f.holes = out;
   }
+  _fixHoleWindings(em);
+}
+
+/* Hole loops must be wound OPPOSITE to their face's outer boundary (see the
+   holed_drill self-test). Tools.rect flips the island face's winding toward
+   the camera, so a drill-through commit can leave both punched holes wound
+   the SAME way as their faces — every hole edge then counts as a winding
+   defect (the "rectangle won't punch through" report: the commit guard saw
+   winding=8 and rolled the whole push back). Detect via the same Newell
+   formula _meshHealth uses and reverse in place. */
+function _fixHoleWindings(em) {
+  let fixed = 0;
+  if (!em || !em.faces) return fixed;
+  for (const f of em.faces) {
+    if (!f.holes || !f.holes.length || !f.normal) continue;
+    for (const h of f.holes) {
+      if (!h || h.length < 3) continue;
+      let nx = 0, ny = 0, nz = 0, bad = false;
+      for (let i = 0; i < h.length; i++) {
+        const A = em.vertices[h[i]], B = em.vertices[h[(i + 1) % h.length]];
+        if (!A || !B) { bad = true; break; }
+        nx += (A.y - B.y) * (A.z + B.z);
+        ny += (A.z - B.z) * (A.x + B.x);
+        nz += (A.x - B.x) * (A.y + B.y);
+      }
+      if (bad) continue;
+      if (nx * f.normal.x + ny * f.normal.y + nz * f.normal.z > 0) { h.reverse(); fixed++; }
+    }
+  }
+  return fixed;
 }
 
 /* Close a hole that is exactly filled by a separate coplanar "cap" face, and
@@ -17244,7 +17274,7 @@ Tools.rect = {
   name: 'rect', label: 'Rectangle', cursor: 'draw',
   firstPoint: null, firstObj: null, planeNormal: null,
   onActivate() { setStatus('msg', 'Click a corner, then type "W,H" or click again. E.g. 3000,4000'); },
-  onDeactivate() { this.firstPoint = null; this.firstObj = null; helperRoot.clear(); },
+  onDeactivate() { this.firstPoint = null; this.firstObj = null; this.hostNormal = null; helperRoot.clear(); },
   /* Resolve which face the rectangle should sit on. When snap.face is set
      (cursor is on the face interior) we use it. Otherwise — e.g. snap is to
      an Endpoint, Midpoint, or On-Edge — try a face raycast at the mouse
@@ -17254,8 +17284,10 @@ Tools.rect = {
   _resolveFaceContext(e, snap) {
     let obj = snap.obj || null;
     let normal = null;
+    let hostNormal = null;   // the HOST face's true normal (never camera-flipped)
     if (snap.face) {
       normal = snap.face.normal.clone();
+      hostNormal = snap.face.normal.clone();
     } else {
       // Include outer groups here so we can READ the face plane of a grouped
       // object the user is drawing on top of. (computeSnap strips obj/face for
@@ -17270,6 +17302,7 @@ Tools.rect = {
         const face = hitObj.em.faces[fi];
         if (face) {
           normal = face.normal.clone();
+          hostNormal = face.normal.clone();
           if (!obj && !isOuterGroup(hitObj)) obj = hitObj;
         }
       }
@@ -17298,7 +17331,7 @@ Tools.rect = {
             best = f;
           }
         }
-        if (best) normal = best.normal.clone();
+        if (best) { normal = best.normal.clone(); hostNormal = best.normal.clone(); }
       }
     }
     if (!normal) normal = new THREE.Vector3(0, 1, 0);
@@ -17314,7 +17347,7 @@ Tools.rect = {
       camera.getWorldDirection(camDir);
       if (normal.dot(camDir) > 0) normal.negate();
     } catch (_) {}
-    return { obj, normal };
+    return { obj, normal, hostNormal };
   },
   /* Project p onto the plane through `origin` with the given normal so the
      second click stays coplanar with the first even if its snap point is
@@ -17333,6 +17366,7 @@ Tools.rect = {
       const ctx = this._resolveFaceContext(e, snap);
       this.firstObj    = ctx.obj;
       this.planeNormal = ctx.normal;
+      this.hostNormal  = ctx.hostNormal || null;
     } else {
       const p2 = this._projectOntoPlane(snap.point, this.firstPoint, this.planeNormal);
       // If the projected second point is collinear with the first along the
@@ -17351,6 +17385,7 @@ Tools.rect = {
         const ctx = this._resolveFaceContext(e, snap);
         if (ctx.normal) {
           this.planeNormal = ctx.normal;
+          this.hostNormal  = ctx.hostNormal || this.hostNormal || null;
           if (ctx.obj) this.firstObj = ctx.obj;
           // Project firstPoint onto the new plane through snap.point.
           this.firstPoint = this._projectOntoPlane(this.firstPoint, snap.point, this.planeNormal);
@@ -17407,6 +17442,20 @@ Tools.rect = {
         created = createFaceFromCycle(em, unique, 0xffffff, Model.activeLayerId);
       }
       if (created) {
+        // An island drawn ON a face must be wound like its HOST face, not
+        // toward the camera — a camera-flipped island extrudes a tunnel with
+        // reversed walls and mis-wound punched holes, which is what broke
+        // "draw a rectangle on a face and push it through" (the commit guard
+        // then read winding defects and rolled the whole push back).
+        if (this.hostNormal) {
+          try {
+            em.computeFaceNormal(created);
+            if (created.normal.dot(this.hostNormal) < 0) {
+              created.verts.reverse();
+              em.computeFaceNormal(created);
+            }
+          } catch (_) {}
+        }
         // Remove any standalone edges that are now part of the face boundary
         const faceKeys = new Set();
         for (let i = 0; i < created.verts.length; i++) {
@@ -32087,11 +32136,21 @@ function _meshHealth(em) {
 function _commitGuard(obj, pre, label) {
   try {
     if (!obj || !obj.em || !pre || !pre.verts || !pre.faces || typeof _meshHealth !== 'function') return false;
+    // Self-repair first: mis-wound hole loops are fixable in place (and were
+    // causing false rollbacks of successful drill-throughs — winding=8 is just
+    // the two punched holes wound the wrong way, not corruption).
+    try { _fixHoleWindings(obj.em); } catch (_) {}
     const h = _meshHealth(obj.em);
-    const score = (x) => (x.winding || 0) + (x.degenerate || 0) + (x.dup || 0) + (x.nan || 0) * 1000;
+    // winding is deliberately NOT a rollback trigger: a genuinely flipped face
+    // is visible (blue back-face) and undoable, while a false positive here
+    // silently destroys a successful operation. Journal it instead.
+    const score = (x) => (x.degenerate || 0) + (x.dup || 0) + (x.nan || 0) * 1000;
     const badNow = score(h);
-    if (!badNow) return false;
     const preH = _meshHealth({ vertices: pre.verts, faces: pre.faces });
+    if (h.winding > (preH.winding || 0)) {
+      try { window._tdJournal && _tdJournal('[guard] ' + (label || 'op') + ' winding ' + (preH.winding || 0) + '→' + h.winding + ' (kept, not rolled back)'); } catch (_) {}
+    }
+    if (!badNow) return false;
     if (badNow <= score(preH)) return false;     // op didn't make things worse — keep it
     obj.em.vertices = pre.verts.map(v => v.clone());
     obj.em.faces = pre.faces.map(f => ({
@@ -32256,27 +32315,37 @@ function _selfTest() {
     results.push({ name: 'weld_guard', bad: !ok });
   } catch (e) { log('weld_guard THREW ' + (e && e.message)); results.push({ name: 'weld_guard', bad: true }); }
 
-  // Commit guard (R5): an op that flips a face must roll back to the pre-op
-  // copy; a clean op must be kept.
+  // Commit guard (R5): an op that leaves UNAMBIGUOUS corruption (duplicate
+  // face) must roll back; a clean op must be kept; a flipped face (winding
+  // only) must be KEPT — visible + undoable, and treating it as corruption
+  // falsely rolled back successful drill-throughs (the punched holes' loops
+  // read as winding until _fixHoleWindings repairs them).
   try {
     const mk = () => { const em = new EditableMesh(); const f = quad(em, V3(0,0,0), V3(0,0,2), V3(2,0,2), V3(2,0,0)); em.extrudeFace(f, 2); return em; };
-    const em = mk();
-    const pre = {
+    const snap = (em) => ({
       verts: em.vertices.map(v => v.clone()),
       faces: em.faces.map(f => ({ verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId, holes: [] })),
-    };
-    em.faces[2].verts.reverse(); em.computeFaceNormal(em.faces[2]);   // simulate a corrupting op
+    });
+    // (a) duplicate-face corruption → rollback
+    const em = mk();
+    const pre = snap(em);
+    const src = em.faces[2];
+    em.faces.push({ verts: src.verts.slice(), normal: src.normal.clone(), color: src.color, layerId: src.layerId, holes: [] });
     const fakeObj = { em, rebuild() { this._rebuilt = true; }, name: 'GuardTestCommit' };
     const rolled = _commitGuard(fakeObj, pre, 'SelfTest');
-    const hAfter = _meshHealth(fakeObj.em);
-    const okRoll = rolled && !hAfter.fail && fakeObj._rebuilt;
-    // clean op: no rollback
+    const okRoll = rolled && !_meshHealth(fakeObj.em).fail && fakeObj._rebuilt;
+    // (b) clean op → kept
     const em2 = mk();
-    const pre2 = { verts: em2.vertices.map(v => v.clone()), faces: em2.faces.map(f => ({ verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId, holes: [] })) };
+    const pre2 = snap(em2);
     em2.extrudeFace(em2.faces[0], 1);
     const rolled2 = _commitGuard({ em: em2, rebuild() {} }, pre2, 'SelfTest');
-    const ok = okRoll && !rolled2;
-    log('commit_guard: rolledOnCorrupt=' + okRoll + ' keptCleanOp=' + !rolled2 + (ok ? '   ok' : '   <<< FAIL'));
+    // (c) flipped face (winding only) → kept, journaled
+    const em3 = mk();
+    const pre3 = snap(em3);
+    em3.faces[2].verts.reverse(); em3.computeFaceNormal(em3.faces[2]);
+    const rolled3 = _commitGuard({ em: em3, rebuild() {} }, pre3, 'SelfTest');
+    const ok = okRoll && !rolled2 && !rolled3;
+    log('commit_guard: rolledOnDup=' + okRoll + ' keptCleanOp=' + !rolled2 + ' keptWindingOnly=' + !rolled3 + (ok ? '   ok' : '   <<< FAIL'));
     results.push({ name: 'commit_guard', bad: !ok });
   } catch (e) { log('commit_guard THREW ' + (e && e.message)); results.push({ name: 'commit_guard', bad: true }); }
 
