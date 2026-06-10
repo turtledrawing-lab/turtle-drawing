@@ -3023,8 +3023,18 @@ scene.add(helperRoot);
    maximize doesn't stutter from many setSize calls in a single frame. */
 let _resizeQueued = false;
 let _lastResizeW = 0, _lastResizeH = 0;
+/* SIZE EVERYTHING TO THE CANVAS RECT, NOT THE VIEWPORT RECT. The tab bar
+   (ad/tabs.js) shifts the canvases down 28px and shrinks their CSS height —
+   sizing the render buffer/camera to VP squashed the displayed image
+   vertically by 28/VPh, so the geometry the user SAW sat up to ~27px above
+   the geometry the math used: snap targets caught points visibly away from
+   the cursor (worst at the bottom of the window). One coordinate space: CAN. */
+function _drawRect() {
+  const r = CAN.getBoundingClientRect();
+  return (r.width > 0 && r.height > 0) ? r : VP.getBoundingClientRect();
+}
 function _resizeApplySize() {
-  const r = VP.getBoundingClientRect();
+  const r = _drawRect();
   if (r.width === _lastResizeW && r.height === _lastResizeH) return;
   _lastResizeW = r.width; _lastResizeH = r.height;
   // updateStyle=false: don't reflow canvas CSS (parent grid handles layout).
@@ -3037,12 +3047,13 @@ function _resizeApplySize() {
     camera.left = -h*a; camera.right = h*a; camera.top = h; camera.bottom = -h;
   }
   camera.updateProjectionMatrix();
+  try { drawOverlay(); } catch (_) {}
 }
 let _resizeDebounce = 0;
 function resize() {
   // Cheap immediate aspect update so the rendered image scales smoothly with
   // the parent grid; buffer realloc is debounced until the OS resize settles.
-  const r = VP.getBoundingClientRect();
+  const r = _drawRect();
   if (camera.isPerspectiveCamera) camera.aspect = r.width / r.height;
   else if (camera.isOrthographicCamera) {
     const a = r.width / r.height, h = 10;
@@ -9747,10 +9758,11 @@ function findContainingCoplanarFace(em, inner) {
 /* Project a 3D world point to 2D screen coordinates (CSS pixels relative to VP). */
 function worldToScreen(p) {
   const v = p.clone().project(camera);
-  // Renderer is sized to VP and the overlay canvas (OV) is also VP-sized,
-  // so worldToScreen returns VP-relative coords. Hit-test code that compares
-  // against this output must convert cursor to VP-relative as well.
-  const r = VP.getBoundingClientRect();
+  // Renderer + overlay are sized to the CANVAS rect (see _resizeApplySize) —
+  // the tab bar shrinks the canvas 28px below the viewport, and mixing VP
+  // height here against CAN-relative cursor pixels skewed every snap hit-test
+  // by up to ~27px near the window bottom. One space: canvas-relative pixels.
+  const r = CAN.getBoundingClientRect();
   return {
     x: ( v.x * 0.5 + 0.5) * r.width,
     y: (-v.y * 0.5 + 0.5) * r.height,
@@ -18346,9 +18358,10 @@ Tools.tape = {
    direction to world axes / nearby object edges. Returns { offsetVec, snapAxis }
    where snapAxis is null or { name, color } describing the snap target. */
 function computeDimOffsetWithSnap(A, B, e) {
-  const r = VP.getBoundingClientRect();
-  const mx = (e.offsetX / r.width) * 2 - 1;
-  const my = -(e.offsetY / r.height) * 2 + 1;
+  // ndc() uses the CANVAS rect — VP height differs by the 28px tab bar and
+  // skewed the offset drag away from the cursor.
+  const _n = ndc(e);
+  const mx = _n.x, my = _n.y;
   const mid = A.clone().add(B).multiplyScalar(0.5);
   const camDir = new THREE.Vector3();
   camera.getWorldDirection(camDir);
@@ -18660,9 +18673,8 @@ Tools.dimAngle = {
     }
     if (this._state === 'pickRadius') {
       // Project mouse onto plane (V, p1, p2) and use distance from V as radius
-      const r = VP.getBoundingClientRect();
-      const mx = (e.offsetX / r.width) * 2 - 1;
-      const my = -(e.offsetY / r.height) * 2 + 1;
+      const _n = ndc(e);   // CANVAS-rect based — see computeDimOffsetWithSnap
+      const mx = _n.x, my = _n.y;
       // Plane normal = (p1 - v) × (p2 - v)
       const a = this._p1.clone().sub(this._v);
       const b = this._p2.clone().sub(this._v);
@@ -32054,7 +32066,7 @@ document.addEventListener('click', (e) => {
   function loop() {
     if (window._panelTransitionUntil && performance.now() < window._panelTransitionUntil) {
       try {
-        const r = VP.getBoundingClientRect();
+        const r = _drawRect();   // canvas rect (tab bar shrinks it below VP)
         if (camera.isPerspectiveCamera) {
           camera.aspect = r.width / r.height;
           camera.updateProjectionMatrix();

@@ -406,11 +406,45 @@ function createWindow(pendingDocJson) {
   if (_IS_DEV) {
     try {
       win.webContents.on('console-message', (_e, _l, message) => {
-        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0 || message.indexOf('[rhinotest]') === 0 || message.indexOf('[glbtest]') === 0 || message.indexOf('[objtest]') === 0 || message.indexOf('[drilltest]') === 0)) {
+        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0 || message.indexOf('[rhinotest]') === 0 || message.indexOf('[glbtest]') === 0 || message.indexOf('[objtest]') === 0 || message.indexOf('[drilltest]') === 0 || message.indexOf('[snaptest]') === 0)) {
           process.stdout.write('[RENDERER] ' + message + '\n');
         }
       });
     } catch (_) {}
+  }
+  // Dev-only coordinate-space audit: TD_SNAPTEST=1 verifies (after the tab bar
+  // installs) that render buffer == canvas rect == camera aspect, and that
+  // worldToScreen round-trips through a raycast back to the same world point.
+  if (_IS_DEV && process.env.TD_SNAPTEST) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        win.webContents.executeJavaScript(`
+          (async () => {
+            try {
+              const cr = CAN.getBoundingClientRect();
+              const rs = new THREE.Vector2(); renderer.getSize(rs);
+              const sizeOk = Math.abs(rs.x - cr.width) < 1.5 && Math.abs(rs.y - cr.height) < 1.5;
+              const ovOk = Math.abs(OV.width - cr.width) < 1.5 && Math.abs(OV.height - cr.height) < 1.5;
+              const aspOk = !camera.isPerspectiveCamera || Math.abs(camera.aspect - cr.width / cr.height) < 1e-3;
+              // Round-trip: world point -> worldToScreen px -> synthetic event
+              // -> ndc() -> ray -> ground plane -> must land on the same point.
+              const P = new THREE.Vector3(1.234, 0, -2.345);
+              const s = worldToScreen(P);
+              const fake = { clientX: cr.left + s.x, clientY: cr.top + s.y };
+              const n = ndc(fake);
+              const rc = new THREE.Raycaster(); rc.setFromCamera(n, camera);
+              const hit = new THREE.Vector3();
+              rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit);
+              const err = hit ? hit.distanceTo(P) : 999;
+              console.log('[snaptest] bufferOk=' + sizeOk + ' (' + rs.x.toFixed(0) + 'x' + rs.y.toFixed(0) + ' vs ' + cr.width.toFixed(0) + 'x' + cr.height.toFixed(0) + ')' +
+                ' overlayOk=' + ovOk + ' aspectOk=' + aspOk +
+                ' roundTripErr=' + (err * 1000).toFixed(2) + 'mm' +
+                ((sizeOk && ovOk && aspOk && err < 0.002) ? '   PASS' : '   <<< FAIL'));
+            } catch (e) { console.log('[snaptest] FAIL ' + (e && e.message)); }
+          })()
+        `, true).catch((e) => process.stdout.write('[snaptest] inject failed: ' + e + '\n'));
+      }, 8000);
+    });
   }
   // Dev-only repro for the drill-through bug: TD_DRILLTEST=1 replicates the
   // push/pull VCB commit pipeline (rectangle on a box face pushed through to

@@ -356,6 +356,10 @@
     const ovl = document.getElementById('overlay');
     if (can) { can.style.top = '28px'; can.style.height = 'calc(100% - 28px)'; }
     if (ovl) { ovl.style.top = '28px'; ovl.style.height = 'calc(100% - 28px)'; }
+    // The render buffer + camera aspect are sized to the CANVAS rect, which
+    // this shift just changed — re-run the engine's resize or the image stays
+    // vertically squashed and snap hit-tests drift below the cursor.
+    try { window.dispatchEvent(new Event('resize')); } catch (_) {}
     return bar;
   }
 
