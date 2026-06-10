@@ -406,7 +406,7 @@ function createWindow(pendingDocJson) {
   if (_IS_DEV) {
     try {
       win.webContents.on('console-message', (_e, _l, message) => {
-        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0 || message.indexOf('[rhinotest]') === 0 || message.indexOf('[glbtest]') === 0 || message.indexOf('[objtest]') === 0 || message.indexOf('[drilltest]') === 0 || message.indexOf('[snaptest]') === 0)) {
+        if (typeof message === 'string' && (message.indexOf('[selftest]') === 0 || message.indexOf('[health]') === 0 || message.indexOf('[recovery]') === 0 || message.indexOf('[dev-error]') === 0 || message.indexOf('[perf]') === 0 || message.indexOf('[OBJ Import]') === 0 || message.indexOf('[rhinotest]') === 0 || message.indexOf('[glbtest]') === 0 || message.indexOf('[objtest]') === 0 || message.indexOf('[drilltest]') === 0 || message.indexOf('[snaptest]') === 0 || message.indexOf('[bluetest]') === 0 || message.indexOf('[splittest]') === 0)) {
           process.stdout.write('[RENDERER] ' + message + '\n');
         }
       });
@@ -444,6 +444,341 @@ function createWindow(pendingDocJson) {
           })()
         `, true).catch((e) => process.stdout.write('[snaptest] inject failed: ' + e + '\n'));
       }, 8000);
+    });
+  }
+  // TEMP-PROBE (snap audit) BEGIN — remove after audit
+  if (_IS_DEV && process.env.TD_SNAPTEST2) {
+    win.webContents.once('did-finish-load', () => {
+      // P6: boot-race poller — does the buffer lag the canvas rect after the
+      // tab bar installs (~700ms) and for how long?
+      win.webContents.executeJavaScript(`
+        (() => {
+          const t0 = performance.now();
+          const hist = [];
+          const iv = setInterval(() => {
+            try {
+              if (typeof CAN === 'undefined' || typeof renderer === 'undefined') return;
+              const cr = CAN.getBoundingClientRect();
+              const rs = new THREE.Vector2(); renderer.getSize(rs);
+              hist.push({ t: Math.round(performance.now() - t0), top: Math.round(cr.top), h: Math.round(cr.height), bufH: Math.round(rs.y), ovH: OV.height|0 });
+              if (performance.now() - t0 > 3000) {
+                clearInterval(iv);
+                let prev = null; const out = [];
+                for (const e of hist) { const k = e.top+':'+e.h+':'+e.bufH+':'+e.ovH; if (k !== prev) { out.push(JSON.stringify(e)); prev = k; } }
+                console.log('[snaptest] P6 BOOTRACE transitions: ' + out.join(' '));
+              }
+            } catch (_) {}
+          }, 40);
+        })()
+      `, true).catch(() => {});
+      setTimeout(() => {
+        win.webContents.executeJavaScript(`
+          (async () => {
+            const log = s => console.log('[snaptest] ' + s);
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+            try {
+              // ---------- P0: layout audit ----------
+              const vr = VP.getBoundingClientRect();
+              let cr = CAN.getBoundingClientRect();
+              const or0 = OV.getBoundingClientRect();
+              log('P0 LAYOUT vpTop=' + vr.top.toFixed(0) + ' vpH=' + vr.height.toFixed(0) +
+                  ' canTop=' + cr.top.toFixed(0) + ' canH=' + cr.height.toFixed(0) +
+                  ' ovTop=' + or0.top.toFixed(0) + ' ovH=' + or0.height.toFixed(0) +
+                  ' inlineH="' + CAN.style.height + '" computedH=' + getComputedStyle(CAN).height +
+                  ' canBottomBeyondVP=' + (cr.bottom - vr.bottom).toFixed(1) + 'px');
+
+              // ---------- P1: corner/center snap reprojection (empty scene) ----------
+              const pts = [[15,15],[cr.width-15,15],[15,cr.height-15],[cr.width-15,cr.height-15],[cr.width/2,cr.height/2]];
+              for (const [px,py] of pts) {
+                const fake = { clientX: cr.left+px, clientY: cr.top+py, shiftKey:false, altKey:false, ctrlKey:false, metaKey:false };
+                let snap = null; try { snap = computeSnap(fake, {}); } catch (e) { log('P1 computeSnap threw ' + e.message); }
+                if (!snap) { log('P1 (' + px.toFixed(0) + ',' + py.toFixed(0) + ') snap=null'); continue; }
+                const s = worldToScreen(snap.point);
+                const d = Math.hypot(s.x-px, s.y-py);
+                log('P1 (' + px.toFixed(0) + ',' + py.toFixed(0) + ') type=' + snap.type + ' reprojErr=' + d.toFixed(2) + 'px' + (d > 14.5 ? '  <<< FAIL' : '  ok'));
+              }
+
+              // ---------- P2: edge pick + endpoint snap on a real box ----------
+              const em = new EditableMesh();
+              const va = em.addVertex(new THREE.Vector3(0,0,0)), vb = em.addVertex(new THREE.Vector3(0,0,4)),
+                    vc = em.addVertex(new THREE.Vector3(4,0,4)), vd = em.addVertex(new THREE.Vector3(4,0,0));
+              const f0 = em.addFace([va,vb,vc,vd], 0xffffff, Model.activeLayerId);
+              em.extrudeFace(f0, 3);
+              const so = new SketchObject(em, '__snapProbeBox');
+              addObject(so);
+              await sleep(150);
+              cr = CAN.getBoundingClientRect();
+              const eset = new Set(); const pairs = [];
+              for (const ff of em.faces) { const n = ff.verts.length; for (let i=0;i<n;i++){ const u=ff.verts[i], v=ff.verts[(i+1)%n]; const k=Math.min(u,v)+':'+Math.max(u,v); if(!eset.has(k)){eset.add(k);pairs.push([u,v]);} } }
+              let bp=null, bscore=1e9, bmid=null;
+              for (const [u,v] of pairs) {
+                const sA=worldToScreen(em.vertices[u]), sB=worldToScreen(em.vertices[v]);
+                if (sA.z>=1||sB.z>=1) continue;
+                if (Math.hypot(sB.x-sA.x,sB.y-sA.y) < 40) continue;
+                const mx=(sA.x+sB.x)/2, my=(sA.y+sB.y)/2;
+                const sc=Math.hypot(mx-cr.width/2,my-cr.height/2);
+                if (sc<bscore){bscore=sc;bp=[u,v];bmid=[mx,my];}
+              }
+              if (!bp) log('P2 no visible edge  <<< FAIL');
+              else {
+                const [u,v]=bp; const sA=worldToScreen(em.vertices[u]), sB=worldToScreen(em.vertices[v]);
+                const ex=sB.x-sA.x, ey=sB.y-sA.y; const L=Math.hypot(ex,ey)||1;
+                const px=bmid[0]-ey/L*3, py=bmid[1]+ex/L*3;
+                const fake={clientX:cr.left+px, clientY:cr.top+py, shiftKey:false, altKey:false, ctrlKey:false, metaKey:false};
+                const ep = pickEdgeNearScreen(fake, 6);
+                if (!ep) log('P2 pickEdge null at 3px from edge  <<< FAIL');
+                else {
+                  const same = ep.obj===so && ((ep.a===u&&ep.b===v)||(ep.a===v&&ep.b===u));
+                  const s1=worldToScreen(ep.obj.em.vertices[ep.a]), s2=worldToScreen(ep.obj.em.vertices[ep.b]);
+                  const ddx=s2.x-s1.x, ddy=s2.y-s1.y; const l2=ddx*ddx+ddy*ddy||1;
+                  let t=((px-s1.x)*ddx+(py-s1.y)*ddy)/l2; t=Math.max(0,Math.min(1,t));
+                  const dpx=Math.hypot(s1.x+ddx*t-px, s1.y+ddy*t-py);
+                  log('P2 edgePick sameEdge=' + same + ' screenDist=' + dpx.toFixed(2) + 'px (expect ~3)' + ((same && Math.abs(dpx-3)<1.5) ? '  ok' : '  <<< FAIL'));
+                  if (!same) {
+                    const W = i => { const p=em.vertices[i]; return '('+p.x+','+p.y+','+p.z+')'; };
+                    log('P2diag verts=' + em.vertices.length + ' faces=' + em.faces.length + ' standaloneEdges=' + em.edges.length);
+                    log('P2diag chosen u=' + u + W(u) + ' v=' + v + W(v) + ' returned a=' + ep.a + W(ep.a) + ' b=' + ep.b + W(ep.b));
+                    // brute force: all unique edges within 8px of cursor
+                    const camPos = camera.position;
+                    for (const [m,n2] of pairs) {
+                      const e1=worldToScreen(em.vertices[m]), e2=worldToScreen(em.vertices[n2]);
+                      if (e1.z>=1&&e2.z>=1) continue;
+                      const gx=e2.x-e1.x, gy=e2.y-e1.y; const gl=gx*gx+gy*gy||1;
+                      let tt=((px-e1.x)*gx+(py-e1.y)*gy)/gl; tt=Math.max(0,Math.min(1,tt));
+                      const gd=Math.hypot(e1.x+gx*tt-px, e1.y+gy*tt-py);
+                      if (gd<8) {
+                        const wp=new THREE.Vector3().lerpVectors(em.vertices[m],em.vertices[n2],tt);
+                        log('P2diag near edge ('+m+','+n2+') dPx='+gd.toFixed(2)+' camDist='+camPos.distanceTo(wp).toFixed(2));
+                      }
+                    }
+                  }
+                }
+                const sV=worldToScreen(em.vertices[u]);
+                const fk2={clientX:cr.left+sV.x+4, clientY:cr.top+sV.y+4, shiftKey:false, altKey:false, ctrlKey:false, metaKey:false};
+                const sn2=computeSnap(fk2,{});
+                if (sn2) { const sp=worldToScreen(sn2.point); const dd=Math.hypot(sp.x-sV.x, sp.y-sV.y);
+                  log('P2b cursor 5.7px from corner -> type=' + sn2.type + ' snapToVertexErr=' + dd.toFixed(2) + 'px' + ((sn2.type==='Endpoint'&&dd<0.5)?'  ok':'  <<< check')); }
+                else log('P2b corner snap null  <<< FAIL');
+              }
+
+              // ---------- P3: overlay marker pixel audit ----------
+              {
+                cr = CAN.getBoundingClientRect();
+                const P = new THREE.Vector3(2,1.5,2);
+                const s = worldToScreen(P);
+                octx.clearRect(0,0,OV.width,OV.height);
+                drawSnapIndicator(s.x, s.y, 'Endpoint', true);
+                const R=25, x0=Math.max(0,Math.round(s.x-R)), y0=Math.max(0,Math.round(s.y-R));
+                const img = octx.getImageData(x0,y0,R*2,R*2);
+                let sx=0,sy=0,n=0;
+                for (let yy=0;yy<R*2;yy++) for (let xx=0;xx<R*2;xx++){ const al=img.data[(yy*R*2+xx)*4+3]; if (al>40){ sx+=x0+xx+0.5; sy+=y0+yy+0.5; n++; } }
+                if (!n) log('P3 no marker pixels  <<< FAIL');
+                else {
+                  const cx=sx/n, cy=sy/n, derr=Math.hypot(cx-s.x,cy-s.y);
+                  const ovr=OV.getBoundingClientRect();
+                  log('P3 markerCentroidErr=' + derr.toFixed(2) + 'px ovBufScale=(' + (OV.width/ovr.width).toFixed(3) + ',' + (OV.height/ovr.height).toFixed(3) + ')' + ((derr<1.5)?'  ok':'  <<< FAIL'));
+                }
+                try { drawOverlay(); } catch(_){}
+              }
+
+              // ---------- P4: 2-pt perspective ray vs projection ----------
+              {
+                cr = CAN.getBoundingClientRect();
+                const savedTY = controls.target.y;
+                _twoPtPerspective = true;
+                controls.target.y = 3;
+                controls.update(); camera.updateMatrixWorld(true);
+                const P = new THREE.Vector3(1,0,-1);
+                const s = worldToScreen(P);
+                const fake = { clientX: cr.left+s.x, clientY: cr.top+s.y };
+                const rc = new THREE.Raycaster(); rc.setFromCamera(ndc(fake), camera);
+                const hit = new THREE.Vector3();
+                const ok1 = rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0), hit);
+                let mErr=-1, pxErr=-1;
+                if (ok1) { mErr = hit.distanceTo(P); const s2=worldToScreen(hit); pxErr=Math.hypot(s2.x-s.x,s2.y-s.y); }
+                camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+                const rc2 = new THREE.Raycaster(); rc2.setFromCamera(ndc(fake), camera);
+                const hit2 = new THREE.Vector3();
+                const ok2 = rc2.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0), hit2);
+                const mErr2 = ok2 ? hit2.distanceTo(P) : -1;
+                log('P4 twoPt staleInverse: worldErr=' + (mErr*1000).toFixed(1) + 'mm pxErr=' + pxErr.toFixed(1) + 'px ; after manual inverse sync worldErr=' + (mErr2*1000).toFixed(1) + 'mm' + ((mErr > 0.01 && mErr2 >= 0 && mErr2 < 0.002) ? '  <<< FAIL (camera.projectionMatrixInverse stale in 2-pt mode)' : '  ok'));
+                _twoPtPerspective = false;
+                controls.target.y = savedTY;
+                controls.update(); camera.updateMatrixWorld(true); camera.updateProjectionMatrix();
+              }
+
+              try { removeObject(so); } catch (e) { log('cleanup fail ' + e.message); }
+              try { drawOverlay(); } catch(_){}
+              log('PROBES DONE');
+            } catch (e) { log('PROBE THREW ' + (e && e.message)); }
+          })()
+        `, true).catch((e) => process.stdout.write('[snaptest2] inject failed: ' + e + '\n'));
+      }, 10000);
+      // P5: window resize tracking — mid-debounce and post-debounce buffer state.
+      setTimeout(() => {
+        const [w, h] = win.getSize();
+        const audit = (tag) => win.webContents.executeJavaScript(
+          `(()=>{const cr=CAN.getBoundingClientRect();const rs=new THREE.Vector2();renderer.getSize(rs);` +
+          `return '${tag} can='+cr.width.toFixed(0)+'x'+cr.height.toFixed(0)+' buf='+rs.x.toFixed(0)+'x'+rs.y.toFixed(0)+' ovBuf='+OV.width+'x'+OV.height+' aspect='+camera.aspect.toFixed(4)+' rectAspect='+(cr.width/cr.height).toFixed(4);})()`,
+          true).then(s => process.stdout.write('[RENDERER] [snaptest] P5 ' + s + '\n')).catch(()=>{});
+        win.setSize(w + 137, h + 89);
+        setTimeout(() => audit('RESIZE+100ms'), 100);
+        setTimeout(() => audit('RESIZE+500ms'), 500);
+        setTimeout(() => { win.setSize(w, h); }, 900);
+        setTimeout(() => audit('RESTORE+500ms'), 1400);
+      }, 16000);
+    });
+  }
+  // TEMP-PROBE (snap audit) END
+  // Dev-only repro: TD_BLUETEST=1 — drill a box, then push its right wall
+  // inward PAST the tunnel (splits the solid like the user's screenshot) and
+  // report face-orientation health + which faces stay inconsistent.
+  if (_IS_DEV && process.env.TD_BLUETEST) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        win.webContents.executeJavaScript(`
+          (async () => {
+            try {
+              const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+              // box 4x3x4 + island on top, drilled through (same as drilltest)
+              const em = new EditableMesh();
+              const a = em.addVertex(V3(0,0,0)), b = em.addVertex(V3(0,0,4)),
+                    c = em.addVertex(V3(4,0,4)), d = em.addVertex(V3(4,0,0));
+              const base = em.addFace([a,b,c,d], 0xffffff, 'Layer0');
+              em.extrudeFace(base, 3);
+              const corners = [V3(1,3,1), V3(3,3,1), V3(3,3,3), V3(1,3,3)];
+              const idxs = corners.map(p => findOrAddVertexAt(em, p));
+              for (const i of idxs) splitEdgesAtPoint(em, i);
+              for (let i = 0; i < idxs.length; i++) {
+                const p = idxs[i], q = idxs[(i + 1) % idxs.length];
+                if (!edgeExists(em, p, q)) em.edges.push({ a: p, b: q });
+              }
+              const cyc = findShortestCycle(em, idxs[0], idxs[1]);
+              const inner = createFaceFromCycle(em, (cyc && cyc.length >= 3) ? cyc : idxs, 0xffffff, 'Layer0');
+              const statics = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
+              em.extrudeFace(inner, -3);
+              em.weldVertices(0.005, statics);
+              em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace();
+              _closeCoplanarHoleCaps(em);
+              Tools.pp._runBurnThrough(em, statics);
+              mergeCoplanarAdjacentFaces(em);
+              _healMeshTopology(em);
+              const h0 = _meshHealth(em);
+              // NOW: push the right wall (x=4, normal +X) inward past the tunnel
+              const right = em.faces.find(f => f.normal.x > 0.9 &&
+                f.verts.every(vi => Math.abs(em.vertices[vi].x - 4) < 1e-6));
+              if (!right) { console.log('[bluetest] FAIL no right wall'); return; }
+              const statics2 = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
+              const pre = { verts: em.vertices.map(v => v.clone()),
+                            faces: em.faces.map(f => ({ verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId, holes: (f.holes||[]).map(hh => hh.slice()) })) };
+              em.extrudeFace(right, -2.5);   // past tunnel right wall at x=3
+              em.weldVertices(0.005, statics2);
+              em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace();
+              _closeCoplanarHoleCaps(em);
+              Tools.pp._runBurnThrough(em, statics2);
+              mergeCoplanarAdjacentFaces(em);
+              _healMeshTopology(em);
+              const h1 = _meshHealth(em);
+              const fakeObj = { em, rebuild() {} };
+              const rolled = _commitGuard(fakeObj, pre, 'BlueTest');
+              const h2 = _meshHealth(em);
+              // diagnose remaining winding offenders: faces whose directed
+              // edges conflict; report each with its edges' usage counts.
+              const use = new Map();
+              em.faces.forEach((f) => {
+                const loops = [f.verts].concat(f.holes || []);
+                for (const loop of loops) for (let i = 0; i < loop.length; i++) {
+                  const x = loop[i], y = loop[(i + 1) % loop.length];
+                  if (x === y) continue;
+                  const k = x < y ? x + '_' + y : y + '_' + x;
+                  use.set(k, (use.get(k) || 0) + 1);
+                }
+              });
+              let nonman = 0; for (const v of use.values()) if (v > 2) nonman++;
+              console.log('[bluetest] afterDrill wind=' + h0.winding +
+                ' | afterCut wind=' + h1.winding + ' open=' + h1.open + ' nonman=' + h1.nonman +
+                ' faces=' + em.faces.length +
+                ' | guardRolled=' + rolled + ' finalWind=' + h2.winding +
+                ' | nonmanEdges=' + nonman +
+                ((h2.winding === 0) ? '   PASS' : '   <<< FAIL (blue faces remain)'));
+            } catch (e) { console.log('[bluetest] FAIL ' + (e && e.message)); }
+          })()
+        `, true).catch((e) => process.stdout.write('[bluetest] inject failed: ' + e + '\n'));
+      }, 6000);
+    });
+  }
+  // Dev-only repro: TD_SPLITTEST=1 — drill a box, then draw two chords across
+  // the holed top face via the REAL line-tool commit; the ring must split.
+  if (_IS_DEV && process.env.TD_SPLITTEST) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        win.webContents.executeJavaScript(`
+          (async () => {
+            try {
+              const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+              const em = new EditableMesh();
+              const a = em.addVertex(V3(0,0,0)), b = em.addVertex(V3(0,0,4)),
+                    c = em.addVertex(V3(4,0,4)), d = em.addVertex(V3(4,0,0));
+              const base = em.addFace([a,b,c,d], 0xffffff, 'Layer0');
+              em.extrudeFace(base, 3);
+              const corners = [V3(1,3,1), V3(3,3,1), V3(3,3,3), V3(1,3,3)];
+              const idxs = corners.map(p => findOrAddVertexAt(em, p));
+              for (const i of idxs) splitEdgesAtPoint(em, i);
+              for (let i = 0; i < idxs.length; i++) {
+                const p = idxs[i], q = idxs[(i + 1) % idxs.length];
+                if (!edgeExists(em, p, q)) em.edges.push({ a: p, b: q });
+              }
+              const cyc = findShortestCycle(em, idxs[0], idxs[1]);
+              const inner = createFaceFromCycle(em, (cyc && cyc.length >= 3) ? cyc : idxs, 0xffffff, 'Layer0');
+              const statics = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
+              em.extrudeFace(inner, -3);
+              em.weldVertices(0.005, statics);
+              em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace();
+              _closeCoplanarHoleCaps(em);
+              Tools.pp._runBurnThrough(em, statics);
+              mergeCoplanarAdjacentFaces(em);
+              _healMeshTopology(em);
+              const so = new SketchObject(em, 'SplitTest');
+              addObject(so); so.rebuild();
+              const facesBefore = em.faces.length;
+              const ringBefore = em.faces.filter(f => f.holes && f.holes.length).length;
+              // chord 1: outer front edge -> hole front edge ; chord 2: hole back -> outer back
+              const r1 = Tools.line._commitEdge.call(Tools.line, V3(1,3,0), { obj: so }, V3(1,3,1), { obj: so });
+              const r2 = Tools.line._commitEdge.call(Tools.line, V3(1,3,3), { obj: so }, V3(1,3,4), { obj: so });
+              const topFaces = em.faces.filter(f => f.normal && f.normal.y > 0.9 &&
+                f.verts.every(vi => Math.abs(em.vertices[vi].y - 3) < 1e-6));
+              const ringAfter = em.faces.filter(f => f.holes && f.holes.length).length;
+              const h = _meshHealth(em);
+              console.log('[splittest] facesBefore=' + facesBefore + ' after=' + em.faces.length +
+                ' topFaces=' + topFaces.length + ' (expect 2)' +
+                ' ringFaces ' + ringBefore + '->' + ringAfter + ' (expect 2->1: top ring consumed, bottom stays)' +
+                ' r1=' + !!r1 + ' r2=' + !!r2 + ' wind=' + h.winding +
+                ((topFaces.length === 2 && ringAfter === 1 && h.winding === 0) ? '   PASS' : '   <<< FAIL (face not split)'));
+              // FULL user workflow: push the LEFT split piece down through the
+              // box (cutting that strip away) — the step that used to leave
+              // blue (inverted) faces behind.
+              const leftTop = topFaces.find(f => f.verts.every(vi => em.vertices[vi].x < 1 + 1e-3));
+              if (leftTop) {
+                const st3 = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
+                em.extrudeFace(leftTop, -3);
+                em.weldVertices(0.005, st3);
+                em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace();
+                _closeCoplanarHoleCaps(em);
+                Tools.pp._runBurnThrough(em, st3);
+                mergeCoplanarAdjacentFaces(em);
+                _healMeshTopology(em);
+                const h3 = _meshHealth(em);
+                console.log('[splittest] afterCutLeft wind=' + h3.winding + ' degen=' + h3.degenerate +
+                  ' dup=' + h3.dup + ' faces=' + em.faces.length +
+                  (h3.winding === 0 && h3.degenerate === 0 ? '   PASS (no blue faces)' : '   <<< FAIL'));
+              } else {
+                console.log('[splittest] afterCutLeft SKIPPED (left piece not found)');
+              }
+              for (const o of Model.objects.slice()) if (o.name === 'SplitTest') removeObject(o);
+            } catch (e) { console.log('[splittest] FAIL ' + (e && e.message)); }
+          })()
+        `, true).catch((e) => process.stdout.write('[splittest] inject failed: ' + e + '\n'));
+      }, 6000);
     });
   }
   // Dev-only repro for the drill-through bug: TD_DRILLTEST=1 replicates the

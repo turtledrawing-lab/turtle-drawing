@@ -7859,7 +7859,7 @@ function findLocationOnFace(P, face, em, EPS = 0.005) {
   // Vertex?
   for (let i = 0; i < N; i++) {
     if (em.vertices[face.verts[i]].distanceTo(P) < EPS) {
-      return { type: 'vertex', index: i };
+      return { type: 'vertex', index: i, loop: 'outer' };
     }
   }
   // Edge?
@@ -7868,11 +7868,45 @@ function findLocationOnFace(P, face, em, EPS = 0.005) {
     const b = em.vertices[face.verts[(i + 1) % N]];
     const proj = closestPointOnSegment(P, a, b);
     if (proj.point.distanceTo(P) < EPS && proj.t > 1e-4 && proj.t < 1 - 1e-4) {
-      return { type: 'edge', index: i, t: proj.t };
+      return { type: 'edge', index: i, t: proj.t, loop: 'outer' };
     }
   }
-  // Interior? (2D point-in-polygon on face's dominant axis plane)
-  if (isPointInPolygon2D(em, face, P)) return { type: 'interior' };
+  // HOLE boundaries count as boundary too (drilled faces are rings — a chord
+  // drawn from the outer edge to the hole used to be classified 'interior'
+  // and every split was refused). loop:'hole' + hole index let callers that
+  // support holes (splitFaceByLine) act on them; everyone else only reads
+  // .type and treats it like any boundary.
+  if (face.holes) {
+    for (let hi = 0; hi < face.holes.length; hi++) {
+      const H = face.holes[hi];
+      if (!H || H.length < 3) continue;
+      for (let i = 0; i < H.length; i++) {
+        if (em.vertices[H[i]].distanceTo(P) < EPS) {
+          return { type: 'vertex', index: i, loop: 'hole', hole: hi };
+        }
+      }
+      for (let i = 0; i < H.length; i++) {
+        const a = em.vertices[H[i]];
+        const b = em.vertices[H[(i + 1) % H.length]];
+        const proj = closestPointOnSegment(P, a, b);
+        if (proj.point.distanceTo(P) < EPS && proj.t > 1e-4 && proj.t < 1 - 1e-4) {
+          return { type: 'edge', index: i, t: proj.t, loop: 'hole', hole: hi };
+        }
+      }
+    }
+  }
+  // Interior? Inside the outer loop AND not inside any hole.
+  if (isPointInPolygon2D(em, face, P)) {
+    if (face.holes) {
+      for (const H of face.holes) {
+        if (H && H.length >= 3 &&
+            isPointInPolygon2D(em, { verts: H, normal: face.normal }, P)) {
+          return { type: 'outside' };
+        }
+      }
+    }
+    return { type: 'interior' };
+  }
   return { type: 'outside' };
 }
 
@@ -7947,6 +7981,10 @@ function splitFaceByPolyline(em, face, polyline) {
   // can never leave the face half-split (a stray inserted vertex) on return.
   const locB0 = findLocationOnFace(P2, face, em);
   if (locB0.type === 'outside' || locB0.type === 'interior') return null;
+  // Hole-boundary endpoints: the multi-point path splitter still assumes
+  // OUTER-loop indices everywhere below — bail rather than corrupt. (The
+  // two-point splitFaceByLine above handles hole endpoints via slit-merge.)
+  if (locA.loop === 'hole' || locB0.loop === 'hole') return null;
   let idx1;
   if (locA.type === 'vertex') idx1 = face.verts[locA.index];
   else                        idx1 = splitEdgeInFace(em, face, locA.index, P1);
@@ -9304,6 +9342,17 @@ function splitFaceByLine(em, face, P1, P2) {
   // faces); if we mutated first and then bailed, the face would be corrupted.
   const locB0 = findLocationOnFace(P2, face, em);
   if (locB0.type === 'outside' || locB0.type === 'interior') return null;
+  // ---- Hole-boundary endpoints (drilled ring faces) ---------------------
+  // outer↔hole: merge the hole into the outer boundary along the chord (a
+  // "keyhole" slit). The face count doesn't change yet, but the ring becomes
+  // a simple polygon — the user's SECOND chord then splits it normally.
+  // hole↔hole (same or different): not supported.
+  if (locA.loop === 'hole' || locB0.loop === 'hole') {
+    if (locA.loop === 'hole' && locB0.loop === 'hole') return null;
+    return (locA.loop === 'hole')
+      ? _mergeHoleIntoOuterByChord(em, face, locA, P1, P2)
+      : _mergeHoleIntoOuterByChord(em, face, locB0, P2, P1);
+  }
   if (!_faceSplitNonDegenerate(face, locA, locB0)) return null;
   // Insert P1 first
   let idx1;
@@ -9312,6 +9361,7 @@ function splitFaceByLine(em, face, P1, P2) {
   // Re-find P2's location since face.verts may have changed
   const locB = findLocationOnFace(P2, face, em);
   if (locB.type === 'outside' || locB.type === 'interior') return null;
+  if (locB.loop === 'hole') return null;
   let idx2;
   if (locB.type === 'vertex') idx2 = face.verts[locB.index];
   else                        idx2 = splitEdgeInFace(em, face, locB.index, P2);
@@ -9329,13 +9379,83 @@ function splitFaceByLine(em, face, P1, P2) {
   const origNormal = face.normal.clone();
   const color = face.color;
   const layerId = face.layerId;
+  const origHoles = (face.holes || []).map(h => h.slice());
   em.removeFace(face);
   const f1 = em.addFace(polyA, color, layerId);
   const f2 = em.addFace(polyB, color, layerId);
   // Preserve original normal direction
   if (f1.normal.dot(origNormal) < 0) { f1.verts.reverse(); em.computeFaceNormal(f1); }
   if (f2.normal.dot(origNormal) < 0) { f2.verts.reverse(); em.computeFaceNormal(f2); }
+  // Re-attach the original holes to whichever side now contains them —
+  // they used to be dropped entirely (the tunnel sealed itself shut).
+  if (origHoles.length) {
+    for (const h of origHoles) {
+      if (!h || h.length < 3) continue;
+      const c = new THREE.Vector3();
+      for (const vi of h) c.add(em.vertices[vi]);
+      c.multiplyScalar(1 / h.length);
+      const dst = (findLocationOnFace(c, f1, em).type !== 'outside') ? f1
+                : (findLocationOnFace(c, f2, em).type !== 'outside') ? f2 : null;
+      if (dst) { dst.holes = dst.holes || []; dst.holes.push(h); }
+    }
+    em.computeFaceNormal(f1); em.computeFaceNormal(f2);
+  }
   return [f1, f2];
+}
+
+/* Merge hole `locHole.hole` of `face` into its outer boundary along the chord
+   PHole→POuter (both already verified to lie on the respective loops). The
+   outer loop detours: ...→ vOuter → vHole → (whole hole loop) → vHole →
+   vOuter → ... — a standard slit polygon (the chord is traversed twice, once
+   in each direction, so edge use stays manifold). Returns [face] (truthy for
+   the callers' "did something" checks) or null. */
+function _mergeHoleIntoOuterByChord(em, face, locHole, PHole, POuter) {
+  const H = face.holes && face.holes[locHole.hole];
+  if (!H || H.length < 3) return null;
+  // Outer endpoint: vertex index on the outer loop (insert if mid-edge).
+  const locOuter = findLocationOnFace(POuter, face, em);
+  if (locOuter.type === 'outside' || locOuter.type === 'interior' || locOuter.loop === 'hole') return null;
+  let vOuter;
+  if (locOuter.type === 'vertex') vOuter = face.verts[locOuter.index];
+  else                            vOuter = splitEdgeInFace(em, face, locOuter.index, POuter);
+  // Hole endpoint: vertex index on the hole loop (insert if mid-edge, and
+  // propagate the new vertex into every other face sharing that edge so the
+  // tunnel walls stay topologically connected).
+  let vHole;
+  if (locHole.type === 'vertex') {
+    vHole = H[locHole.index];
+  } else {
+    const a = H[locHole.index], b = H[(locHole.index + 1) % H.length];
+    vHole = em.addVertex(PHole);
+    if (vHole !== a && vHole !== b) {
+      H.splice(locHole.index + 1, 0, vHole);
+      for (const f of em.faces) {
+        const loops = (f === face) ? (f.holes || []).filter(hh => hh !== H) : [f.verts].concat(f.holes || []);
+        if (f === face) loops.unshift(f.verts);
+        for (const loop of loops) {
+          for (let i = 0; i < loop.length; i++) {
+            const x = loop[i], y = loop[(i + 1) % loop.length];
+            if ((x === a && y === b) || (x === b && y === a)) {
+              if (loop.indexOf(vHole) < 0) loop.splice(i + 1, 0, vHole);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (vOuter == null || vHole == null || vOuter === vHole) return null;
+  const pos1 = face.verts.indexOf(vOuter);
+  const posH = H.indexOf(vHole);
+  if (pos1 < 0 || posH < 0) return null;
+  // Hole loops are wound opposite to the outer loop, so inserting the hole's
+  // own order keeps the slit polygon consistently wound.
+  const holeSeq = H.slice(posH).concat(H.slice(0, posH));   // starts at vHole
+  face.verts = face.verts.slice(0, pos1 + 1)
+    .concat(holeSeq, [vHole], face.verts.slice(pos1));
+  face.holes.splice(locHole.hole, 1);
+  em.computeFaceNormal(face);
+  return [face];
 }
 
 /* ========================================================================== */
