@@ -3616,6 +3616,13 @@ class OrbitController {
         halfH + yShift, -halfH + yShift,
         this.camera.near, this.camera.far
       );
+      // Writing projectionMatrix directly bypasses updateProjectionMatrix(),
+      // which is the ONLY place THREE refreshes projectionMatrixInverse —
+      // and Raycaster.setFromCamera unprojects through the INVERSE. Without
+      // this, every ray-based snap (On Face / On Ground / axis inference)
+      // in 2-pt mode used the stale symmetric frustum and landed visibly
+      // offset from the cursor (grows with camera/target height difference).
+      this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
     } else {
       this.camera.lookAt(this.target);
       this.camera.updateProjectionMatrix();
@@ -10358,6 +10365,13 @@ function computeSnap(e, opts = {}) {
   //        is the classic "straight continuation of an existing line" snap.
   //        Rendered magenta.
   let bestAxis = null, bestAxisDist = SNAP_PX_AXIS;
+  // Nearest-wins tracker for the wide-radius Extension Intersect/Endpoint
+  // candidates below. They used to overwrite bestAxis with ONLY the radius
+  // guard, so among several crossings within 100px the LAST one iterated won —
+  // the snap could jump to a crossing ~100px from the cursor even when another
+  // sat 5px away. (Do NOT reuse bestAxisDist as the guard: it starts at
+  // SNAP_PX_AXIS=6 and would collapse the intended wide catch radius.)
+  let bestAxisExtDist = Infinity;
   // Catch radius (screen px) for "Extension Intersect" snaps. Defaults to a
   // wide 100 px so the Line tool can "extend across the scene"; tools that want
   // the marker to stay ON the cursor (e.g. the Tape Measure) pass a small value.
@@ -10599,7 +10613,8 @@ function computeSnap(e, opts = {}) {
           if (sp.z > 1) continue;
           const dPix = Math.hypot(sp.x - mx, sp.y - my);
           const AXIS_INTERSECT_RADIUS = _extIntersectRadius;
-          if (dPix < AXIS_INTERSECT_RADIUS) {
+          if (dPix < AXIS_INTERSECT_RADIUS && dPix < bestAxisExtDist) {
+            bestAxisExtDist = dPix;
             bestAxisDist = Math.min(bestAxisDist, dPix);
             bestAxis = {
               point: h.point,
@@ -10632,7 +10647,8 @@ function computeSnap(e, opts = {}) {
           // Give intersection snaps a much larger catch radius — they're the
           // main "extend across the scene" snap the user is looking for.
           const INTERSECT_RADIUS = _extIntersectRadius;
-          if (dPix < INTERSECT_RADIUS) {
+          if (dPix < INTERSECT_RADIUS && dPix < bestAxisExtDist) {
+            bestAxisExtDist = dPix;
             bestAxisDist = Math.min(bestAxisDist, dPix);
             bestAxis = {
               point: h.point,
@@ -10665,7 +10681,8 @@ function computeSnap(e, opts = {}) {
             if (sp.z > 1) continue;
             const dPix = Math.hypot(sp.x - mx, sp.y - my);
             const EXT_END_RADIUS = 60;
-            if (dPix < EXT_END_RADIUS) {
+            if (dPix < EXT_END_RADIUS && dPix < bestAxisExtDist) {
+              bestAxisExtDist = dPix;
               bestAxisDist = dPix;
               bestAxis = {
                 point: v.clone(),
@@ -10704,7 +10721,8 @@ function computeSnap(e, opts = {}) {
           if (sp.z > 1) continue;
           const dPix = Math.hypot(sp.x - mx, sp.y - my);
           const PERP_INTERSECT_RADIUS = _extIntersectRadius;
-          if (dPix < PERP_INTERSECT_RADIUS) {
+          if (dPix < PERP_INTERSECT_RADIUS && dPix < bestAxisExtDist) {
+            bestAxisExtDist = dPix;
             bestAxisDist = Math.min(bestAxisDist, dPix);
             bestAxis = {
               point: h.point,
