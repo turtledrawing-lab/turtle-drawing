@@ -9021,6 +9021,228 @@ function _healMeshTopology(em) {
   _fixHoleWindings(em);
 }
 
+/* Detect the self-intersecting-sweep damage a deep push/pull cut can leave:
+   a face whose HOLE no longer lies inside its outer polygon (e.g. cutting a
+   drilled box to a 141mm slab leaves the tunnel hole stranded outside the
+   shrunken front/back faces). Such topology is unrepresentable — trigger the
+   CSG fallback instead of shipping it. */
+function _pushCutDamaged(em) {
+  try {
+    if (!em || !em.faces) return false;
+    for (const f of em.faces) {
+      if (!f.holes || !f.holes.length || !f.normal || f.verts.length < 3) continue;
+      for (const h of f.holes) {
+        if (!h || h.length < 3) continue;
+        const c = new THREE.Vector3();
+        let ok = true;
+        for (const vi of h) { const v = em.vertices[vi]; if (!v) { ok = false; break; } c.add(v); }
+        if (!ok) continue;
+        c.multiplyScalar(1 / h.length);
+        if (!isPointInPolygon2D(em, f, c)) return true;
+      }
+    }
+    return false;
+  } catch (_) { return false; }
+}
+
+/* CSG fallback for deep push/pull cuts. extrudeFace + burn-through cleanup
+   reconstructs simple cuts fine, but a sweep that crosses interior structure
+   (the drilled tunnel) self-intersects and the cleanup can emit broken
+   topology (stranded holes, inside-out slabs — the recurring "blue faces").
+   Rebuild the result exactly: restore the pre-push mesh, build the swept
+   prism of the pushed face, and boolean-SUBTRACT it. Only used for inward
+   pushes (dist < 0) on hole-free profiles, and only when damage was
+   detected, so the fast path stays untouched. Returns true on success. */
+function _csgPushCutFallback(em, preVerts, preFaces, faceCopy, dist) {
+  try {
+    if (!(dist < 0) || !faceCopy || !faceCopy.verts || faceCopy.verts.length < 3) return false;
+    if (typeof CSG === 'undefined' || typeof _emToCSG !== 'function' || typeof _csgToEM !== 'function') return false;
+    // Profile points from the PRE-push state (faceCopy indexes preVerts).
+    const profile = faceCopy.verts.map(vi => preVerts[vi]);
+    if (profile.some(p => !p)) return false;
+    const n = faceCopy.normal.clone().normalize();
+    // Restore the pre-push mesh.
+    const pre = new EditableMesh();
+    pre.vertices = preVerts.map(v => v.clone());
+    pre.faces = preFaces.map(f => ({
+      verts: f.verts.slice(),
+      normal: f.normal ? f.normal.clone() : new THREE.Vector3(0, 1, 0),
+      color: f.color, layerId: f.layerId,
+      holes: (f.holes || []).map(h => h.slice()),
+    }));
+    // Swept prism: from 2mm OUTSIDE the start plane (avoids coplanar-noise
+    // with the original wall) to the push depth. depthExtra > 0 nudges the
+    // far end past a coplanar interior wall — exact-coincidence BSP cuts are
+    // numerically fragile and come back open.
+    const buildTool = (depthExtra) => {
+      const tool = new EditableMesh();
+      const top = profile.map(p => tool.addVertex(p.clone().addScaledVector(n, 0.002)));
+      const bot = profile.map(p => tool.addVertex(p.clone().addScaledVector(n, dist - depthExtra)));
+      const fTop = tool.addFace(top.slice(), 0xffffff, faceCopy.layerId || 'Layer0');
+      tool.computeFaceNormal(fTop);
+      if (fTop.normal.dot(n) < 0) { fTop.verts.reverse(); tool.computeFaceNormal(fTop); }
+      const fBot = tool.addFace(bot.slice().reverse(), 0xffffff, faceCopy.layerId || 'Layer0');
+      tool.computeFaceNormal(fBot);
+      if (fBot.normal.dot(n) > 0) { fBot.verts.reverse(); tool.computeFaceNormal(fBot); }
+      const N = profile.length;
+      for (let i = 0; i < N; i++) {
+        const j = (i + 1) % N;
+        const fS = tool.addFace([top[i], top[j], bot[j], bot[i]], 0xffffff, faceCopy.layerId || 'Layer0');
+        tool.computeFaceNormal(fS);
+      }
+      _orientFacesConsistently(tool);
+      return tool;
+    };
+    // Accept only a strictly HEALTHY boolean result — a fallback that ships
+    // its own broken topology is worse than the damage it replaces.
+    const isHealthy = (m) => {
+      if (!m || !m.faces || m.faces.length < 4) return false;
+      const h = _meshHealth(m);
+      return h.nan === 0 && h.open === 0 && h.winding === 0 && h.degenerate <= 2;
+    };
+    const attempt = (depthExtra) => {
+      try {
+        const m = _csgToEM(_emToCSG(pre).subtract(_emToCSG(buildTool(depthExtra))));
+        if (!m || !m.faces) return null;
+        try { _orientFacesConsistently(m); _fixHoleWindings(m); } catch (_) {}
+        if (isHealthy(m)) return m;
+        // one repair pass: cap planar rims, heal, re-check
+        try { _capOpenBoundaryLoops(m); _healMeshTopology(m); } catch (_) {}
+        return isHealthy(m) ? m : null;
+      } catch (_) { return null; }
+    };
+    // Pass 1: exact depth. Pass 2: 0.5mm deeper — pushes the tool's far face
+    // off any coplanar interior wall (sub-mm error, invisible at model scale).
+    let em2 = attempt(0);
+    if (!em2) em2 = attempt(0.0005);
+    if (!em2) return false;
+    const layerId = faceCopy.layerId || (em.faces[0] && em.faces[0].layerId) || 'Layer0';
+    const color = (preFaces[0] && preFaces[0].color) || 0xffffff;
+    for (const f of em2.faces) { f.layerId = layerId; f.color = color; }
+    em.vertices = em2.vertices;
+    em.faces = em2.faces;
+    em.edges = [];
+    try { em.recomputeEdges && em.recomputeEdges(); } catch (_) {}
+    try { _orientFacesConsistently(em); } catch (_) {}
+    try { _fixHoleWindings(em); } catch (_) {}
+    return true;
+  } catch (_) { return false; }
+}
+
+/* Cap open boundary loops with planar faces. Pushing a wall exactly ONTO an
+   interior face, or all the way THROUGH the body, trips edge cases inside
+   extrudeFace/splitFaceByCoplanarFace that leave the solid OPEN along the cut
+   — the tunnel's interior then shows its blue back side (the reported bug).
+   Rather than special-casing every distance, re-close the solid afterwards:
+   collect boundary edges (used by exactly one face loop), chain them into
+   closed loops, and cap each loop that is planar. Orientation is normalized
+   right after by _orientFacesConsistently (closed → outward). Only called by
+   the push/pull commit when the mesh was CLOSED before the operation. */
+function _capOpenBoundaryLoops(em) {
+  try {
+    if (!em || !em.faces || !em.faces.length) return 0;
+    // Directed boundary edges, in the direction the CAP must traverse them
+    // (opposite to the lone face's traversal, so the shared edge ends up
+    // manifold and consistently wound).
+    const useCount = new Map(), dirOwner = new Map();
+    for (const f of em.faces) {
+      const loops = [f.verts].concat(f.holes || []);
+      for (const loop of loops) {
+        if (!loop || loop.length < 3) continue;
+        for (let i = 0; i < loop.length; i++) {
+          const a = loop[i], b = loop[(i + 1) % loop.length];
+          if (a === b) continue;
+          const k = a < b ? a + '_' + b : b + '_' + a;
+          useCount.set(k, (useCount.get(k) || 0) + 1);
+          dirOwner.set(k, { a, b });
+        }
+      }
+    }
+    const nextOf = new Map();      // cap-direction adjacency: from -> to
+    for (const [k, c] of useCount) {
+      if (c !== 1) continue;
+      const { a, b } = dirOwner.get(k);
+      nextOf.set(b, a);            // cap walks b -> a (reverse of the face)
+    }
+    if (!nextOf.size) return 0;
+    const planarLoops = [];
+    const consumed = new Set();
+    for (const start of nextOf.keys()) {
+      if (consumed.has(start)) continue;
+      // walk the chain
+      const loop = [start];
+      consumed.add(start);
+      let cur = nextOf.get(start), guard = 0;
+      let closed = false;
+      while (cur != null && guard++ < 10000) {
+        if (cur === start) { closed = true; break; }
+        if (consumed.has(cur)) break;          // merged into another chain — bail
+        loop.push(cur);
+        consumed.add(cur);
+        cur = nextOf.get(cur);
+      }
+      if (!closed || loop.length < 3) continue;
+      // planar check (Newell normal + max deviation)
+      let nx = 0, ny = 0, nz = 0;
+      for (let i = 0; i < loop.length; i++) {
+        const A = em.vertices[loop[i]], B = em.vertices[loop[(i + 1) % loop.length]];
+        if (!A || !B) { nx = ny = nz = 0; break; }
+        nx += (A.y - B.y) * (A.z + B.z);
+        ny += (A.z - B.z) * (A.x + B.x);
+        nz += (A.x - B.x) * (A.y + B.y);
+      }
+      const nl = Math.hypot(nx, ny, nz);
+      if (nl < 1e-9) continue;
+      const n = { x: nx / nl, y: ny / nl, z: nz / nl };
+      const v0 = em.vertices[loop[0]];
+      let dev = 0;
+      for (const vi of loop) {
+        const v = em.vertices[vi];
+        dev = Math.max(dev, Math.abs((v.x - v0.x) * n.x + (v.y - v0.y) * n.y + (v.z - v0.z) * n.z));
+      }
+      if (dev > 0.002) continue;               // non-planar rim (stepped cut) — leave open
+      planarLoops.push({ loop, n, d: v0.x * n.x + v0.y * n.y + v0.z * n.z });
+    }
+    // Group coplanar loops: the LARGEST becomes the cap face, the others
+    // become its holes — a cut through the tunnel leaves a ring-shaped rim
+    // (outer + inner loop); capping both as faces would seal the tunnel shut.
+    const groups = [];
+    for (const pl of planarLoops) {
+      let g = groups.find(gg =>
+        Math.abs(gg.n.x * pl.n.x + gg.n.y * pl.n.y + gg.n.z * pl.n.z) > 0.999 &&
+        Math.abs(Math.abs(gg.d) - Math.abs(pl.d)) < 0.002);
+      if (!g) { g = { n: pl.n, d: pl.d, loops: [] }; groups.push(g); }
+      g.loops.push(pl.loop);
+    }
+    const area2 = (loop, n) => {
+      // shoelace on the dominant-axis projection
+      const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+      const pick = (v) => (ax >= ay && ax >= az) ? [v.y, v.z] : (ay >= az ? [v.x, v.z] : [v.x, v.y]);
+      let s = 0;
+      for (let i = 0; i < loop.length; i++) {
+        const [x1, y1] = pick(em.vertices[loop[i]]);
+        const [x2, y2] = pick(em.vertices[loop[(i + 1) % loop.length]]);
+        s += x1 * y2 - x2 * y1;
+      }
+      return Math.abs(s) / 2;
+    };
+    let made = 0;
+    for (const g of groups) {
+      g.loops.sort((a, b) => area2(b, g.n) - area2(a, g.n));
+      const f = em.addFace(g.loops[0].slice(), em.faces[0] ? em.faces[0].color : 0xffffff,
+                           em.faces[0] ? em.faces[0].layerId : 'Layer0');
+      if (!f) continue;
+      if (g.loops.length > 1) {
+        f.holes = f.holes || [];
+        for (let i = 1; i < g.loops.length; i++) f.holes.push(g.loops[i].slice());
+        em.computeFaceNormal(f);
+      }
+      made++;
+    }
+    return made;
+  } catch (_) { return 0; }
+}
+
 /* Repair face ORIENTATION globally. Cutting a solid apart (e.g. pushing a
    face past the body so one side splits off) can leave faces wound opposite
    to their neighbours — they render with the blue back-face tint. The
@@ -15672,6 +15894,10 @@ Tools.pp = {
         verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId,
         holes: (f.holes || []).map(h => h.slice()),
       }));
+      // Was the solid CLOSED before this push? Commit re-closes it with
+      // boundary caps if an edge-case cut (exactly onto / through a wall)
+      // rips it open — see _capOpenBoundaryLoops.
+      try { this._preOpen = _meshHealth(this.hoverObj.em).open; } catch (_) { this._preOpen = -1; }
       // Standalone edges too — the commit-time weld remaps edge indices, so a
       // _commitGuard rollback must restore them alongside verts/faces.
       this.origEdges = (this.hoverObj.em.edges || []).map(e => ({ a: e.a, b: e.b }));
@@ -15697,6 +15923,22 @@ Tools.pp = {
       // Minimal splice: only the simplest case (hole with exactly one edge
       // collinear with one outer edge) — rewritten as L-shape polygon.
       try { _spliceSimpleNotch(this.hoverObj.em); } catch (e) { console.error('[pp] splice err:', e); }
+      // Re-close edge-case cuts before heal (closed before → capped after).
+      try {
+        if (this._preOpen === 0 && _meshHealth(this.hoverObj.em).open > 0) {
+          const nCaps = _capOpenBoundaryLoops(this.hoverObj.em);
+          if (nCaps && window._tdJournal) _tdJournal('[cap] push/pull re-closed ' + nCaps + ' boundary loop group(s)');
+        }
+      } catch (_) {}
+      // Deep self-intersecting cut left unrepresentable topology (stranded
+      // holes / inside-out slab) → rebuild the result via CSG subtract.
+      try {
+        if ((_pushCutDamaged(this.hoverObj.em) ||
+             (this._preOpen === 0 && _meshHealth(this.hoverObj.em).open > 0)) &&
+            _csgPushCutFallback(this.hoverObj.em, this.origVerts, this.origFaces, this.faceCopy, this.currentDistance)) {
+          if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+        }
+      } catch (_) {}
       try { _healMeshTopology(this.hoverObj.em); } catch (_) {}
       this.hoverObj.rebuild();
       // DEV canary: flag mesh corruption (flipped/leftover/non-manifold) the
@@ -15726,10 +15968,46 @@ Tools.pp = {
   },
   onDoubleClick(e) {
     if (!this.hoverFace || !this.hoverObj || this.active) return;
-    this.hoverObj.em.extrudeFace(this.hoverFace, this.lastDistance);
-    try { mergeCoplanarAdjacentFaces(this.hoverObj.em); } catch (_) {}
-    this.hoverObj.rebuild();
-    pushHistory('Extrude repeat');
+    // Repeat-extrude used to skip the ENTIRE commit pipeline (weld, burn-
+    // through, boundary caps, heal, rollback guard) — a double-click push
+    // through a wall left the solid open with inverted (blue) faces. Run the
+    // same commit the click/VCB paths run.
+    const obj = this.hoverObj;
+    this.origVerts = obj.em.vertices.map(v => v.clone());
+    this.origFaces = obj.em.faces.map(f => ({
+      verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId,
+      holes: (f.holes || []).map(h => h.slice()),
+    }));
+    try { this._preOpen = _meshHealth(obj.em).open; } catch (_) { this._preOpen = -1; }
+    // Profile snapshot BEFORE the extrude — its vert indices must refer to
+    // origVerts for the CSG fallback.
+    const _fcDbl = { verts: this.hoverFace.verts.slice(), normal: this.hoverFace.normal.clone(), color: this.hoverFace.color, layerId: this.hoverFace.layerId };
+    obj.em.extrudeFace(this.hoverFace, this.lastDistance);
+    const _statics = this._staticVertKeys();
+    try { obj.em.weldVertices(0.005, _statics); } catch (_) {}
+    try { obj.em.splitFaceByCoplanarFace && obj.em.splitFaceByCoplanarFace(); } catch (_) {}
+    try { _closeCoplanarHoleCaps(obj.em); } catch (_) {}
+    try { this._runBurnThrough(obj.em, _statics); } catch (_) {}
+    try { mergeCoplanarAdjacentFaces(obj.em); } catch (_) {}
+    try { _spliceSimpleNotch(obj.em); } catch (_) {}
+    try {
+      if (this._preOpen === 0 && _meshHealth(obj.em).open > 0) {
+        const nCaps = _capOpenBoundaryLoops(obj.em);
+        if (nCaps && window._tdJournal) _tdJournal('[cap] dbl-extrude re-closed ' + nCaps + ' boundary loop group(s)');
+      }
+    } catch (_) {}
+    // Deep self-intersecting cut → rebuild via CSG subtract (see click path).
+    try {
+      if ((_pushCutDamaged(obj.em) ||
+           (this._preOpen === 0 && _meshHealth(obj.em).open > 0)) &&
+          _csgPushCutFallback(obj.em, this.origVerts, this.origFaces, _fcDbl, this.lastDistance)) {
+        if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+      }
+    } catch (_) {}
+    try { _healMeshTopology(obj.em); } catch (_) {}
+    obj.rebuild();
+    const _rolledBack = _commitGuard(obj, { verts: this.origVerts, faces: this.origFaces }, 'Push/Pull');
+    if (!_rolledBack) pushHistory('Extrude repeat');
   },
   onPointerUp() {},
   onKey(k) {
@@ -15773,6 +16051,21 @@ Tools.pp = {
     try { _closeCoplanarHoleCaps(obj.em); } catch (_) {}
     try { this._runBurnThrough(obj.em, _statics); } catch (_) {}
     try { mergeCoplanarAdjacentFaces(obj.em); } catch (_) {}
+    // Re-close edge-case cuts before heal (closed before → capped after).
+    try {
+      if (this._preOpen === 0 && _meshHealth(obj.em).open > 0) {
+        const nCaps = _capOpenBoundaryLoops(obj.em);
+        if (nCaps && window._tdJournal) _tdJournal('[cap] push/pull re-closed ' + nCaps + ' boundary loop group(s)');
+      }
+    } catch (_) {}
+    // Deep self-intersecting cut → rebuild via CSG subtract (see click path).
+    try {
+      if ((_pushCutDamaged(obj.em) ||
+           (this._preOpen === 0 && _meshHealth(obj.em).open > 0)) &&
+          _csgPushCutFallback(obj.em, this.origVerts, this.origFaces, this.faceCopy, d)) {
+        if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+      }
+    } catch (_) {}
     try { _healMeshTopology(obj.em); } catch (_) {}
     obj.rebuild();
     // PRODUCTION transaction guard (same as the click-commit path).

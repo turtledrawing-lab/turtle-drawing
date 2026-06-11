@@ -630,9 +630,28 @@ function createWindow(pendingDocJson) {
     });
   }
   // TEMP-PROBE (snap audit) END
-  // Dev-only repro: TD_BLUETEST=1 — drill a box, then push its right wall
-  // inward PAST the tunnel (splits the solid like the user's screenshot) and
-  // report face-orientation health + which faces stay inconsistent.
+  // Dev-only on-demand probe: drop JS into /tmp/td-probe.js and the focused
+  // dev window executes it, writing the result to /tmp/td-probe-result.json.
+  // Lets us inspect the LIVE scene while debugging interactive repros.
+  if (_IS_DEV) {
+    const probeTimer = setInterval(() => {
+      try {
+        if (win.isDestroyed()) { clearInterval(probeTimer); return; }
+        const p = '/tmp/td-probe.js';
+        if (!fs.existsSync(p)) return;
+        const code = fs.readFileSync(p, 'utf8');
+        fs.unlinkSync(p);
+        process.stdout.write('[probe] executing (' + code.length + ' bytes)\n');
+        win.webContents.executeJavaScript(code, true)
+          .then((r) => { try { fs.writeFileSync('/tmp/td-probe-result.json', JSON.stringify(r === undefined ? null : r, null, 2)); } catch (_) {} })
+          .catch((e) => { try { fs.writeFileSync('/tmp/td-probe-result.json', JSON.stringify({ error: String(e && e.message || e) })); } catch (_) {} });
+      } catch (_) {}
+    }, 1200);
+  }
+  // Dev-only repro: TD_BLUETEST=1 — drill a box, emulate the CLICK-path
+  // commit (incl. the HalfEdge coplanar splice), cut the right wall in, and
+  // detect ACTUAL blue faces by ray parity (a face whose +normal ray exits
+  // through an ODD number of hits points INTO the body = renders blue).
   if (_IS_DEV && process.env.TD_BLUETEST) {
     win.webContents.once('did-finish-load', () => {
       setTimeout(() => {
@@ -640,67 +659,144 @@ function createWindow(pendingDocJson) {
           (async () => {
             try {
               const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
-              // box 4x3x4 + island on top, drilled through (same as drilltest)
-              const em = new EditableMesh();
-              const a = em.addVertex(V3(0,0,0)), b = em.addVertex(V3(0,0,4)),
-                    c = em.addVertex(V3(4,0,4)), d = em.addVertex(V3(4,0,0));
-              const base = em.addFace([a,b,c,d], 0xffffff, 'Layer0');
-              em.extrudeFace(base, 3);
-              const corners = [V3(1,3,1), V3(3,3,1), V3(3,3,3), V3(1,3,3)];
-              const idxs = corners.map(p => findOrAddVertexAt(em, p));
-              for (const i of idxs) splitEdgesAtPoint(em, i);
-              for (let i = 0; i < idxs.length; i++) {
-                const p = idxs[i], q = idxs[(i + 1) % idxs.length];
-                if (!edgeExists(em, p, q)) em.edges.push({ a: p, b: q });
-              }
-              const cyc = findShortestCycle(em, idxs[0], idxs[1]);
-              const inner = createFaceFromCycle(em, (cyc && cyc.length >= 3) ? cyc : idxs, 0xffffff, 'Layer0');
-              const statics = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
-              em.extrudeFace(inner, -3);
-              em.weldVertices(0.005, statics);
-              em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace();
-              _closeCoplanarHoleCaps(em);
-              Tools.pp._runBurnThrough(em, statics);
-              mergeCoplanarAdjacentFaces(em);
-              _healMeshTopology(em);
-              const h0 = _meshHealth(em);
-              // NOW: push the right wall (x=4, normal +X) inward past the tunnel
-              const right = em.faces.find(f => f.normal.x > 0.9 &&
-                f.verts.every(vi => Math.abs(em.vertices[vi].x - 4) < 1e-6));
-              if (!right) { console.log('[bluetest] FAIL no right wall'); return; }
-              const statics2 = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
-              const pre = { verts: em.vertices.map(v => v.clone()),
-                            faces: em.faces.map(f => ({ verts: f.verts.slice(), normal: f.normal.clone(), color: f.color, layerId: f.layerId, holes: (f.holes||[]).map(hh => hh.slice()) })) };
-              em.extrudeFace(right, -2.5);   // past tunnel right wall at x=3
-              em.weldVertices(0.005, statics2);
-              em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace();
-              _closeCoplanarHoleCaps(em);
-              Tools.pp._runBurnThrough(em, statics2);
-              mergeCoplanarAdjacentFaces(em);
-              _healMeshTopology(em);
-              const h1 = _meshHealth(em);
-              const fakeObj = { em, rebuild() {} };
-              const rolled = _commitGuard(fakeObj, pre, 'BlueTest');
-              const h2 = _meshHealth(em);
-              // diagnose remaining winding offenders: faces whose directed
-              // edges conflict; report each with its edges' usage counts.
-              const use = new Map();
-              em.faces.forEach((f) => {
-                const loops = [f.verts].concat(f.holes || []);
-                for (const loop of loops) for (let i = 0; i < loop.length; i++) {
-                  const x = loop[i], y = loop[(i + 1) % loop.length];
-                  if (x === y) continue;
-                  const k = x < y ? x + '_' + y : y + '_' + x;
-                  use.set(k, (use.get(k) || 0) + 1);
+              const mkDrilled = () => {
+                const em = new EditableMesh();
+                const a = em.addVertex(V3(0,0,0)), b = em.addVertex(V3(0,0,4)),
+                      c = em.addVertex(V3(4,0,4)), d = em.addVertex(V3(4,0,0));
+                const base = em.addFace([a,b,c,d], 0xffffff, 'Layer0');
+                em.extrudeFace(base, 3);
+                const corners = [V3(1,3,1), V3(3,3,1), V3(3,3,3), V3(1,3,3)];
+                const idxs = corners.map(p => findOrAddVertexAt(em, p));
+                for (const i of idxs) splitEdgesAtPoint(em, i);
+                for (let i = 0; i < idxs.length; i++) {
+                  const p = idxs[i], q = idxs[(i + 1) % idxs.length];
+                  if (!edgeExists(em, p, q)) em.edges.push({ a: p, b: q });
                 }
-              });
-              let nonman = 0; for (const v of use.values()) if (v > 2) nonman++;
-              console.log('[bluetest] afterDrill wind=' + h0.winding +
-                ' | afterCut wind=' + h1.winding + ' open=' + h1.open + ' nonman=' + h1.nonman +
-                ' faces=' + em.faces.length +
-                ' | guardRolled=' + rolled + ' finalWind=' + h2.winding +
-                ' | nonmanEdges=' + nonman +
-                ((h2.winding === 0) ? '   PASS' : '   <<< FAIL (blue faces remain)'));
+                const cyc = findShortestCycle(em, idxs[0], idxs[1]);
+                const inner = createFaceFromCycle(em, (cyc && cyc.length >= 3) ? cyc : idxs, 0xffffff, 'Layer0');
+                const st = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
+                em.extrudeFace(inner, -3);
+                em.weldVertices(0.005, st);
+                em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace();
+                _closeCoplanarHoleCaps(em);
+                Tools.pp._runBurnThrough(em, st);
+                mergeCoplanarAdjacentFaces(em);
+                _healMeshTopology(em);
+                return em;
+              };
+              const heSplice = (em) => {
+                try {
+                  const HM = HalfEdgeMesh.fromEditable(em);
+                  HM.orientNormalsConsistently();
+                  let didWork = false, guard = 0;
+                  while (guard++ < 32) {
+                    let foundPair = null;
+                    for (const F of HM.faces) {
+                      const nF = HM.computeFaceNormal(F);
+                      const vF0 = HM.vertices[HM.loopVerts(F.outer)[0]].pos;
+                      for (const he of HM.loopHEs(F.outer)) {
+                        const tw = he.twin;
+                        if (!tw || !tw.face || tw.face === F) continue;
+                        const O = tw.face;
+                        const nO = HM.computeFaceNormal(O);
+                        if (nF.dot(nO) > -0.95) continue;
+                        const vO0 = HM.vertices[HM.loopVerts(O.outer)[0]].pos;
+                        if (Math.abs(nF.dot(vO0.clone().sub(vF0))) > 1e-3) continue;
+                        const sF = HM.loopHEs(F.outer).length, sO = HM.loopHEs(O.outer).length;
+                        foundPair = (sF > sO) ? { F: O, O: F } : { F, O };
+                        break;
+                      }
+                      if (foundPair) break;
+                    }
+                    if (!foundPair) break;
+                    if (!HM.subtractCoplanarFace(foundPair.F, foundPair.O)) break;
+                    didWork = true;
+                  }
+                  if (didWork) {
+                    const em2 = HM.toEditable();
+                    em.vertices = em2.vertices;
+                    em.faces = em2.faces;
+                    try { em.recomputeEdges && em.recomputeEdges(); } catch (_) {}
+                  }
+                  return didWork;
+                } catch (e) { return 'threw:' + e.message; }
+              };
+              const blueDetect = (em) => {
+                const geo = em.toBufferGeometry();
+                const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+                mesh.updateMatrixWorld(true);
+                const rc = new THREE.Raycaster();
+                const out = [];
+                em.faces.forEach((f, fi) => {
+                  if (!f.normal || f.verts.length < 3) return;
+                  const c = new THREE.Vector3();
+                  for (const vi of f.verts) c.add(em.vertices[vi]);
+                  c.multiplyScalar(1 / f.verts.length);
+                  const n = f.normal.clone().normalize();
+                  rc.set(c.clone().addScaledVector(n, 0.003), n);
+                  const fwd = rc.intersectObject(mesh, false).length;
+                  rc.set(c.clone().addScaledVector(n, -0.003), n.clone().negate());
+                  const back = rc.intersectObject(mesh, false).length;
+                  if (fwd % 2 === 1 && back % 2 === 0) out.push(fi);
+                });
+                geo.dispose();
+                return out;
+              };
+              const diagnose = (em, fi) => {
+                const f = em.faces[fi];
+                const use = new Map();
+                em.faces.forEach((g) => {
+                  const loops = [g.verts].concat(g.holes || []);
+                  for (const loop of loops) for (let i = 0; i < loop.length; i++) {
+                    const x = loop[i], y = loop[(i + 1) % loop.length];
+                    if (x === y) continue;
+                    const k = x < y ? x + '_' + y : y + '_' + x;
+                    use.set(k, (use.get(k) || 0) + 1);
+                  }
+                });
+                let man = 0, nonman = 0, bound = 0;
+                for (let i = 0; i < f.verts.length; i++) {
+                  const x = f.verts[i], y = f.verts[(i + 1) % f.verts.length];
+                  const k = x < y ? x + '_' + y : y + '_' + x;
+                  const u = use.get(k) || 0;
+                  if (u === 1) bound++; else if (u === 2) man++; else nonman++;
+                }
+                return 'face' + fi + ' n=(' + f.normal.x.toFixed(1) + ',' + f.normal.y.toFixed(1) + ',' + f.normal.z.toFixed(1) + ') verts=' + f.verts.length + ' edges{man=' + man + ' nonman=' + nonman + ' bound=' + bound + '}';
+              };
+              const run = (label, dist, useHE) => {
+                const em = mkDrilled();
+                const right = em.faces.find(f => f.normal.x > 0.9 &&
+                  f.verts.every(vi => Math.abs(em.vertices[vi].x - 4) < 1e-6));
+                if (!right) { console.log('[bluetest] ' + label + ': no right wall'); return; }
+                const st = new Set(em.vertices.map(v => v.x + '|' + v.y + '|' + v.z));
+                const stage = (tag) => { const hh = _meshHealth(em); return tag + '{f=' + em.faces.length + ',open=' + hh.open + '}'; };
+                const stages = [];
+                em.extrudeFace(right, dist);            stages.push(stage('extrude'));
+                em.weldVertices(0.005, st);             stages.push(stage('weld'));
+                em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace(); stages.push(stage('split'));
+                _closeCoplanarHoleCaps(em);             stages.push(stage('caps'));
+                Tools.pp._runBurnThrough(em, st);       stages.push(stage('burn'));
+                let he = '-';
+                if (useHE) he = String(heSplice(em));
+                try { mergeCoplanarAdjacentFaces(em); } catch (_) {} stages.push(stage('merge'));
+                try { _spliceSimpleNotch(em); } catch (_) {}
+                let caps = 0;
+                if (_meshHealth(em).open > 0) caps = _capOpenBoundaryLoops(em);
+                stages.push(stage('cap(' + caps + ')'));
+                _healMeshTopology(em);                  stages.push(stage('heal'));
+                console.log('[bluetest] ' + label + ' stages: ' + stages.join(' '));
+                const h = _meshHealth(em);
+                const blue = blueDetect(em);
+                console.log('[bluetest] ' + label + ': faces=' + em.faces.length +
+                  ' wind=' + h.winding + ' open=' + h.open + ' he=' + he +
+                  ' blueFaces=' + blue.length +
+                  (blue.length ? '  ' + blue.map(fi => diagnose(em, fi)).join(' | ') : '') +
+                  (blue.length === 0 ? '   PASS' : '   <<< FAIL'));
+              };
+              run('cut-2.5 vcb     ', -2.5, false);
+              run('cut-2.5 clickHE ', -2.5, true);
+              run('cut-4.2 clickHE ', -4.2, true);
+              run('cut-1.0 clickHE ', -1.0, true);
             } catch (e) { console.log('[bluetest] FAIL ' + (e && e.message)); }
           })()
         `, true).catch((e) => process.stdout.write('[bluetest] inject failed: ' + e + '\n'));
