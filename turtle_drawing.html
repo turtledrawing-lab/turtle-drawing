@@ -3,8 +3,15 @@
 <head>
 <meta charset="UTF-8" />
 <title>Turtle Drawing</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<script>
+/* Runtime detection: under Electron, preload.js runs before any page script
+   and installs the window.electron* bridge. No bridge (and no Electron UA)
+   means we're a plain browser tab — html.td-web turns the in-HTML menubar
+   back on (Electron uses the native menu instead). */
+if (!window.electronSaveTT) {
+  document.documentElement.classList.add('td-web');
+}
+</script>
 <!-- Sketch-style fonts (Caveat/Kalam) — vendored woff2 so the app is fully offline. -->
 <link href="vendor/fonts/sketch-fonts.css" rel="stylesheet">
 <style>
@@ -29,7 +36,13 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
     "menu menu menu"
     "toolbar viewport right"
     "toolbar status status"; }
-#menubar { display: none !important; }
+/* Electron uses the NATIVE menu (preload.js also hides this) — but in a plain
+   browser tab the in-HTML menubar is the only menu, so show it and give the
+   grid's menu row its height back. html.td-web is set by the <head> boot
+   script when the preload bridge is absent. !important because the menubar's
+   base rule (display:flex) comes later in the cascade. */
+html:not(.td-web) #menubar { display: none !important; }
+html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
 /* Explicit min-width:0 on children so grid can shrink them below intrinsic size */
 #app > * { min-width: 0; }
 #toolbar, #viewport, #rightpanel { min-width: 0; }
@@ -882,9 +895,21 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         <div data-act="file-save-as">Save As...</div>
         <div class="sep"></div>
         <div data-act="import-dxf">Import DXF...</div>
-        <div data-act="import-obj">Import OBJ... (pick folder, auto-loads textures)</div>
+        <div data-act="import-3dm">Import Rhino (.3dm)...</div>
+        <div data-act="import-glb">Import glTF / GLB...</div>
+        <div data-act="import-dae">Import Collada (.dae)...</div>
+        <div data-act="import-stl">Import STL...</div>
+        <div data-act="import-obj">Import OBJ (file)...</div>
+        <div data-act="import-obj-folder">Import OBJ (folder)...</div>
+        <div data-act="cadastral-import">Import Cadastral...</div>
+        <div class="sep"></div>
         <div data-act="export-obj">Export OBJ...</div>
         <div data-act="export-3dm">Export 3DM (Rhino)...</div>
+        <div data-act="export-glb">Export glTF (.glb)...</div>
+        <div data-act="export-stl">Export STL (3D printing)...</div>
+        <div data-act="export-svg">Export Section / Elevation SVG...</div>
+        <div data-act="export-pdf">Export Section / Elevation PDF...</div>
+        <div data-act="export-dxf">Export Section / Elevation DXF...</div>
         <div class="sep"></div>
         <div data-act="about">About</div>
       </div>
@@ -916,9 +941,15 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
         <div data-act="view-right">Right <span>Num 3</span></div>
         <div data-act="view-iso">Iso <span>Num 7</span></div>
         <div class="sep"></div>
+        <div data-act="eye-level">Position Camera (Eye Level 1.6 m)</div>
+        <div class="sep"></div>
         <div data-act="style-shaded">Face Style: Shaded</div>
         <div data-act="style-wire">Face Style: Wireframe</div>
+        <div data-act="style-hiddenline">Face Style: Hidden Line</div>
         <div data-act="style-both">Face Style: Shaded+Wire</div>
+        <div data-act="toggle-wire">Wireframe Toggle <span>K</span></div>
+        <div class="sep"></div>
+        <div data-act="toggle-turntable">Turntable Animation <span>Ctrl+Shift+T</span></div>
         <div class="sep"></div>
         <div data-act="toggle-grid">Toggle Grid</div>
         <div data-act="toggle-axes">Toggle Axes</div>
@@ -937,23 +968,73 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
       <div class="dropdown">
         <div data-act="tool-line">Line <span>L</span></div>
         <div data-act="tool-rect">Rectangle <span>R</span></div>
+        <div data-act="tool-arc">Arc <span>A</span></div>
+        <div data-act="tool-polygon">Polygon</div>
+        <div data-act="tool-freehand">Freehand</div>
+        <div data-act="tool-wall">Wall <span>W</span></div>
       </div>
     </div>
     <div class="menu-item" data-menu="tools">Tools
       <div class="dropdown">
         <div data-act="tool-select">Select <span>Space</span></div>
         <div data-act="tool-move">Move <span>M</span></div>
-        <div data-act="tool-pp">Extrude <span>P</span></div>
-        <div data-act="tool-tape">Ruler <span>T</span></div>
-        <div data-act="tool-erase">Erase <span>E</span></div>
+        <div data-act="tool-rotate">Rotate <span>Q</span></div>
+        <div data-act="tool-scale">Scale <span>S</span></div>
+        <div data-act="tool-pp">Push / Pull <span>P</span></div>
+        <div data-act="tool-offset">Offset <span>F</span></div>
+        <div class="sep"></div>
+        <div data-act="tool-orbit">Orbit <span>O</span></div>
+        <div data-act="tool-pan">Pan <span>H</span></div>
+        <div data-act="isolate">Isolate <span>N</span></div>
+        <div class="sep"></div>
+        <div data-act="tool-tape">Tape Measure <span>T</span></div>
+        <div data-act="tool-dim">Dimension <span>I</span></div>
+        <div data-act="tool-dimAngle">Angle Dimension</div>
+        <div data-act="toggle-dim-chain">Chain Dimensions (Toggle)</div>
+        <div data-act="align-dims">Align Selected Dimensions</div>
+        <div data-act="tool-text">Text</div>
+        <div data-act="tool-callout">Callout</div>
+        <div data-act="tool-matSpec">Material Spec</div>
+        <div data-act="text-3d">3D Text...</div>
+        <div data-act="tool-level">Level Marker</div>
+        <div class="sep"></div>
+        <div data-act="tool-erase">Eraser <span>E</span></div>
         <div data-act="tool-paint">Paint Bucket <span>B</span></div>
         <div data-act="tool-section">Section Plane <span>X</span></div>
         <div data-act="tool-walllayer">Wall Layer Offset</div>
+        <div class="sep"></div>
+        <div data-act="dim-units">Dimension Units...</div>
+        <div data-act="dim-style">Dimension Style...</div>
+        <div data-act="title-block">Title Block...</div>
+        <div class="sep"></div>
+        <div data-act="make-component">Make Component <span>Ctrl+Shift+G</span></div>
+      </div>
+    </div>
+    <div class="menu-item" data-menu="arrange">Arrange
+      <div class="dropdown">
+        <div data-act="align-min-x">Align Left (−X)</div>
+        <div data-act="align-center-x">Align Center (X)</div>
+        <div data-act="align-max-x">Align Right (+X)</div>
+        <div class="sep"></div>
+        <div data-act="align-min-y">Align Bottom (−Y)</div>
+        <div data-act="align-center-y">Align Middle (Y)</div>
+        <div data-act="align-max-y">Align Top (+Y)</div>
+        <div class="sep"></div>
+        <div data-act="align-min-z">Align Front (−Z)</div>
+        <div data-act="align-center-z">Align Center (Z)</div>
+        <div data-act="align-max-z">Align Back (+Z)</div>
+        <div class="sep"></div>
+        <div data-act="distribute-x">Distribute X</div>
+        <div data-act="distribute-y">Distribute Y</div>
+        <div data-act="distribute-z">Distribute Z</div>
       </div>
     </div>
     <div class="menu-item" data-menu="help">Help
       <div class="dropdown">
-        <div data-act="help">Shortcuts & Help</div>
+        <div data-act="start-onboarding">Onboarding Tour</div>
+        <div class="sep"></div>
+        <div data-act="help">Shortcuts &amp; Help</div>
+        <div data-act="open-shortcuts">Keyboard Shortcuts...</div>
       </div>
     </div>
   </div>
@@ -27034,6 +27115,8 @@ function _handleActionImpl(act) {
             catch (e) { console.error(e); showError('glTF import failed: ' + (e && e.message || e)); }
           }
         })();
+      } else if (typeof openFileDialog === 'function') {
+        openFileDialog('.glb,.gltf');
       }
       break;
     case 'import-stl':
@@ -27046,6 +27129,8 @@ function _handleActionImpl(act) {
             catch (e) { console.error(e); showError('STL import failed: ' + (e && e.message || e)); }
           }
         })();
+      } else if (typeof openFileDialog === 'function') {
+        openFileDialog('.stl');
       }
       break;
     case 'import-dae':
@@ -27057,6 +27142,8 @@ function _handleActionImpl(act) {
             catch (e) { console.error(e); showError('Collada import failed: ' + (e && e.message || e)); }
           }
         })();
+      } else if (typeof openFileDialog === 'function') {
+        openFileDialog('.dae');
       }
       break;
     case 'toggle-grid':  grid.visible = !grid.visible; break;
@@ -29791,14 +29878,15 @@ document.getElementById('fileInput').addEventListener('change', e => {
     reader.onerror = () => showError('Could not read file: ' + objFile.name);
     reader.readAsText(objFile);
   } else {
-    // Single file (tt, dxf, glb, stl, etc.)
+    // Single file (tt, dxf, glb, stl, 3dm, dae, etc.)
     const file = files[0];
     const name = file.name.toLowerCase();
-    if (name.endsWith('.glb') || name.endsWith('.gltf') || name.endsWith('.stl')) {
+    if (name.endsWith('.glb') || name.endsWith('.gltf') || name.endsWith('.stl') || name.endsWith('.3dm')) {
       const reader = new FileReader();
       reader.onload = ev => {
         try {
           if (name.endsWith('.stl')) importSTL(ev.target.result, file.name);
+          else if (name.endsWith('.3dm')) importRhino3dm(new Uint8Array(ev.target.result), file.name).catch(err => { console.error(err); showError('3DM import failed: ' + (err && err.message || err)); });
           else                       importGLB(ev.target.result, file.name);
         } catch (err) { console.error(err); showError('Import error: ' + err.message); }
       };
@@ -29810,6 +29898,7 @@ document.getElementById('fileInput').addEventListener('change', e => {
         const text = ev.target.result;
         if      (name.endsWith('.tt'))  openTT(text, file.name);
         else if (name.endsWith('.dxf')) importDXF(text, file.name);
+        else if (name.endsWith('.dae')) importDAE(text, file.name);
         else if (name.endsWith('.obj')) importOBJ(text, file.name).catch(err => { console.error(err); showError('Import error: ' + err.message); });
         else if (name.endsWith('.mtl')) setStatus('msg', 'Please select both .obj and .mtl files together.');
         else showError('Unsupported file type: ' + file.name);
@@ -30876,18 +30965,20 @@ function _loadHelvetikerFont() {
 }
 
 /* Selectable typefaces for 3D text (three.js example fonts). All Latin-only —
-   Korean/CJK glyphs are not present in these typeface files. */
+   Korean/CJK glyphs are not present in these typeface files. Vendored locally
+   (vendor/fonts/typefaces/) so 3D text works offline — these were the last
+   remaining runtime CDN dependency. */
 const _TEXT_FONTS = [
-  { name: 'Helvetiker',       url: 'https://unpkg.com/three@0.128.0/examples/fonts/helvetiker_regular.typeface.json' },
-  { name: 'Helvetiker Bold',  url: 'https://unpkg.com/three@0.128.0/examples/fonts/helvetiker_bold.typeface.json' },
-  { name: 'Optimer',          url: 'https://unpkg.com/three@0.128.0/examples/fonts/optimer_regular.typeface.json' },
-  { name: 'Optimer Bold',     url: 'https://unpkg.com/three@0.128.0/examples/fonts/optimer_bold.typeface.json' },
-  { name: 'Gentilis',         url: 'https://unpkg.com/three@0.128.0/examples/fonts/gentilis_regular.typeface.json' },
-  { name: 'Gentilis Bold',    url: 'https://unpkg.com/three@0.128.0/examples/fonts/gentilis_bold.typeface.json' },
-  { name: 'Droid Sans',       url: 'https://unpkg.com/three@0.128.0/examples/fonts/droid/droid_sans_regular.typeface.json' },
-  { name: 'Droid Sans Bold',  url: 'https://unpkg.com/three@0.128.0/examples/fonts/droid/droid_sans_bold.typeface.json' },
-  { name: 'Droid Serif',      url: 'https://unpkg.com/three@0.128.0/examples/fonts/droid/droid_serif_regular.typeface.json' },
-  { name: 'Droid Serif Bold', url: 'https://unpkg.com/three@0.128.0/examples/fonts/droid/droid_serif_bold.typeface.json' },
+  { name: 'Helvetiker',       url: 'vendor/fonts/typefaces/helvetiker_regular.typeface.json' },
+  { name: 'Helvetiker Bold',  url: 'vendor/fonts/typefaces/helvetiker_bold.typeface.json' },
+  { name: 'Optimer',          url: 'vendor/fonts/typefaces/optimer_regular.typeface.json' },
+  { name: 'Optimer Bold',     url: 'vendor/fonts/typefaces/optimer_bold.typeface.json' },
+  { name: 'Gentilis',         url: 'vendor/fonts/typefaces/gentilis_regular.typeface.json' },
+  { name: 'Gentilis Bold',    url: 'vendor/fonts/typefaces/gentilis_bold.typeface.json' },
+  { name: 'Droid Sans',       url: 'vendor/fonts/typefaces/droid_sans_regular.typeface.json' },
+  { name: 'Droid Sans Bold',  url: 'vendor/fonts/typefaces/droid_sans_bold.typeface.json' },
+  { name: 'Droid Serif',      url: 'vendor/fonts/typefaces/droid_serif_regular.typeface.json' },
+  { name: 'Droid Serif Bold', url: 'vendor/fonts/typefaces/droid_serif_bold.typeface.json' },
 ];
 const _typefaceCache = {};
 function _loadTypeface(url) {

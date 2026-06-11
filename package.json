@@ -14,7 +14,8 @@
     "build:x64": "npm run icon && electron-builder --mac --x64 -c.mac.notarize=false",
     "build:universal": "npm run icon && electron-builder --mac --universal -c.mac.notarize=false",
     "release": "bash build/release.sh",
-    "release:install": "bash build/release.sh --install"
+    "release:install": "bash build/release.sh --install",
+    "build:web": "bash build/web.sh"
   },
   "devDependencies": {
     "electron": "^31.0.0",
