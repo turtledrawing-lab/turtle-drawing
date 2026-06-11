@@ -9015,8 +9015,10 @@ function _healMeshTopology(em) {
     }
     f.holes = out;
   }
-  // Orientation first (it reverses holes together with their face), then the
-  // hole-vs-outer winding check.
+  // Spur removal first (a stray out-and-back leg corrupts both orientation
+  // BFS adjacency and the on-screen edge rendering), then orientation, then
+  // the hole-vs-outer winding check.
+  _removeFaceSpurs(em);
   _orientFacesConsistently(em);
   _fixHoleWindings(em);
 }
@@ -9026,6 +9028,45 @@ function _healMeshTopology(em) {
    drilled box to a 141mm slab leaves the tunnel hole stranded outside the
    shrunken front/back faces). Such topology is unrepresentable — trigger the
    CSG fallback instead of shipping it. */
+/* Remove SPURS from face loops: a vertex the outline walks out to and
+   straight back from (... A, B, A ...) draws as a floating line across the
+   face (the CSG merge pass can leave them behind). The intentional keyhole
+   slit (outer->hole bridge) is NOT a spur — its out-and-back legs enclose
+   the whole hole loop between them, so the A,B,A pattern never matches it. */
+function _removeFaceSpurs(em) {
+  let removed = 0;
+  try {
+    if (!em || !em.faces) return 0;
+    const clean = (loop) => {
+      let changed = true;
+      while (changed && loop.length >= 3) {
+        changed = false;
+        const n = loop.length;
+        for (let i = 0; i < n; i++) {
+          const prev = loop[(i - 1 + n) % n], next = loop[(i + 1) % n];
+          const pv = em.vertices[prev], nv = em.vertices[next];
+          if (prev === next || (pv && nv && pv.distanceTo(nv) < 1e-6)) {
+            const j = (i + 1) % n;
+            if (j > i) loop.splice(i, 2);
+            else { loop.splice(i, 1); loop.splice(0, 1); }
+            removed++; changed = true; break;
+          }
+        }
+      }
+    };
+    for (const f of em.faces) {
+      clean(f.verts);
+      if (f.holes && f.holes.length) {
+        for (const h of f.holes) clean(h);
+        f.holes = f.holes.filter(h => h && h.length >= 3);
+      }
+    }
+    em.faces = em.faces.filter(f => f.verts.length >= 3 && new Set(f.verts).size >= 3);
+    if (removed) for (const f of em.faces) { try { em.computeFaceNormal(f); } catch (_) {} }
+  } catch (_) {}
+  return removed;
+}
+
 /* Coplanar OVERLAPPING face pairs (same plane within ~2.5mm, one centroid
    inside the other) — z-fighting membranes. Individually both faces are
    manifold so every count-based health metric passes; only geometry shows it. */
