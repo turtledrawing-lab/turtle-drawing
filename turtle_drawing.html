@@ -9095,10 +9095,38 @@ function _csgPushCutFallback(em, preVerts, preFaces, faceCopy, dist) {
     };
     // Accept only a strictly HEALTHY boolean result — a fallback that ships
     // its own broken topology is worse than the damage it replaces.
+    // Coplanar OVERLAP check: _csgToEM's 1mm vertex weld can collapse a
+    // nearly-coincident membrane onto an existing wall — health metrics all
+    // pass but the two faces z-fight on screen. Reject those too.
+    const hasCoplanarOverlap = (m) => {
+      const data = m.faces.map((f) => {
+        if (!f.normal || f.verts.length < 3) return null;
+        const n = f.normal.clone().normalize();
+        const bb = new THREE.Box3();
+        const c = new THREE.Vector3();
+        for (const vi of f.verts) { bb.expandByPoint(m.vertices[vi]); c.add(m.vertices[vi]); }
+        c.multiplyScalar(1 / f.verts.length);
+        return { f, n, d: n.dot(m.vertices[f.verts[0]]), bb, c };
+      });
+      for (let i = 0; i < data.length; i++) {
+        const A = data[i]; if (!A) continue;
+        for (let j = i + 1; j < data.length; j++) {
+          const B = data[j]; if (!B) continue;
+          const dot = A.n.dot(B.n);
+          if (Math.abs(dot) < 0.999) continue;
+          if (Math.abs(A.d - (dot > 0 ? B.d : -B.d)) > 0.0025) continue;
+          if (!A.bb.intersectsBox(B.bb)) continue;
+          // genuine overlap (not just edge contact): one centroid inside the other
+          if (isPointInPolygon2D(m, A.f, B.c) || isPointInPolygon2D(m, B.f, A.c)) return true;
+        }
+      }
+      return false;
+    };
     const isHealthy = (m) => {
       if (!m || !m.faces || m.faces.length < 4) return false;
       const h = _meshHealth(m);
-      return h.nan === 0 && h.open === 0 && h.winding === 0 && h.degenerate <= 2;
+      return h.nan === 0 && h.open === 0 && h.winding === 0 && h.degenerate <= 2 &&
+             !hasCoplanarOverlap(m);
     };
     const attempt = (depthExtra) => {
       try {
@@ -9111,10 +9139,13 @@ function _csgPushCutFallback(em, preVerts, preFaces, faceCopy, dist) {
         return isHealthy(m) ? m : null;
       } catch (_) { return null; }
     };
-    // Pass 1: exact depth. Pass 2: 0.5mm deeper — pushes the tool's far face
-    // off any coplanar interior wall (sub-mm error, invisible at model scale).
+    // Pass 1: exact depth. Pass 2: 3mm deeper — far enough past a coplanar
+    // interior wall to survive _csgToEM's 1mm vertex weld (0.5mm used to
+    // collapse back onto the wall, leaving a z-fighting membrane). Pass 2
+    // only ever runs for exact-coincidence cuts, where punching THROUGH the
+    // met wall is what the user meant anyway.
     let em2 = attempt(0);
-    if (!em2) em2 = attempt(0.0005);
+    if (!em2) em2 = attempt(0.003);
     if (!em2) return false;
     const layerId = faceCopy.layerId || (em.faces[0] && em.faces[0].layerId) || 'Layer0';
     const color = (preFaces[0] && preFaces[0].color) || 0xffffff;
