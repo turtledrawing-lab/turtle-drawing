@@ -13550,7 +13550,7 @@ Tools.move = {
       }
     }
     this.dragging = false; this.obj = null; this.objs = null;
-    this.origVertsByObj = null; this.sectionTarget = null;
+    this.origVertsByObj = null; this.origMaskByObj = null; this.sectionTarget = null;
     this.inferredAxis = null; this.activeAxis = null; this.activeDelta = null;
     this._lastCopyDelta = null; this._lastCopySourceObjs = null;
     helperRoot.clear();
@@ -13781,11 +13781,49 @@ Tools.move = {
         return;
       }
 
+      // 4a) SketchUp-style vertex grab: the click landed on an Endpoint snap
+      //     of an editable object (ungrouped, or a member of the group being
+      //     edited — computeSnap already scopes to active-group members) →
+      //     move ONLY that vertex so the mesh deforms. Coincident (unwelded)
+      //     verts at the same corner move together or the mesh would tear.
+      //     Face / edge-body clicks fall through to the whole-object move.
+      //     Deliberately NOT selectObject'ing here: a lingering selection
+      //     would route the NEXT click to the has-selection branch and turn
+      //     consecutive vertex tweaks into whole-object moves.
+      if (snap && snap.type === 'Endpoint' && snap.obj &&
+          !isOuterGroup(snap.obj) && !snap.obj.isUnderlay && !snap.obj.locked) {
+        const vObj = snap.obj;
+        const vMask = new Set();
+        const epsSq = 1e-10;   // 0.01mm — float-noise duplicates only (R2: sub-cm detail is sacred)
+        for (let i = 0; i < vObj.em.vertices.length; i++) {
+          if (vObj.em.vertices[i].distanceToSquared(snap.point) < epsSq) vMask.add(i);
+        }
+        if (vMask.size) {
+          this.obj  = vObj;
+          this.objs = [vObj];
+          this.origVertsByObj = new Map([[vObj, vObj.em.vertices.map(v => v.clone())]]);
+          this.originalVerts  = this.origVertsByObj.get(vObj);
+          this.origMaskByObj  = new Map([[vObj, vMask]]);
+          this.origin = snap.point.clone();
+          this.dragging = true;
+          this.axisLock = null; this.inferredAxis = null;
+          this.activeAxis = null; this.activeDelta = new THREE.Vector3();
+          this._lastCopyDelta = null; this._lastCopySourceObjs = null;
+          setStatus('msg', 'Move vertex — click to drop. X/Y/Z to lock axis. Type distance to confirm.');
+          return;
+        }
+      }
+
       // 4) No pre-existing selection — pick an object under the cursor and
       //    start moving it immediately (old behaviour).
       const hits = raycastObjects(e);
-      if (!hits.length) return;
-      const obj = hits[0].object.userData.sketchObject;
+      // Silhouette rescue: a click exactly on a corner/edge pixel can slip
+      // past the mesh raycast while the snap system still resolved the
+      // geometry — without this, grabbing a group by its corner does nothing.
+      const obj = hits.length ? hits[0].object.userData.sketchObject
+                : (snap && snap.obj) ? snap.obj : null;
+      if (!obj) return;
+      const pickPoint = hits.length ? hits[0].point : snap.point;
       if (isOuterGroup(obj)) {
         const members = getGroupMembers(obj.groupId);
         selectGroup(obj.groupId);
@@ -13798,8 +13836,11 @@ Tools.move = {
         this.objs = [obj];
         this.origVertsByObj = new Map([[obj, obj.em.vertices.map(v => v.clone())]]);
       }
-      this.origin = hits[0].point.clone();
+      this.origin = pickPoint.clone();
       this.originalVerts = this.origVertsByObj.get(obj);
+      // Whole-object move — clear any stale partial mask from a previous
+      // face/edge/vertex move of this same object (Map.get would resurrect it).
+      this.origMaskByObj = null;
       this.dragging = true;
       this.axisLock = null;
       this.inferredAxis = null;
