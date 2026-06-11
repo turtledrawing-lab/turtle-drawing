@@ -1,6 +1,6 @@
 {
   "name": "turtle-drawing",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "description": "Turtle Drawing — architectural sectional perspective tool.",
   "main": "main.js",
   "author": "sooyonghwang",
@@ -31,16 +31,32 @@
       "category": "public.app-category.graphics-design",
       "icon": "build/icon.icns",
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] },
-        { "target": "zip", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": { "teamId": "${env.APPLE_TEAM_ID}" }
+      "notarize": {
+        "teamId": "${env.APPLE_TEAM_ID}"
+      }
     },
-    "dmg": { "sign": true },
+    "dmg": {
+      "sign": true
+    },
     "fileAssociations": [
       {
         "ext": "tt",
@@ -61,7 +77,9 @@
       "ad/**/*",
       "vendor/**/*"
     ],
-    "directories": { "output": "dist" },
+    "directories": {
+      "output": "dist"
+    },
     "publish": [
       {
         "provider": "github",
