@@ -6176,6 +6176,13 @@ function applyBackFaceTint(mat) {
 class SketchObject {
   constructor(em, name, opts) {
     this.em = em;
+    // Delta-undo bookkeeping: a persistent identity + an edit generation that
+    // bumps on every rebuild(). snapshot() reuses the previous clone while the
+    // generation is unchanged, and restore() keeps the live object untouched
+    // when its generation matches the snapshot — undo cost becomes
+    // O(changed objects), not O(scene).
+    this._uid = ++SketchObject._uidSeq;
+    this._editGen = 0;
     this.name = name || ('Object' + (++SketchObject._id));
     this.layerId = 'Layer0';
     this.visible = true;
@@ -6211,6 +6218,8 @@ class SketchObject {
     this.rebuild();
   }
   rebuild() {
+    // Geometry (possibly) changed — invalidate snapshot clone-sharing.
+    this._editGen = (this._editGen || 0) + 1;
     // Pre-pass: fuse adjacent holes and merge holes that have slid onto the
     // outer boundary (turns a hole-edge-on-boundary into a notched outline).
     try { this.em.mergeAdjacentHolesAllFaces(); } catch (_) {}
@@ -6300,6 +6309,7 @@ class SketchObject {
   }
 }
 SketchObject._id = 0;
+SketchObject._uidSeq = 0;
 
 /* ========================================================================== */
 /* 4. SCENE MODEL: LAYERS, OUTLINER, GROUPS                                     */
@@ -7136,7 +7146,16 @@ function _undoDepthCap() {
   const byBudget = Math.floor(BUDGET / Math.max(1, faces * PER_FACE));
   return Math.max(2, Math.min(History.maxDepth, byBudget));
 }
+/* Snapshot clone cache for delta undo: uid -> { gen, chk, em }. Entries are
+   shared by reference across history entries; stale uids are pruned lazily. */
+const _snapEmCache = new Map();
 function snapshot() {
+  // Prune cache entries for objects no longer in the scene (history entries
+  // that still reference the clones keep them alive on their own).
+  if (_snapEmCache.size > Model.objects.length * 2 + 16) {
+    const live = new Set(Model.objects.map(o => o._uid));
+    for (const k of _snapEmCache.keys()) if (!live.has(k)) _snapEmCache.delete(k);
+  }
   // Memory guard: deep-cloning every object's mesh is hundreds of MB on a big
   // import and OOMs the renderer (the crash when painting a ~460k-face model).
   // Past a face budget, skip snapshotting and return null — callers treat null
@@ -7152,11 +7171,31 @@ function snapshot() {
   }
   return {
     state: Model.objects.map(o => {
-      const em = o.em.clone();
-      // Preserve smooth-shade flag so undo doesn't lose smooth rendering.
-      if (o.em._smoothShade) em._smoothShade = true;
+      // DELTA SNAPSHOT: reuse the previous clone while the object's edit
+      // generation (bumped in rebuild()) is unchanged. A cheap geometry
+      // checksum guards against any mutation path that skipped rebuild().
+      // Snapshot clones are treated as IMMUTABLE — restore() re-clones them
+      // before handing them to a live object — so sharing across history
+      // entries is safe and collapses both snapshot time and undo memory.
+      const _chk = o.em.vertices.length * 31 + o.em.faces.length * 7 +
+        (o.em.vertices.length
+          ? o.em.vertices[0].x + o.em.vertices[o.em.vertices.length - 1].y * 3 +
+            o.em.vertices[o.em.vertices.length >> 1].z * 5
+          : 0);
+      let em;
+      const cached = _snapEmCache.get(o._uid);
+      if (cached && cached.gen === o._editGen && cached.chk === _chk) {
+        em = cached.em;
+      } else {
+        em = o.em.clone();
+        // Preserve smooth-shade flag so undo doesn't lose smooth rendering.
+        if (o.em._smoothShade) em._smoothShade = true;
+        _snapEmCache.set(o._uid, { gen: o._editGen, chk: _chk, em });
+      }
       return {
         em,
+        uid: o._uid,
+        gen: o._editGen,
         layerId: o.layerId,
         name: o.name,
         visible: o.visible,
@@ -7293,11 +7332,59 @@ function restore(entry) {
   // not per removed/recreated object (O(N²) DOM + N fill recomputes before).
   window._bulkRestore = true;
   try {
-  for (const o of Model.objects.slice()) removeObject(o);
+  // DELTA RESTORE: keep live objects whose snapshot entry matches their
+  // identity (uid), edit generation, and material/render flags — undo then
+  // only rebuilds the objects that actually changed. Lightweight props
+  // (layer, visibility, group, name) are synced in place.
+  const _byUid = new Map();
+  for (const o of Model.objects) if (o && o._uid != null) _byUid.set(o._uid, o);
+  const _keep = new Set();
+  const _newList = [];
+  const _keepCompatible = (o, s) => {
+    const eq = (a, b) => (a == null ? null : a) === (b == null ? null : b);
+    try {
+      return o._editGen === s.gen &&
+        eq(o.materialId || null, s.materialId) &&
+        o.mat.color.getHex() === s.matColor &&
+        o.mat.opacity === s.matOpacity &&
+        o.mat.transparent === s.matTransparent &&
+        o.mat.depthWrite === s.matDepthWrite &&
+        !!o._skipEdges === !!s.skipEdges &&
+        !!o._featureEdges === !!s.featureEdges &&
+        !!o.isImagePlane === !!s.isImagePlane &&
+        !!o.isEntourage === !!s.isEntourage &&
+        !!o.isUnderlay === !!s.isUnderlay &&
+        eq(o._baseEdgeColor != null ? o._baseEdgeColor : null, s.edgeColor) &&
+        !!o.faceCamera === !!s.faceCamera;
+    } catch (_) { return false; }
+  };
+  for (const s of entry.state) {
+    const cur = (s.uid != null) ? _byUid.get(s.uid) : null;
+    if (cur && !_keep.has(cur) && _keepCompatible(cur, s)) {
+      // Unchanged geometry/material — keep the live object, sync cheap props.
+      cur.layerId = s.layerId;
+      cur.name = s.name;
+      cur.setVisible(s.visible);
+      cur.locked = s.locked;
+      cur.hidden = !!s.hidden;
+      cur.groupId = s.groupId || null;
+      if (s.castShadow != null && cur.mesh) cur.mesh.castShadow = s.castShadow;
+      cur.componentId = s.componentId || null;
+      cur.componentOrigin = s.componentOrigin ? { ...s.componentOrigin } : null;
+      _keep.add(cur);
+      s._keptObj = cur;
+    }
+  }
+  for (const o of Model.objects.slice()) if (!_keep.has(o)) removeObject(o);
   Model.layers = JSON.parse(JSON.stringify(entry.layers));
   if (entry.activeLayerId) Model.activeLayerId = entry.activeLayerId;
   renderLayers();
   for (const s of entry.state) {
+    if (s._keptObj) {                      // kept in place — just order it
+      _newList.push(s._keptObj);
+      delete s._keptObj;
+      continue;
+    }
     const emClone = s.em.clone();
     if (s.em._smoothShade) emClone._smoothShade = true;
     const obj = new SketchObject(emClone, s.name, { skipEdges: !!s.skipEdges });
@@ -7421,7 +7508,13 @@ function restore(entry) {
         else obj.faceCamera = true;
       } catch (_) {}
     }
+    // Delta-undo identity: the rebuilt object REPRESENTS the snapshotted one.
+    if (s.uid != null) obj._uid = s.uid;
+    if (s.gen != null) obj._editGen = s.gen;
+    _newList.push(obj);
   }
+  // Snapshot order is authoritative (kept + rebuilt interleaved above).
+  Model.objects = _newList;
   Model.activeGroupId  = entry.activeGroupId  ?? null;
   Model.outsideVisible = entry.outsideVisible ?? true;
   if (entry.scenes) Model.scenes = JSON.parse(JSON.stringify(entry.scenes));
