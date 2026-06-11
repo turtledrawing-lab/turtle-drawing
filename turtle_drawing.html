@@ -9026,9 +9026,50 @@ function _healMeshTopology(em) {
    drilled box to a 141mm slab leaves the tunnel hole stranded outside the
    shrunken front/back faces). Such topology is unrepresentable — trigger the
    CSG fallback instead of shipping it. */
+/* Coplanar OVERLAPPING face pairs (same plane within ~2.5mm, one centroid
+   inside the other) — z-fighting membranes. Individually both faces are
+   manifold so every count-based health metric passes; only geometry shows it. */
+function _hasCoplanarOverlapPairs(em) {
+  try {
+    if (!em || !em.faces || em.faces.length < 2) return false;
+    const data = em.faces.map((f) => {
+      if (!f.normal || f.verts.length < 3) return null;
+      const n = f.normal.clone().normalize();
+      const bb = new THREE.Box3();
+      const c = new THREE.Vector3();
+      for (const vi of f.verts) {
+        const v = em.vertices[vi];
+        if (!v) return null;
+        bb.expandByPoint(v); c.add(v);
+      }
+      c.multiplyScalar(1 / f.verts.length);
+      return { f, n, d: n.dot(em.vertices[f.verts[0]]), bb, c };
+    });
+    for (let i = 0; i < data.length; i++) {
+      const A = data[i]; if (!A) continue;
+      for (let j = i + 1; j < data.length; j++) {
+        const B = data[j]; if (!B) continue;
+        const dot = A.n.dot(B.n);
+        // OPPOSITE-facing pairs only: an island rectangle drawn on a face is
+        // a legitimate SAME-facing coplanar overlap (parent face contains it)
+        // and must not trip the damage detector.
+        if (dot > -0.999) continue;
+        if (Math.abs(A.d + B.d) > 0.0025) continue;
+        if (!A.bb.intersectsBox(B.bb)) continue;
+        if (isPointInPolygon2D(em, A.f, B.c) || isPointInPolygon2D(em, B.f, A.c)) return true;
+      }
+    }
+    return false;
+  } catch (_) { return false; }
+}
+
 function _pushCutDamaged(em) {
   try {
     if (!em || !em.faces) return false;
+    // A z-fighting membrane is push-cut damage too — it used to slip through
+    // (closed + manifold, so neither the open-mesh nor stranded-hole triggers
+    // fired) and shipped as overlapping faces on the same plane.
+    if (_hasCoplanarOverlapPairs(em)) return true;
     for (const f of em.faces) {
       if (!f.holes || !f.holes.length || !f.normal || f.verts.length < 3) continue;
       for (const h of f.holes) {
@@ -9098,35 +9139,11 @@ function _csgPushCutFallback(em, preVerts, preFaces, faceCopy, dist) {
     // Coplanar OVERLAP check: _csgToEM's 1mm vertex weld can collapse a
     // nearly-coincident membrane onto an existing wall — health metrics all
     // pass but the two faces z-fight on screen. Reject those too.
-    const hasCoplanarOverlap = (m) => {
-      const data = m.faces.map((f) => {
-        if (!f.normal || f.verts.length < 3) return null;
-        const n = f.normal.clone().normalize();
-        const bb = new THREE.Box3();
-        const c = new THREE.Vector3();
-        for (const vi of f.verts) { bb.expandByPoint(m.vertices[vi]); c.add(m.vertices[vi]); }
-        c.multiplyScalar(1 / f.verts.length);
-        return { f, n, d: n.dot(m.vertices[f.verts[0]]), bb, c };
-      });
-      for (let i = 0; i < data.length; i++) {
-        const A = data[i]; if (!A) continue;
-        for (let j = i + 1; j < data.length; j++) {
-          const B = data[j]; if (!B) continue;
-          const dot = A.n.dot(B.n);
-          if (Math.abs(dot) < 0.999) continue;
-          if (Math.abs(A.d - (dot > 0 ? B.d : -B.d)) > 0.0025) continue;
-          if (!A.bb.intersectsBox(B.bb)) continue;
-          // genuine overlap (not just edge contact): one centroid inside the other
-          if (isPointInPolygon2D(m, A.f, B.c) || isPointInPolygon2D(m, B.f, A.c)) return true;
-        }
-      }
-      return false;
-    };
     const isHealthy = (m) => {
       if (!m || !m.faces || m.faces.length < 4) return false;
       const h = _meshHealth(m);
       return h.nan === 0 && h.open === 0 && h.winding === 0 && h.degenerate <= 2 &&
-             !hasCoplanarOverlap(m);
+             !_hasCoplanarOverlapPairs(m);
     };
     const attempt = (depthExtra) => {
       try {
