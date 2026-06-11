@@ -1244,8 +1244,6 @@ function createWindow(pendingDocJson) {
             { label: 'STL...',                  click: send('import-stl') },
             { label: 'OBJ (file)...',           click: send('import-obj') },
             { label: 'OBJ (folder)...',         click: send('import-obj-folder') },
-            { type: 'separator' },
-            { label: 'Cadastral...',    click: send('cadastral-import') },
           ],
         },
         {

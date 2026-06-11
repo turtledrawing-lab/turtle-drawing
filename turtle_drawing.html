@@ -901,7 +901,6 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
         <div data-act="import-stl">Import STL...</div>
         <div data-act="import-obj">Import OBJ (file)...</div>
         <div data-act="import-obj-folder">Import OBJ (folder)...</div>
-        <div data-act="cadastral-import">Import Cadastral...</div>
         <div class="sep"></div>
         <div data-act="export-obj">Export OBJ...</div>
         <div data-act="export-3dm">Export 3DM (Rhino)...</div>
@@ -1035,6 +1034,8 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
         <div class="sep"></div>
         <div data-act="help">Shortcuts &amp; Help</div>
         <div data-act="open-shortcuts">Keyboard Shortcuts...</div>
+        <div class="sep"></div>
+        <div data-act="download-error-log">Download Error Log</div>
       </div>
     </div>
   </div>
@@ -1615,6 +1616,7 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
      themselves on `window.AD`; AD.UI.install() is called from
      ad/core.js's DOMContentLoaded handler after the base engine boots. -->
 <script src="ad/core.js"></script>
+<script src="ad/idb.js"></script>
 <script src="ad/hatch.js"></script>
 <script src="ad/hatch_lines.js"></script>
 <script src="ad/scenes.js"></script>
@@ -23025,215 +23027,6 @@ function parseDXF(text) {
   return produced;
 }
 
-/* ========================================================================== */
-/*  CADASTRAL IMPORT — VWorld Cadastral lines by address                                 */
-/* ========================================================================== */
-/* Fetches parcel boundaries from VWorld open API for the given address and
- * draws them as flat polygons on the ground plane (y=0). The user supplies
- * a VWorld API key (free at vworld.kr). Addresses are geocoded, then WFS is
- * queried with a small bbox around the point. Geometries are reprojected from
- * EPSG:4326 → local meters (equirectangular, centered at the query point). */
-
-function _cadastralKey() { return localStorage.getItem('vworld_key') || ''; }
-function _cadastralSetKey(k) { localStorage.setItem('vworld_key', k); }
-
-function _cadastralModal() {
-  return new Promise((resolve) => {
-    const back = document.createElement('div');
-    back.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:99999;display:flex;align-items:center;justify-content:center;';
-    const box = document.createElement('div');
-    box.style.cssText = 'background:#fff;border-radius:10px;padding:18px 20px;min-width:520px;box-shadow:0 10px 40px rgba(0,0,0,0.25);font:13px -apple-system,sans-serif;';
-    box.innerHTML = `
-      <div style="font-weight:600;font-size:14px;margin-bottom:10px;">Import cadastral lines (VWorld)</div>
-      <div style="margin-bottom:6px;color:#444;font-weight:500;">Address</div>
-      <input id="_cdAddr" type="text" style="width:100%;padding:8px 10px;border:1px solid #d2d2d7;border-radius:6px;margin-bottom:12px;" placeholder="Yes: Yeoksam-dong, Gangnam-gu, Seoul 736">
-      <div style="display:flex;gap:10px;margin-bottom:12px;">
-        <label style="flex:1;">Radius(m)<input id="_cdRadius" type="number" value="150" min="30" max="1000" style="width:100%;padding:6px;border:1px solid #d2d2d7;border-radius:6px;margin-top:4px;"></label>
-        <label style="flex:1;">Max count<input id="_cdSize" type="number" value="300" min="1" max="1000" style="width:100%;padding:6px;border:1px solid #d2d2d7;border-radius:6px;margin-top:4px;"></label>
-      </div>
-      <div style="margin-bottom:6px;color:#444;font-weight:500;">VWorld API Key</div>
-      <div style="color:#6e6e73;margin-bottom:6px;font-size:12px;">api.vworld.kr  — issued free at (Data API Permission)</div>
-      <input id="_cdKey" type="password" style="width:100%;padding:8px 10px;border:1px solid #d2d2d7;border-radius:6px;font:13px monospace;">
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
-        <button id="_cdCancel" style="padding:6px 14px;border:1px solid #d2d2d7;border-radius:6px;background:#fff;cursor:pointer;">Cancel</button>
-        <button id="_cdGo" style="padding:6px 14px;border:1px solid #0a84ff;border-radius:6px;background:#0a84ff;color:#fff;cursor:pointer;">Import</button>
-      </div>`;
-    back.appendChild(box);
-    document.body.appendChild(back);
-    const addr = box.querySelector('#_cdAddr');
-    const keyF = box.querySelector('#_cdKey');
-    keyF.value = _cadastralKey();
-    setTimeout(() => addr.focus(), 10);
-    const close = (v) => { document.body.removeChild(back); resolve(v); };
-    box.querySelector('#_cdCancel').onclick = () => close(null);
-    box.querySelector('#_cdGo').onclick = () => close({
-      address: addr.value.trim(),
-      radius: parseFloat(box.querySelector('#_cdRadius').value) || 150,
-      size: parseInt(box.querySelector('#_cdSize').value) || 300,
-      key: keyF.value.trim(),
-    });
-    [addr, keyF, box.querySelector('#_cdRadius'), box.querySelector('#_cdSize')].forEach(f => {
-      f.addEventListener('keydown', (e) => {
-        e.stopPropagation();
-        if (e.key === 'Enter') box.querySelector('#_cdGo').click();
-        else if (e.key === 'Escape') close(null);
-      });
-    });
-  });
-}
-
-async function _vworldGeocode(address, key) {
-  // Try VWorld first if a key is provided — more accurate for Korean addresses.
-  const errs = [];
-  if (key) {
-    for (const type of ['ROAD', 'PARCEL']) {
-      try {
-        const url = 'https://api.vworld.kr/req/address?service=address&request=getcoord&version=2.0&crs=EPSG:4326'
-          + '&type=' + type
-          + '&address=' + encodeURIComponent(address)
-          + '&key=' + encodeURIComponent(key);
-        const res = await fetch(url);
-        const data = await res.json();
-        if (data.response && data.response.status === 'OK') {
-          const pt = data.response.result.point;
-          return { lon: parseFloat(pt.x), lat: parseFloat(pt.y), source: 'vworld-' + type };
-        }
-        errs.push('VWorld ' + type + ': ' + (data.response && data.response.error ? data.response.error.text : data.response && data.response.status));
-      } catch (e) { errs.push('VWorld ' + type + ' net: ' + e.message); }
-    }
-  }
-  // Fallback: Nominatim (OSM). No key required, CORS-friendly.
-  try {
-    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=ko&q=' + encodeURIComponent(address);
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    const arr = await res.json();
-    if (Array.isArray(arr) && arr.length) {
-      return { lon: parseFloat(arr[0].lon), lat: parseFloat(arr[0].lat), source: 'nominatim' };
-    }
-    errs.push('Nominatim: no result');
-  } catch (e) { errs.push('Nominatim net: ' + e.message); }
-  throw new Error('Address not found. [' + errs.join(' | ') + ']');
-}
-
-async function _vworldParcels(lon, lat, radiusM, size, key) {
-  // Equirectangular conversion: degrees per meter at this latitude
-  const degPerM_lat = 1 / 110540;
-  const degPerM_lon = 1 / (111320 * Math.cos(lat * Math.PI / 180));
-  const dLat = radiusM * degPerM_lat;
-  const dLon = radiusM * degPerM_lon;
-  const minx = lon - dLon, maxx = lon + dLon;
-  const miny = lat - dLat, maxy = lat + dLat;
-  const geomfilter = `BOX(${minx},${miny},${maxx},${maxy})`;
-  const url = 'https://api.vworld.kr/req/data?service=data&request=GetFeature&version=2.0'
-    + '&key=' + encodeURIComponent(key)
-    + '&format=json&errorformat=json'
-    + '&data=LP_PA_CBND_BUBUN'
-    + '&geomfilter=' + encodeURIComponent(geomfilter)
-    + '&geometry=true&attribute=true'
-    + '&crs=EPSG:4326&geomFilter=' + encodeURIComponent(geomfilter)
-    + '&size=' + size;
-  const res = await fetch(url);
-  const data = await res.json();
-  if (!data.response || data.response.status !== 'OK') {
-    throw new Error('VWorld Data API: ' + JSON.stringify(data).slice(0, 300));
-  }
-  const fc = data.response.result && data.response.result.featureCollection;
-  return (fc && fc.features) || [];
-}
-
-function _projLocal(lon, lat, lon0, lat0) {
-  const degPerM_lat = 1 / 110540;
-  const degPerM_lon = 1 / (111320 * Math.cos(lat0 * Math.PI / 180));
-  const x = (lon - lon0) / degPerM_lon;
-  const z = -(lat - lat0) / degPerM_lat; // north → -Z
-  return [x, z];
-}
-
-function _cadastralLayer() {
-  let L = Model.layers.find(l => l.name === 'Cadastral');
-  if (!L) {
-    L = { id: 'L_cad_' + Math.random().toString(36).slice(2, 7), name: 'Cadastral', color: '#ff7a00', visible: true, locked: false };
-    Model.layers.push(L);
-    if (typeof renderLayers === 'function') renderLayers();
-  }
-  return L;
-}
-
-function _addParcelPolygon(ring, lon0, lat0, layerId, props) {
-  // ring: array of [lon,lat] (GeoJSON). Build a flat face at y=0.
-  if (!ring || ring.length < 3) return null;
-  const em = new EditableMesh();
-  const verts = [];
-  // Drop closing duplicate
-  const pts = (ring[0][0] === ring[ring.length-1][0] && ring[0][1] === ring[ring.length-1][1])
-    ? ring.slice(0, -1) : ring;
-  for (const [lon, lat] of pts) {
-    const [x, z] = _projLocal(lon, lat, lon0, lat0);
-    verts.push(em.addVertex(new THREE.Vector3(x, 0, z)));
-  }
-  // Wind CCW from above: signed area in XZ plane
-  let area = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const j = (i + 1) % pts.length;
-    const [xi, zi] = _projLocal(pts[i][0], pts[i][1], lon0, lat0);
-    const [xj, zj] = _projLocal(pts[j][0], pts[j][1], lon0, lat0);
-    area += (xj - xi) * (zj + zi);
-  }
-  const order = area > 0 ? verts : verts.slice().reverse();
-  em.addFace(order, '#fbe8b0', layerId);
-  // Add boundary edges explicitly so they render as crisp lines
-  for (let i = 0; i < verts.length; i++) {
-    const j = (i + 1) % verts.length;
-    if (typeof em.addEdge === 'function') em.addEdge(verts[i], verts[j]);
-  }
-  const name = (props && (props.jibun || props.pnu || props.addr)) || 'parcel';
-  const so = new SketchObject(em, String(name));
-  so.layerId = layerId;
-  addObject(so);
-  so.rebuild();
-  return so;
-}
-
-async function importCadastralFlow() {
-  const params = await _cadastralModal();
-  if (!params) return;
-  if (!params.address || !params.key) { showError('Address and VWorld all keys are required.'); return; }
-  _cadastralSetKey(params.key);
-  setStatus('msg', 'Geocoding…...');
-  document.getElementById('loading').style.display = 'block';
-  try {
-    const { lon, lat } = await _vworldGeocode(params.address, params.key);
-    setStatus('msg', `Looking up cadastral lines... (${lat.toFixed(5)}, ${lon.toFixed(5)})`);
-    const features = await _vworldParcels(lon, lat, params.radius, params.size, params.key);
-    if (!features.length) { showError('No cadastral lines in this area.'); return; }
-    const layer = _cadastralLayer();
-    let count = 0;
-    for (const f of features) {
-      const g = f.geometry;
-      if (!g) continue;
-      const props = f.properties || {};
-      if (g.type === 'Polygon') {
-        _addParcelPolygon(g.coordinates[0], lon, lat, layer.id, props);
-        count++;
-      } else if (g.type === 'MultiPolygon') {
-        for (const poly of g.coordinates) {
-          _addParcelPolygon(poly[0], lon, lat, layer.id, props);
-          count++;
-        }
-      }
-    }
-    pushHistory('Import Cadastral');
-    if (typeof zoomAll === 'function') zoomAll();
-    setStatus('msg', `Cadastral lines: ${count} parcels imported (${params.address})`);
-  } catch (err) {
-    console.error(err);
-    showError('Failed to import cadastral lines: ' + err.message);
-  } finally {
-    document.getElementById('loading').style.display = 'none';
-  }
-}
-
-
 /* Common helper: convert a THREE.Mesh tree (e.g. loaded GLB or STL) into one
    smooth-shaded SketchObject per mesh. We bake the world transform into
    vertex coordinates so the resulting object can move/rotate independently.
@@ -24058,14 +23851,54 @@ function saveTT(name, opts) {
     });
     return;
   }
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fname;
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-  _markSavedAs(a.download);
+  const _downloadBlob = () => {
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    _markSavedAs(a.download);
+  };
+  // Chromium web: File System Access API — true save-in-place. The writable
+  // handle is remembered PER TAB (the web analog of tab.filePath), so Cmd+S
+  // overwrites the same file like the desktop instead of re-downloading.
+  if (window.showSaveFilePicker) {
+    (async () => {
+      const T = window.AD && AD.Tabs;
+      const tab = (T && T.list) ? T.list.find(x => x.id === T.activeId) : null;
+      const forceDialog = !!(opts && opts.forceDialog) || !!name;
+      let handle = (!forceDialog && tab && tab._fsHandle) || null;
+      try {
+        if (!handle) {
+          handle = await window.showSaveFilePicker({
+            suggestedName: fname,
+            types: [{ description: 'Turtle Drawing', accept: { 'application/json': ['.tt'] } }],
+          });
+        }
+        const w = await handle.createWritable();
+        await w.write(json);
+        await w.close();
+        if (tab) tab._fsHandle = handle;
+        try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
+        _markSavedAs(handle.name || fname);
+      } catch (e) {
+        if (e && e.name === 'AbortError') { setStatus('msg', 'Save cancelled'); return; }
+        // Stale/permission-lost handle: retry once with a fresh picker before
+        // degrading to a download.
+        if (!forceDialog && tab && tab._fsHandle) {
+          tab._fsHandle = null;
+          try { saveTT(name, opts); return; } catch (_) {}
+        }
+        console.warn('[save] FS Access failed, falling back to download:', e);
+        _downloadBlob();
+      }
+    })();
+    return;
+  }
+  // Safari / Firefox: no save-in-place API exists — every save is a download.
+  _downloadBlob();
 }
 
 /* Parse a .tt file text and load it. */
@@ -26736,6 +26569,27 @@ function _handleActionImpl(act) {
       break;
     }
     case 'file-open':
+      // Chromium web: showOpenFilePicker hands back a WRITABLE handle, so the
+      // opened file can be silently overwritten by Cmd+S (desktop parity).
+      if (!window.electronSaveTT && window.showOpenFilePicker) {
+        (async () => {
+          try {
+            const [h] = await window.showOpenFilePicker({
+              types: [{ description: 'Turtle Drawing', accept: { 'application/json': ['.tt'] } }],
+            });
+            if (!h) return;
+            const f = await h.getFile();
+            const text = await f.text();
+            openTT(text, f.name);
+            const T = window.AD && AD.Tabs;
+            const tab = (T && T.list) ? T.list.find(x => x.id === T.activeId) : null;
+            if (tab) tab._fsHandle = h;
+          } catch (e) {
+            if (!e || e.name !== 'AbortError') console.warn('[open] FS Access failed:', e);
+          }
+        })();
+        break;
+      }
       openFileDialog('.tt');
       break;
     case 'file-save':
@@ -26743,7 +26597,9 @@ function _handleActionImpl(act) {
         // Electron: silent overwrite of the known path, or native dialog on
         // first save — no in-app name prompt needed.
         saveTT();
-      } else if (!currentFileName) {
+      } else if (!currentFileName && !window.showSaveFilePicker) {
+        // Legacy web (no FS Access): downloads need a name up front. With
+        // FS Access the save picker itself handles naming.
         showPromptModal('Save as:', 'drawing').then(name => {
           if (name) saveTT(name);
         });
@@ -26763,8 +26619,27 @@ function _handleActionImpl(act) {
     case 'import-dxf':
       openFileDialog('.dxf');
       break;
-    case 'cadastral-import':
-      if (typeof importCadastralFlow === 'function') importCadastralFlow();
+    case 'download-error-log':
+      // Web replacement for Help → Reveal Error Log (journal lives in IDB).
+      (async () => {
+        let lines = [];
+        try { if (window.AD && AD.IDB) lines = await AD.IDB.readJournal(); } catch (_) {}
+        const meta = document.querySelector('meta[name="td-version"]');
+        const head = [
+          'Turtle Drawing error log',
+          'version: ' + (meta ? meta.content : 'dev'),
+          'ua: ' + navigator.userAgent,
+          'exported: ' + new Date().toISOString(),
+          '',
+        ];
+        const blob = new Blob([head.concat(lines).join('\n') + '\n'], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'td-errors.txt';
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+        setStatus('msg', 'Error log downloaded (' + lines.length + ' entries).');
+      })();
       break;
     case 'import-obj':
       // Single-file (or file set) .obj import. User may also select its .mtl
@@ -33443,9 +33318,15 @@ try {
     let timer = null;
     const flush = () => {
       timer = null;
-      if (!buf.length || !window.electronErrorLog) return;
+      if (!buf.length) return;
       const batch = buf.splice(0, buf.length);
-      try { window.electronErrorLog(batch); } catch (_) {}
+      if (window.electronErrorLog) {
+        try { window.electronErrorLog(batch); } catch (_) {}
+        return;
+      }
+      // Web: persist to IndexedDB (ring-capped) — was a silent no-op, which
+      // made browser-user bug reports undiagnosable. Help → Download Error Log.
+      try { if (window.AD && AD.IDB && AD.IDB.available()) AD.IDB.appendJournal(batch, 2000); } catch (_) {}
     };
     window._tdJournal = function (line) {
       try {

@@ -47,7 +47,16 @@
   let _autosaveGen = 0;          // bumped on every pushHistory (edit)
   let _lastSavedGen = -1;        // generation last written to the snapshot
   let _warnedSkip = false;       // surface "autosave off" once, not every 20s
+  let _persistAsked = false;     // navigator.storage.persist() asked once
   Tabs._bumpAutosaveGen = function () { _autosaveGen++; };
+  function _autosaveWriteGen() { return _autosaveGen; }
+  function _askPersistOnce() {
+    if (_persistAsked) return;
+    _persistAsked = true;
+    // Durable-storage request: without it Safari/Firefox may EVICT IndexedDB
+    // (incl. the crash-recovery snapshot) under storage pressure.
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
+  }
   function _docHasContent(doc) {
     try {
       return !!(doc && ((doc.objects && doc.objects.length) ||
@@ -76,13 +85,17 @@
       // the serialize cost (and on big models it's the dominant cost).
       if (_autosaveGen === _lastSavedGen) return;
       const disk = !!window.electronAutosaveWrite;
+      // Web: IndexedDB has no meaningful quota at our sizes — same face cap
+      // as the Electron disk path. localStorage stays as the LAST resort
+      // (ancient browsers / IDB failure) with its old tight caps.
+      const idb = !disk && !!(window.AD && AD.IDB && AD.IDB.available());
       // Pre-flight by face count BEFORE serialising: building a multi-MB string
       // every 20s is heavy churn (it was running right before a paint OOM).
       try {
         if (typeof Model !== 'undefined' && Model.objects) {
           let _f = 0;
           for (const o of Model.objects) if (o && o.em && o.em.faces) _f += o.em.faces.length;
-          const cap = disk ? FACE_CAP_DISK : FACE_CAP_LOCALSTORAGE;
+          const cap = (disk || idb) ? FACE_CAP_DISK : FACE_CAP_LOCALSTORAGE;
           if (_f > cap) { _surfaceSkip('모델이 너무 큼 (' + _f.toLocaleString() + ' faces)'); return; }
         }
       } catch (_) {}
@@ -90,6 +103,7 @@
       snap.tabs = (snap.tabs || []).filter(t => _docHasContent(t.doc));
       if (!snap.tabs.length) {
         if (disk) { try { window.electronAutosaveClear(); } catch (_) {} }
+        if (idb) { try { AD.IDB.del('kv', 'autosave'); } catch (_) {} }
         try { localStorage.removeItem(RKEY); } catch (_) {}
         _lastSavedGen = _autosaveGen;
         return;
@@ -97,12 +111,19 @@
       snap.ts = Date.now();
       const json = JSON.stringify(snap);
       if (disk) {
-        const gen = _autosaveGen;
+        const gen = _autosaveWriteGen();
         window.electronAutosaveWrite(json).then((ok) => { if (ok) _lastSavedGen = gen; });
         try { localStorage.setItem(CLEAN_KEY, '0'); } catch (_) {}
         return;
       }
-      // localStorage fallback (plain-browser dev): quota caps near 5 MB.
+      if (idb) {
+        const gen = _autosaveWriteGen();
+        AD.IDB.put('kv', 'autosave', json).then((ok) => { if (ok) _lastSavedGen = gen; });
+        try { localStorage.setItem(CLEAN_KEY, '0'); } catch (_) {}
+        _askPersistOnce();
+        return;
+      }
+      // localStorage last resort (no IndexedDB): quota caps near 5 MB.
       if (json.length > 4500000) { _surfaceSkip('문서가 너무 큼 (' + (json.length / 1e6).toFixed(1) + ' MB)'); return; }
       localStorage.setItem(RKEY, json);
       localStorage.setItem(CLEAN_KEY, '0');
@@ -165,7 +186,56 @@
       }).catch(() => { _legacyLocalStorageRecover(clean); });
       return;
     }
+    // ---- Web path: IndexedDB snapshot (written by _writeAutosave). Falls
+    // through to the legacy localStorage snapshot if IDB is empty/broken so
+    // sessions saved by an older build still recover.
+    if (window.AD && AD.IDB && AD.IDB.available()) { _idbRecover(clean); return; }
     _legacyLocalStorageRecover(clean);
+  }
+  function _idbRecover(clean) {
+    AD.IDB.get('kv', 'autosave').then((raw) => {
+      _pruneParked();
+      let snap = null; try { snap = JSON.parse(raw || 'null'); } catch (_) {}
+      if (!_validSnap(snap)) { _legacyLocalStorageRecover(clean); return; }
+      if (clean === '1') {
+        _rlog('previous exit clean — discarding stale IDB recovery');
+        AD.IDB.del('kv', 'autosave');
+        return;
+      }
+      // Claim flag in localStorage (synchronous) so a second browser tab
+      // doesn't double-prompt; the snapshot itself is never deleted by a claim.
+      const CLAIM = RKEY + '_claim';
+      try {
+        const prev = parseInt(localStorage.getItem(CLAIM) || '0', 10);
+        if (prev && Date.now() - prev < 60000) { _rlog('another tab is handling recovery'); return; }
+        localStorage.setItem(CLAIM, String(Date.now()));
+      } catch (_) {}
+      _promptAndRestore(snap, (raw || '').length, (status) => {
+        try { localStorage.removeItem(CLAIM); } catch (_) {}
+        if (status === 'restored') { AD.IDB.del('kv', 'autosave'); return; }
+        if (status === 'declined') {
+          // PARK, never destroy — mirrors the Electron disk behavior: one
+          // "Cancel" must not delete the only copy. Kept ~7 days, not
+          // re-offered.
+          AD.IDB.put('kv', 'parked-' + Date.now(), raw).then(() => AD.IDB.del('kv', 'autosave'));
+          return;
+        }
+        // 'failed' → keep the snapshot for the next launch
+      });
+    }).catch(() => _legacyLocalStorageRecover(clean));
+  }
+  function _pruneParked() {
+    try {
+      AD.IDB.keys('kv').then((keys) => {
+        const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+        for (const k of (keys || [])) {
+          if (typeof k === 'string' && k.indexOf('parked-') === 0) {
+            const ts = parseInt(k.slice(7), 10);
+            if (ts && ts < cutoff) AD.IDB.del('kv', k);
+          }
+        }
+      });
+    } catch (_) {}
   }
   function _legacyLocalStorageRecover(clean) {
     let raw = null;
@@ -187,13 +257,33 @@
     } catch (_) {}
     _promptAndRestore(snap, raw ? raw.length : 0, (status) => {
       try {
+        // Declined → PARK into IndexedDB when available (was: hard delete).
+        if (status === 'declined' && window.AD && AD.IDB && AD.IDB.available()) {
+          try { AD.IDB.put('kv', 'parked-' + Date.now(), raw); } catch (_) {}
+        }
         if (status !== 'failed') localStorage.removeItem(RKEY);
         localStorage.removeItem(CLAIM);
       } catch (_) {}
     });
   }
   function _setupAutosave() {
-    try { window.addEventListener('beforeunload', () => { try { localStorage.setItem(CLEAN_KEY, '1'); } catch (_) {} }); } catch (_) {}
+    try {
+      window.addEventListener('beforeunload', (e) => {
+        // Web only: warn before closing a tab with unsaved changes — browsers
+        // give us no Save/Don't Save dialog, just this generic prompt, and
+        // Electron has its own native quit-save guard in the main process.
+        // Deliberately DON'T mark the exit clean when dirty: if the user
+        // leaves anyway, the next launch still offers crash recovery.
+        const isWeb = !window.electronSaveTT;
+        const dirty = isWeb && Tabs.list.some(t => t && t.dirty);
+        if (dirty) {
+          try { _writeAutosave(); } catch (_) {}   // freshest possible snapshot
+          try { e.preventDefault(); e.returnValue = ''; } catch (_) {}
+          return;
+        }
+        try { localStorage.setItem(CLEAN_KEY, '1'); } catch (_) {}
+      });
+    } catch (_) {}
     try { document.addEventListener('visibilitychange', () => { if (document.hidden) _writeAutosave(); }); } catch (_) {}
     try { setInterval(_writeAutosave, AUTOSAVE_MS); } catch (_) {}
   }
