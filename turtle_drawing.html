@@ -9104,6 +9104,27 @@ function _hasCoplanarOverlapPairs(em) {
   } catch (_) { return false; }
 }
 
+/* First-line repair for push-cut damage: the burn-through pass with a
+   LEGACY (unguarded) weld resolves the z-fighting membrane pattern reliably
+   (verified repeatedly on live scenes) — the commit-time guarded weld can
+   leave the membrane and wall unmerged so burn-through never sees the
+   coplanar pair. Returns true when the mesh is clean afterwards. */
+function _repairPushCutResult(em) {
+  try {
+    // Hole normalization first — rebuild() runs these before rendering and
+    // the standalone repair only worked AFTER a rebuild because of them.
+    try { em.mergeAdjacentHolesAllFaces && em.mergeAdjacentHolesAllFaces(); } catch (_) {}
+    try { em.mergeHolesWithOuter && em.mergeHolesWithOuter(); } catch (_) {}
+    try { em.weldVertices(0.005, null); } catch (_) {}
+    try { em.splitFaceByCoplanarFace && em.splitFaceByCoplanarFace(); } catch (_) {}
+    try { _closeCoplanarHoleCaps(em); } catch (_) {}
+    try { Tools.pp && Tools.pp._runBurnThrough && Tools.pp._runBurnThrough(em, null); } catch (_) {}
+    try { mergeCoplanarAdjacentFaces(em); } catch (_) {}
+    try { _healMeshTopology(em); } catch (_) {}
+    return !_pushCutDamaged(em);
+  } catch (_) { return false; }
+}
+
 function _pushCutDamaged(em) {
   try {
     if (!em || !em.faces) return false;
@@ -9111,6 +9132,11 @@ function _pushCutDamaged(em) {
     // (closed + manifold, so neither the open-mesh nor stranded-hole triggers
     // fired) and shipped as overlapping faces on the same plane.
     if (_hasCoplanarOverlapPairs(em)) return true;
+    // Winding conflicts after a cut (push landing EXACTLY on an interior
+    // plane leaves a few flipped/duplicated directed edges). The burn-through
+    // repair pass resolves these reliably; trigger it. (This is a REPAIR
+    // trigger only — the commit guard still never rolls back on winding.)
+    try { if (_meshHealth(em).winding > 0) return true; } catch (_) {}
     for (const f of em.faces) {
       if (!f.holes || !f.holes.length || !f.normal || f.verts.length < 3) continue;
       for (const h of f.holes) {
@@ -16019,16 +16045,22 @@ Tools.pp = {
           if (nCaps && window._tdJournal) _tdJournal('[cap] push/pull re-closed ' + nCaps + ' boundary loop group(s)');
         }
       } catch (_) {}
-      // Deep self-intersecting cut left unrepresentable topology (stranded
-      // holes / inside-out slab) → rebuild the result via CSG subtract.
+      try { _healMeshTopology(this.hoverObj.em); } catch (_) {}
+      // Deep self-intersecting cut left bad topology (membranes / stranded
+      // holes / open shell): burn-through repair pass first (reliable for the
+      // membrane pattern), CSG subtract rebuild as the heavy fallback.
       try {
-        if ((_pushCutDamaged(this.hoverObj.em) ||
-             (this._preOpen === 0 && _meshHealth(this.hoverObj.em).open > 0)) &&
-            _csgPushCutFallback(this.hoverObj.em, this.origVerts, this.origFaces, this.faceCopy, this.currentDistance)) {
-          if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+        if (_pushCutDamaged(this.hoverObj.em) ||
+            (this._preOpen === 0 && _meshHealth(this.hoverObj.em).open > 0)) {
+          if (_repairPushCutResult(this.hoverObj.em)) {
+            if (window._tdJournal) _tdJournal('[repair] push/pull membrane resolved by burn-through re-pass');
+          } else if (_csgPushCutFallback(this.hoverObj.em, this.origVerts, this.origFaces, this.faceCopy, this.currentDistance)) {
+            if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+          } else if (window._tdJournal) {
+            _tdJournal('[csg-fallback] FAILED — damaged result shipped (click path)');
+          }
         }
       } catch (_) {}
-      try { _healMeshTopology(this.hoverObj.em); } catch (_) {}
       this.hoverObj.rebuild();
       // DEV canary: flag mesh corruption (flipped/leftover/non-manifold) the
       // instant a push/pull commit produces it. Gated to dev builds (?dev).
@@ -16085,15 +16117,20 @@ Tools.pp = {
         if (nCaps && window._tdJournal) _tdJournal('[cap] dbl-extrude re-closed ' + nCaps + ' boundary loop group(s)');
       }
     } catch (_) {}
-    // Deep self-intersecting cut → rebuild via CSG subtract (see click path).
+    try { _healMeshTopology(obj.em); } catch (_) {}
+    // Damage repair: burn-through re-pass first, CSG rebuild second.
     try {
-      if ((_pushCutDamaged(obj.em) ||
-           (this._preOpen === 0 && _meshHealth(obj.em).open > 0)) &&
-          _csgPushCutFallback(obj.em, this.origVerts, this.origFaces, _fcDbl, this.lastDistance)) {
-        if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+      if (_pushCutDamaged(obj.em) ||
+          (this._preOpen === 0 && _meshHealth(obj.em).open > 0)) {
+        if (_repairPushCutResult(obj.em)) {
+          if (window._tdJournal) _tdJournal('[repair] push/pull membrane resolved by burn-through re-pass');
+        } else if (_csgPushCutFallback(obj.em, this.origVerts, this.origFaces, _fcDbl, this.lastDistance)) {
+          if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+        } else if (window._tdJournal) {
+          _tdJournal('[csg-fallback] FAILED — damaged result shipped (dbl-click path)');
+        }
       }
     } catch (_) {}
-    try { _healMeshTopology(obj.em); } catch (_) {}
     obj.rebuild();
     const _rolledBack = _commitGuard(obj, { verts: this.origVerts, faces: this.origFaces }, 'Push/Pull');
     if (!_rolledBack) pushHistory('Extrude repeat');
@@ -16147,15 +16184,20 @@ Tools.pp = {
         if (nCaps && window._tdJournal) _tdJournal('[cap] push/pull re-closed ' + nCaps + ' boundary loop group(s)');
       }
     } catch (_) {}
-    // Deep self-intersecting cut → rebuild via CSG subtract (see click path).
+    try { _healMeshTopology(obj.em); } catch (_) {}
+    // Damage repair: burn-through re-pass first, CSG rebuild second.
     try {
-      if ((_pushCutDamaged(obj.em) ||
-           (this._preOpen === 0 && _meshHealth(obj.em).open > 0)) &&
-          _csgPushCutFallback(obj.em, this.origVerts, this.origFaces, this.faceCopy, d)) {
-        if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+      if (_pushCutDamaged(obj.em) ||
+          (this._preOpen === 0 && _meshHealth(obj.em).open > 0)) {
+        if (_repairPushCutResult(obj.em)) {
+          if (window._tdJournal) _tdJournal('[repair] push/pull membrane resolved by burn-through re-pass');
+        } else if (_csgPushCutFallback(obj.em, this.origVerts, this.origFaces, this.faceCopy, d)) {
+          if (window._tdJournal) _tdJournal('[csg-fallback] push/pull cut rebuilt via boolean subtract');
+        } else if (window._tdJournal) {
+          _tdJournal('[csg-fallback] FAILED — damaged result shipped (VCB path)');
+        }
       }
     } catch (_) {}
-    try { _healMeshTopology(obj.em); } catch (_) {}
     obj.rebuild();
     // PRODUCTION transaction guard (same as the click-commit path).
     const _rolledBack = _commitGuard(obj, { verts: this.origVerts, faces: this.origFaces, edges: this.origEdges }, 'Push/Pull');
