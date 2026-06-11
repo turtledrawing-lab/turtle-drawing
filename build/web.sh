@@ -31,16 +31,39 @@ const fs = require("fs");
 let s = fs.readFileSync("turtle_drawing.html", "utf8");
 const stamp = process.env.TD_VER + "+" + process.env.TD_SHA;
 // Version stamp — surfaced in bug reports / error logs.
-s = s.replace("</title>", "</title>\n<meta name=\"td-version\" content=\"" + stamp + "\">");
+s = s.replace("</title>", "</title>\n<meta name=\"td-version\" content=\"" + stamp + "\">"
+  + "\n<link rel=\"manifest\" href=\"manifest.webmanifest\">"
+  + "\n<meta name=\"theme-color\" content=\"#f6f6f6\">");
 // Cache-bust the boot scripts/styles per deploy (runtime-fetched assets like
-// rhino3dm.wasm / entourage SVGs / typefaces rely on the _headers max-age).
+// rhino3dm.wasm / entourage SVGs / typefaces rely on the SW runtime cache).
 s = s.replace(/(src|href)="((?:ad|vendor)\/[^"?]+)"/g,
   (m, attr, p) => attr + "=\"" + p + "?v=" + process.env.TD_SHA + "\"");
 fs.writeFileSync("dist-web/index.html", s);
+
+// Service worker: stamp the deploy sha and the PRECACHE list — the core boot
+// payload exactly as the page will request it (script/link URLs incl. ?v=)
+// plus the woff2 UI fonts referenced from CSS (no ?v). Heavy on-demand assets
+// (entourage SVGs, rhino3dm.wasm, typefaces, NanumGothic) runtime-cache.
+const urls = ["./"];
+const re = /(?:src|href)="((?:ad|vendor)\/[^"]+)"/g;
+const html = fs.readFileSync("dist-web/index.html", "utf8");
+let m;
+while ((m = re.exec(html))) urls.push(m[1]);
+for (const f of fs.readdirSync("vendor/fonts")) {
+  if (f.endsWith(".woff2")) urls.push("vendor/fonts/" + f);
+}
+let sw = fs.readFileSync("web/sw.js", "utf8");
+// split/join: the placeholders also appear in the header comment — a plain
+// .replace() only hits the first occurrence and leaves the real one intact.
+sw = sw.split("__TD_SHA__").join(process.env.TD_SHA);
+sw = sw.split("__TD_PRECACHE__").join(JSON.stringify([...new Set(urls)], null, 0));
+fs.writeFileSync("dist-web/sw.js", sw);
 '
 
 cp -R ad "$OUT/ad"
 cp -R vendor "$OUT/vendor"
+cp web/manifest.webmanifest "$OUT/manifest.webmanifest"
+cp -R web/icons "$OUT/icons"
 
 # Cache policy for Cloudflare Pages / Netlify (other hosts ignore this file).
 # HTML revalidates every load; assets cache for a day (safe without content

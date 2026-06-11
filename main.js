@@ -299,8 +299,12 @@ ipcMain.handle('autosave-clear', async (e) => {
    file:// URLs, so it asks main for the bytes. Locked to the vendor dir. */
 ipcMain.handle('read-vendor-file', async (_e, name) => {
   try {
-    if (typeof name !== 'string' || path.basename(name) !== name) return null;
-    const p = path.join(__dirname, 'vendor', name);
+    // Allow nested vendor paths (e.g. fonts/NanumGothic-Regular.ttf) but
+    // refuse traversal/absolute segments.
+    if (typeof name !== 'string') return null;
+    const segs = name.split('/');
+    if (!segs.length || !segs.every(s => s && s !== '..' && s === path.basename(s))) return null;
+    const p = path.join(__dirname, 'vendor', ...segs);
     return fs.readFileSync(p);   // works inside app.asar too
   } catch (_) { return null; }
 });

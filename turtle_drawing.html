@@ -1627,6 +1627,7 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
 <script src="ad/tabs.js"></script>
 <script src="ad/clipboard.js"></script>
 <script src="ad/onboarding.js"></script>
+<script src="ad/web_shell.js"></script>
 <script src="ad/ui.js"></script>
 <script>
 /* BVH-accelerated raycasting (three-mesh-bvh). Patched FIRST so every
@@ -30855,6 +30856,24 @@ const _TEXT_FONTS = [
   { name: 'Droid Serif',      url: 'vendor/fonts/typefaces/droid_serif_regular.typeface.json' },
   { name: 'Droid Serif Bold', url: 'vendor/fonts/typefaces/droid_serif_bold.typeface.json' },
 ];
+/* Bundled OUTLINE fonts (.ttf) rendered through the opentype.js pipeline —
+   unlike the typeface.json set these support CJK. NanumGothic gives Korean
+   3D text everywhere (the web build has no system-font access; Electron
+   keeps its full system list too). Fetched lazily on first use (~2 MB). */
+const _TEXT_FONTS_OTF = [
+  { name: '나눔고딕 (한글)', url: 'vendor/fonts/NanumGothic-Regular.ttf' },
+];
+const _otfFontCache = {};
+/* Shared .ttf/.otf → extruded THREE geometry path (system fonts, bundled
+   fonts, and user-uploaded files all converge here). */
+function _geoFromFontBytes(ab, text, size, depth) {
+  if (typeof opentype === 'undefined') throw new Error('Font engine unavailable');
+  try { if (new DataView(ab).getUint32(0) === 0x74746366) ab = _ttcToSfnt(ab, 0); } catch (_) {}
+  const otf = opentype.parse(ab);
+  const shapes = _shapesFromOpentype(otf, text, size);
+  if (!shapes.length) throw new Error('No glyph outlines for this text/font');
+  return new THREE.ExtrudeGeometry(shapes, { depth, bevelEnabled: false, steps: 1, curveSegments: 6 });
+}
 const _typefaceCache = {};
 function _loadTypeface(url) {
   if (_typefaceCache[url]) return Promise.resolve(_typefaceCache[url]);
@@ -30966,8 +30985,15 @@ async function open3DTextDialog() {
         <optgroup label="Built-in">
           ${_TEXT_FONTS.map((f, i) => '<option value="' + f.url + '" data-kind="tf"' + (i === 0 ? ' selected' : '') + '>' + f.name + '</option>').join('')}
         </optgroup>
+        <optgroup label="Korean / CJK">
+          ${_TEXT_FONTS_OTF.map(f => '<option value="' + f.url + '" data-kind="otf">' + f.name + '</option>').join('')}
+        </optgroup>
         ${sysFonts.length ? ('<optgroup label="System fonts (' + sysFonts.length + ')">' + sysFonts.map(f => '<option value="' + _esc(f.path) + '" data-kind="sys">' + _esc(f.name) + '</option>').join('') + '</optgroup>') : ''}
       </select>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
+      <span style="width:80px;font-size:12px;">Font file</span>
+      <input id="_t3_fontfile" type="file" accept=".ttf,.otf,.ttc" style="flex:1;font-size:12px;">
     </label>
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
       <span style="width:80px;font-size:12px;">Size (m)</span>
@@ -30988,7 +31014,7 @@ async function open3DTextDialog() {
         <option value="y">Floor (Y) — Lay flat on ground</option>
       </select>
     </label>
-    <div style="font-size:10px;color:#888;margin-top:8px;">Built-in fonts are Latin-only. For Korean/CJK, pick a System font that supports it (e.g. AppleGothic, AppleMyungjo).</div>
+    <div style="font-size:10px;color:#888;margin-top:8px;">Built-in fonts are Latin-only — use 나눔고딕 for Korean, a System font (desktop), or upload any .ttf/.otf via Font file.</div>
   `;
   const ok = await showModal('3D Add text', wrap);
   if (!ok) return;
@@ -31001,21 +31027,43 @@ async function open3DTextDialog() {
   const fontOpt = fontEl && fontEl.selectedOptions && fontEl.selectedOptions[0];
   const fontKind = fontOpt ? (fontOpt.dataset.kind || 'tf') : 'tf';
   const fontVal = (fontOpt ? fontOpt.value : '') || _TEXT_FONTS[0].url;
+  const fontFileEl = wrap.querySelector('#_t3_fontfile');
+  const fontFile = fontFileEl && fontFileEl.files && fontFileEl.files[0];
   let geo;
   try {
-    if (fontKind === 'sys') {
+    if (fontFile) {
+      // Uploaded .ttf/.otf/.ttc takes priority over the dropdown — works in
+      // every browser (no system-font access needed) and in Electron.
+      const ab = await fontFile.arrayBuffer();
+      geo = _geoFromFontBytes(ab, text, size, depth);
+    } else if (fontKind === 'sys') {
       // System .ttf/.otf → parse with opentype.js, build extruded shapes.
-      if (typeof opentype === 'undefined' || !window.electronReadFont) throw new Error('System font support unavailable');
+      if (!window.electronReadFont) throw new Error('System font support unavailable');
       const bytes = await window.electronReadFont(fontVal);
       if (!bytes) throw new Error('Could not read font file');
       const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
-      let ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-      // .ttc collection → extract the first face to a standalone sfnt first.
-      try { if (new DataView(ab).getUint32(0) === 0x74746366) ab = _ttcToSfnt(ab, 0); } catch (_) {}
-      const otf = opentype.parse(ab);
-      const shapes = _shapesFromOpentype(otf, text, size);
-      if (!shapes.length) throw new Error('No glyph outlines for this text/font');
-      geo = new THREE.ExtrudeGeometry(shapes, { depth, bevelEnabled: false, steps: 1, curveSegments: 6 });
+      const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+      geo = _geoFromFontBytes(ab, text, size, depth);
+    } else if (fontKind === 'otf') {
+      // Bundled outline font (Korean/CJK) — fetched once, cached for reuse.
+      // Electron runs from file:// where fetch can't read local files (same
+      // constraint as rhino3dm.wasm) — fall back to the vendor-file IPC.
+      let ab = _otfFontCache[fontVal];
+      if (!ab) {
+        try {
+          const resp = await fetch(fontVal);
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          ab = await resp.arrayBuffer();
+        } catch (fe) {
+          if (!window.electronReadVendor) throw new Error('Font download failed: ' + (fe && fe.message || fe));
+          const bytes = await window.electronReadVendor(fontVal.replace(/^vendor\//, ''));
+          if (!bytes) throw new Error('Bundled font unavailable');
+          const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
+          ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+        }
+        _otfFontCache[fontVal] = ab;
+      }
+      geo = _geoFromFontBytes(ab, text, size, depth);
     } else {
       // Built-in typeface.json font → THREE.TextGeometry.
       const font = await _loadTypeface(fontVal);

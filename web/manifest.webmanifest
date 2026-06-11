@@ -1,0 +1,20 @@
+{
+  "name": "Turtle Drawing",
+  "short_name": "Turtle",
+  "description": "Architectural 3D sketch modeler — SketchUp-style push/pull modeling, sections, dimensions, DXF/OBJ/3DM/glTF interop.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f6f6",
+  "theme_color": "#f6f6f6",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": { "application/json": [".tt"] }
+    }
+  ]
+}
