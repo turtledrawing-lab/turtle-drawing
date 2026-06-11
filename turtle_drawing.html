@@ -10883,7 +10883,10 @@ function computeSnap(e, opts = {}) {
               }
             }
             if (_selfOcc) continue;
-            const cand = { point: mid, type: 'Midpoint', obj, _d: d };
+            // edgeA/edgeB: the parent edge's endpoint positions — lets the
+            // Move tool grab a midpoint and deform the EDGE (SketchUp-style),
+            // mirroring what the On-Edge candidate already carries.
+            const cand = { point: mid, type: 'Midpoint', obj, _d: d, edgeA: a.clone(), edgeB: b.clone() };
             snapCandidates.push({ ...cand, active: false });
             if (d < bestMidDist) { bestMidDist = d; bestMid = cand; }
           }
@@ -13550,7 +13553,8 @@ Tools.move = {
       }
     }
     this.dragging = false; this.obj = null; this.objs = null;
-    this.origVertsByObj = null; this.origMaskByObj = null; this.sectionTarget = null;
+    this.origVertsByObj = null; this.origMaskByObj = null; this._grabDeform = false;
+    this.sectionTarget = null;
     this.inferredAxis = null; this.activeAxis = null; this.activeDelta = null;
     this._lastCopyDelta = null; this._lastCopySourceObjs = null;
     helperRoot.clear();
@@ -13561,7 +13565,12 @@ Tools.move = {
      global Alt-keydown listener so it works even when pointer events
      don't carry the altKey flag (macOS quirk). */
   _enterCopyMode() {
-    if (this.copyMode || !this.dragging || !this.objs || this.sectionTarget) return;
+    // _grabDeform: a direct vertex/edge grab (branch 4a) has no selection, so
+    // buildPartial would clone the ENTIRE mesh coincident with the original —
+    // and tryAutoWeld on commit can merge the deformed flap back into the
+    // source. Copying a deform-in-progress has no sane meaning; ignore C/Alt.
+    if (this.copyMode || !this.dragging || !this.objs || this.sectionTarget ||
+        this._grabDeform) return;
     // Restore originals to saved positions
     for (const o of this.objs) {
       const orig = this.origVertsByObj.get(o);
@@ -13669,6 +13678,10 @@ Tools.move = {
     // If Option/Alt is held during click, flag for copy mode
     if (e.altKey) this._wantCopy = true;
     if (!this.dragging) {
+      // Every first click decides afresh whether this is a grab-deform;
+      // a stale flag from a finished vertex move must not block copy mode
+      // on the next ordinary move.
+      this._grabDeform = false;
       // 1) If a section plane is already selected, grab it for sliding along its normal
       if (Selection.sectionPlanes.size > 0) {
         this.sectionTarget = Array.from(Selection.sectionPlanes)[0];
@@ -13781,22 +13794,32 @@ Tools.move = {
         return;
       }
 
-      // 4a) SketchUp-style vertex grab: the click landed on an Endpoint snap
-      //     of an editable object (ungrouped, or a member of the group being
-      //     edited — computeSnap already scopes to active-group members) →
-      //     move ONLY that vertex so the mesh deforms. Coincident (unwelded)
-      //     verts at the same corner move together or the mesh would tear.
-      //     Face / edge-body clicks fall through to the whole-object move.
-      //     Deliberately NOT selectObject'ing here: a lingering selection
-      //     would route the NEXT click to the has-selection branch and turn
-      //     consecutive vertex tweaks into whole-object moves.
-      if (snap && snap.type === 'Endpoint' && snap.obj &&
-          !isOuterGroup(snap.obj) && !snap.obj.isUnderlay && !snap.obj.locked) {
+      // 4a) SketchUp-style vertex/edge grab: the click landed on an Endpoint
+      //     or Midpoint snap of an editable object (ungrouped, or a member of
+      //     the group being edited — computeSnap already scopes to
+      //     active-group members) → move ONLY that vertex (Endpoint) or the
+      //     edge's two endpoints (Midpoint) so the mesh deforms. Coincident
+      //     (unwelded) verts at the same position move together or the mesh
+      //     would tear. Face / edge-BODY clicks fall through to the
+      //     whole-object move (the edge body stays a whole-object grab
+      //     surface — only the distinct midpoint marker means "deform").
+      //     Image planes / entourage stay rigid quads (deform would skew the
+      //     texture). Deliberately NOT selectObject'ing here: a lingering
+      //     selection would route the NEXT click to the has-selection branch
+      //     and turn consecutive vertex tweaks into whole-object moves.
+      if (snap && snap.obj &&
+          (snap.type === 'Endpoint' ||
+           (snap.type === 'Midpoint' && snap.edgeA && snap.edgeB)) &&
+          !isOuterGroup(snap.obj) && !snap.obj.isUnderlay &&
+          !snap.obj.isImagePlane && !snap.obj.bim && !snap.obj.locked) {
         const vObj = snap.obj;
+        const grabPts = snap.type === 'Endpoint' ? [snap.point] : [snap.edgeA, snap.edgeB];
         const vMask = new Set();
         const epsSq = 1e-10;   // 0.01mm — float-noise duplicates only (R2: sub-cm detail is sacred)
         for (let i = 0; i < vObj.em.vertices.length; i++) {
-          if (vObj.em.vertices[i].distanceToSquared(snap.point) < epsSq) vMask.add(i);
+          for (const p of grabPts) {
+            if (vObj.em.vertices[i].distanceToSquared(p) < epsSq) { vMask.add(i); break; }
+          }
         }
         if (vMask.size) {
           this.obj  = vObj;
@@ -13806,10 +13829,15 @@ Tools.move = {
           this.origMaskByObj  = new Map([[vObj, vMask]]);
           this.origin = snap.point.clone();
           this.dragging = true;
+          // Copy mode is meaningless mid-deform: without a selection,
+          // _enterCopyMode would clone the WHOLE mesh on top of the original
+          // and tryAutoWeld could then merge the deformed flap back into it.
+          this._grabDeform = true;
           this.axisLock = null; this.inferredAxis = null;
           this.activeAxis = null; this.activeDelta = new THREE.Vector3();
           this._lastCopyDelta = null; this._lastCopySourceObjs = null;
-          setStatus('msg', 'Move vertex — click to drop. X/Y/Z to lock axis. Type distance to confirm.');
+          setStatus('msg', (snap.type === 'Endpoint' ? 'Move vertex' : 'Move edge') +
+            ' — click to drop. X/Y/Z to lock axis. Type distance to confirm.');
           return;
         }
       }
@@ -13878,6 +13906,11 @@ Tools.move = {
         if (activeAxis === 'x') delta.set(delta.x, 0, 0);
         else if (activeAxis === 'y') delta.set(0, delta.y, 0);
         else if (activeAxis === 'z') delta.set(0, 0, delta.z);
+        // Commit the snap-refined delta. Downstream consumers (componentOrigin
+        // shift, *N copy multiplier) read this.activeDelta — leaving it at the
+        // last MOUSEMOVE value let the anchor drift whenever the click snap
+        // differed from the hover preview.
+        this.activeDelta = delta.clone();
         // Apply final position to the appropriate targets
         const targets = this.copyMode ? this.copyObjs : this.objs;
         for (let ti = 0; ti < targets.length; ti++) {
@@ -13985,8 +14018,12 @@ Tools.move = {
         this._lastCopySourceObjs = null;
         // For non-copy moves of component instances: shift componentOrigin by
         // the same delta so the anchor stays attached to the moved geometry.
+        // Masked (partial face/edge/vertex) moves deform in place — the body
+        // didn't translate, so the anchor must stay put or component
+        // propagation rebuilds every sibling against a drifted origin.
         if (this.activeDelta) {
           for (const o of this.objs) {
+            if (this.origMaskByObj && this.origMaskByObj.get(o)) continue;
             if (o.componentId && o.componentOrigin) {
               o.componentOrigin = {
                 x: o.componentOrigin.x + this.activeDelta.x,
@@ -14467,6 +14504,21 @@ Tools.move = {
     } else {
       this._lastCopyDelta = null;
       this._lastCopySourceObjs = null;
+      // Whole-object component moves must carry their anchor along (same
+      // invariant as the click-finalize path; this was missing here, so a
+      // typed-distance move left componentOrigin behind and the next
+      // propagation rebuilt siblings against a drifted anchor). Masked
+      // (partial) deforms keep the anchor put.
+      for (const o of this.objs) {
+        if (this.origMaskByObj && this.origMaskByObj.get(o)) continue;
+        if (o.componentId && o.componentOrigin) {
+          o.componentOrigin = {
+            x: o.componentOrigin.x + dir.x * signedD,
+            y: o.componentOrigin.y + dir.y * signedD,
+            z: o.componentOrigin.z + dir.z * signedD,
+          };
+        }
+      }
       try { _syncBimAfterMove(this.objs, this.origVertsByObj); } catch (e) { console.warn('BIM sync:', e); }
       pushHistory('Move ' + Units.format(Math.abs(signedD)));
     }
