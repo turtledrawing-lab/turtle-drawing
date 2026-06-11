@@ -1076,6 +1076,23 @@ function createWindow(pendingDocJson) {
   // disk autosave — without this handler the user saw a dead window and the
   // crash protection never got a chance to run. Capped: a crash-on-boot must
   // not become an infinite respawn loop.
+  // Renderer hang detection: Chromium fires 'unresponsive' when the renderer
+  // main thread blocks ~15s+. Journal it (with recovery when it un-hangs) so
+  // "undo freezes" reports carry hard evidence.
+  win.on('unresponsive', () => {
+    try { process.stdout.write('[main] renderer UNRESPONSIVE\n'); } catch (_) {}
+    try {
+      const p = path.join(app.getPath('userData'), 'td-errors.log');
+      fs.appendFileSync(p, new Date().toISOString() + ' [hang] renderer unresponsive\n', 'utf8');
+    } catch (_) {}
+  });
+  win.on('responsive', () => {
+    try { process.stdout.write('[main] renderer responsive again\n'); } catch (_) {}
+    try {
+      const p = path.join(app.getPath('userData'), 'td-errors.log');
+      fs.appendFileSync(p, new Date().toISOString() + ' [hang] renderer recovered\n', 'utf8');
+    } catch (_) {}
+  });
   win.webContents.on('render-process-gone', (_e, details) => {
     try { console.error('[main] renderer gone:', details && details.reason); } catch (_) {}
     if (details && (details.reason === 'clean-exit' || details.reason === 'killed')) return;

@@ -23350,12 +23350,21 @@ function sceneToDoc() {
       try {
         if (m._texture && m._texture.image) {
           const img = m._texture.image;
+          // CACHE the encoded data URL on the material. sceneToDoc runs on
+          // EVERY pushHistory (tab-doc sync) and every autosave — re-encoding
+          // each texture through canvas.toDataURL every time flooded the
+          // Oilpan/canvas heap on textured imports and OOM-crashed the
+          // renderer ("undo freezes then the app restarts"). Textures are
+          // immutable after import, so encode once.
+          if (m._dataURLCache) {
+            out.textureDataURL = m._dataURLCache;
+          } else
           // Canvas (already-brightened) — serialize directly via toDataURL.
           if (img.tagName === 'CANVAS' || typeof img.getContext === 'function') {
-            try { out.textureDataURL = img.toDataURL('image/png'); }
+            try { out.textureDataURL = m._dataURLCache = img.toDataURL('image/png'); }
             catch (err) { console.warn('[save] canvas toDataURL failed for', m.id, err); }
           } else if (img.src && img.src.startsWith('data:')) {
-            out.textureDataURL = img.src;
+            out.textureDataURL = m._dataURLCache = img.src;
           } else {
             // Image element — read pixels via offscreen canvas. Try whether
             // it's complete first; if not, fall back to source URL.
@@ -23365,7 +23374,7 @@ function sceneToDoc() {
               const cv = document.createElement('canvas');
               cv.width = w; cv.height = h;
               cv.getContext('2d').drawImage(img, 0, 0);
-              try { out.textureDataURL = cv.toDataURL('image/png'); }
+              try { out.textureDataURL = m._dataURLCache = cv.toDataURL('image/png'); }
               catch (err) { console.warn('[save] toDataURL failed for', m.id, err); }
             } else {
               console.warn('[save] texture not ready for', m.id, 'complete=', img.complete, 'w=', w);

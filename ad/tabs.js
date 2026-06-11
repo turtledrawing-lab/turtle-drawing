@@ -532,9 +532,16 @@
     // tabs later restores what the user had.
     if (typeof pushHistory === 'function' && !pushHistory._adTabsWrapped) {
       const orig = pushHistory;
+      // Tabs.save() builds the WHOLE document object (sceneToDoc) — running it
+      // synchronously on every single edit froze big textured imports and fed
+      // the OOM crash. Debounce it: the tab doc only needs to be fresh by the
+      // time the user switches tabs / autosave fires, and Tabs.switchTo /
+      // Tabs.serialize both call Tabs.save() themselves anyway.
+      let saveTimer = 0;
       window.pushHistory = function (label) {
         orig(label);
-        try { Tabs.save(); } catch (_) {}
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => { try { Tabs.save(); } catch (_) {} }, 1200);
         try { Tabs._bumpAutosaveGen(); } catch (_) {}
       };
       window.pushHistory._adTabsWrapped = true;
