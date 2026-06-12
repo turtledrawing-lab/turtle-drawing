@@ -51,8 +51,14 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
    backdrop-filter blurs the live scene instead: real frosted glass.
    Pointer events are unaffected (panels sit on top); all NDC/snap math reads
    the canvas rect dynamically. Electron keeps its original side-by-side grid. */
-html.td-web #viewport { grid-area: 2 / 1 / 4 / 4; z-index: 0; }
-html.td-web #toolbar, html.td-web #rightpanel, html.td-web #statusbar {
+html.td-web #viewport { grid-area: 1 / 1 / 4 / 4; z-index: 0; }
+/* The viewport now starts at the WINDOW top — undo the tab-bar's 28px canvas
+   shift so the 3D scene reaches up under the menubar (glass there too), and
+   move the tab bar itself below the menubar and out from under the toolbar. */
+html.td-web #threeCanvas, html.td-web #overlay {
+  top: 0 !important; height: 100% !important; }
+html.td-web #adTabBar { top: 26px !important; left: 80px !important; }
+html.td-web #menubar, html.td-web #toolbar, html.td-web #rightpanel, html.td-web #statusbar {
   position: relative; z-index: 5; }
 /* !important because the theme stylesheet (.theme-apple #rightpanel) also
    uses !important — among important declarations the higher-specificity
