@@ -16,8 +16,7 @@
     "release": "bash build/release.sh",
     "release:install": "bash build/release.sh --install",
     "build:web": "bash build/web.sh",
-    "release:all": "bash build/release-all.sh",
-    "deploy:web": "bash build/web.sh && npx wrangler pages deploy dist-web --project-name=${TD_PAGES_PROJECT:-turtle-drawing}"
+    "release:all": "bash build/release-all.sh"
   },
   "devDependencies": {
     "electron": "^31.0.0",
