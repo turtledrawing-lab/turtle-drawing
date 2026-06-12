@@ -22704,7 +22704,7 @@ function _dxfDisplayColor(aci) {
 // it was recentered onto the origin) so importDXF can report it to the user.
 let _dxfLastImportInfo = null;
 
-function parseDXF(text) {
+function parseDXF(text, filename) {
   const lines = text.split(/\r?\n/).map(s => s.trim());
   // Tokenize into code/value pairs
   const pairs = [];
@@ -22831,6 +22831,21 @@ function parseDXF(text) {
     return new THREE.Vector3(v.x, v.z, -v.y);
   };
 
+  // Fast vertex add for bulk import: EditableMesh.addVertex() linearly scans
+  // every existing vertex per call (fine for hand modeling, O(n^2) on a 70k-
+  // vertex CAD drawing — the dominant cost of big DXF/DWG imports). Quantize
+  // to the same 1e-5 weld epsilon and dedupe through a per-bucket hash map.
+  const _fastAddVertex = (em, v) => {
+    let m = em.__vmap;
+    if (!m) { m = em.__vmap = new Map(); }
+    const k = Math.round(v.x * 1e5) + '|' + Math.round(v.y * 1e5) + '|' + Math.round(v.z * 1e5);
+    const hit = m.get(k);
+    if (hit !== undefined) return hit;
+    em.vertices.push(v.clone());
+    m.set(k, em.vertices.length - 1);
+    return em.vertices.length - 1;
+  };
+
   // Process entities, optionally applying a per-INSERT transform (for blocks).
   function processEntities(ents, m4 /* optional */, depth = 0) {
     if (depth > 8) return;  // guard against malformed self-referential blocks
@@ -22841,13 +22856,13 @@ function parseDXF(text) {
       if (ent.type === 'LINE') {
         const a = dxfToWorld(ent.data[10]||0, ent.data[20]||0, ent.data[30]||0, m4);
         const b = dxfToWorld(ent.data[11]||0, ent.data[21]||0, ent.data[31]||0, m4);
-        const ia = em.addVertex(a), ib = em.addVertex(b);
+        const ia = _fastAddVertex(em, a), ib = _fastAddVertex(em, b);
         em.edges.push({ a: ia, b: ib });
       } else if (ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE') {
         const pts = ent.verts.map(v => dxfToWorld(v.x, v.y, v.z||0, m4));
         if (pts.length < 2) continue;
         const closed = (ent.data[70] & 1) ? true : false;
-        const idxs = pts.map(p => em.addVertex(p));
+        const idxs = pts.map(p => _fastAddVertex(em, p));
         for (let k = 0; k < idxs.length - 1; k++) em.edges.push({ a: idxs[k], b: idxs[k+1] });
         if (closed) {
           em.edges.push({ a: idxs[idxs.length-1], b: idxs[0] });
@@ -22859,7 +22874,7 @@ function parseDXF(text) {
         const idxs = [];
         for (let k = 0; k < SEG; k++) {
           const t = (k / SEG) * Math.PI * 2;
-          idxs.push(em.addVertex(dxfToWorld(cx + Math.cos(t)*r, cy + Math.sin(t)*r, cz, m4)));
+          idxs.push(_fastAddVertex(em, dxfToWorld(cx + Math.cos(t)*r, cy + Math.sin(t)*r, cz, m4)));
         }
         for (let k = 0; k < SEG; k++) em.edges.push({ a: idxs[k], b: idxs[(k+1)%SEG] });
         em.addFace(idxs, color, layerIdByName[lname]);
@@ -22872,7 +22887,7 @@ function parseDXF(text) {
         const idxs = [];
         for (let k = 0; k <= SEG; k++) {
           const t = a1 + (a2 - a1) * (k / SEG);
-          idxs.push(em.addVertex(dxfToWorld(cx + Math.cos(t)*r, cy + Math.sin(t)*r, cz, m4)));
+          idxs.push(_fastAddVertex(em, dxfToWorld(cx + Math.cos(t)*r, cy + Math.sin(t)*r, cz, m4)));
         }
         for (let k = 0; k < SEG; k++) em.edges.push({ a: idxs[k], b: idxs[k+1] });
       } else if (ent.type === 'ELLIPSE') {
@@ -22892,21 +22907,21 @@ function parseDXF(text) {
           // Rotate (lx, ly) by major axis direction (cosT, sinT)
           const wx = cx + lx * cosT - ly * sinT;
           const wy = cy + lx * sinT + ly * cosT;
-          idxs.push(em.addVertex(dxfToWorld(wx, wy, cz, m4)));
+          idxs.push(_fastAddVertex(em, dxfToWorld(wx, wy, cz, m4)));
         }
         for (let k = 0; k < idxs.length - 1; k++) em.edges.push({ a: idxs[k], b: idxs[k+1] });
         // Closed if span is ~2π
         if (Math.abs((s2 - s1) - Math.PI*2) < 1e-3) em.addFace(idxs.slice(0, -1), color, layerIdByName[lname]);
       } else if (ent.type === 'POINT') {
         const a = dxfToWorld(ent.data[10]||0, ent.data[20]||0, ent.data[30]||0, m4);
-        em.addVertex(a);
+        _fastAddVertex(em, a);
       } else if (ent.type === '3DFACE') {
         const v = ent._v || [];
         if (v.length < 3) continue;
         const idxs = [];
         for (const p of v) {
           if (!p) continue;
-          idxs.push(em.addVertex(dxfToWorld(p.x, p.y, p.z, m4)));
+          idxs.push(_fastAddVertex(em, dxfToWorld(p.x, p.y, p.z, m4)));
         }
         // 3DFACE may have v[3]==v[2] for triangles — dedupe last
         const unique = [];
@@ -22995,12 +23010,17 @@ function parseDXF(text) {
   // in the View menu to pick it). Each import gets its own fresh group.
   const dxfGroupId = (typeof _newGroupId === 'function') ? _newGroupId() : ('G' + Date.now());
   let produced = 0;
+  const placeObjs = [];
   const bbox = new THREE.Box3();
   for (const lname in bucketByLayer) {
     const em = bucketByLayer[lname];
+    delete em.__vmap;   // import-time accel only — would go stale after edits
     if (em.vertices.length === 0) continue;
     const obj = new SketchObject(em, 'DXF:' + lname);
     obj.layerId = layerIdByName[lname];
+    // addObject() in the placement-confirm step overrides layerId with the
+    // active layer — remember the CAD layer so it can be restored there.
+    obj._presetLayerId = layerIdByName[lname];
     // Treat imported DXF as a non-interactive background underlay: excluded
     // from snapping and click-picking (see Model.snapToUnderlay / pickUnderlay)
     // so it never slows the cursor or steals snap points. Toggle via the
@@ -23023,21 +23043,15 @@ function parseDXF(text) {
       obj.edgeMat.needsUpdate = true;
       obj._baseEdgeColor = _disp;
     }
-    Model.objects.push(obj);
-    worldRoot.add(obj.group);
+    placeObjs.push(obj);
     for (const v of em.vertices) bbox.expandByPoint(v);
     produced++;
   }
-  renderOutliner();
-  applyLayerVisibility();
-  // Fit camera
-  if (!bbox.isEmpty()) {
-    const center = new THREE.Vector3(); bbox.getCenter(center);
-    const size = new THREE.Vector3(); bbox.getSize(size);
-    const radius = Math.max(size.x, size.y, size.z) * 1.2 + 2;
-    controls.target.copy(center);
-    camera.position.set(center.x + radius, center.y + radius, center.z + radius);
-    controls._fromCamera();
+  // Hand the recentered drawing to PLACEMENT MODE: a ghost follows the mouse
+  // and a click drops the underlay where the user points (Esc cancels) —
+  // same flow as GLB/OBJ imports, instead of always landing at the origin.
+  if (produced && !bbox.isEmpty()) {
+    _startPlacementMode(placeObjs, bbox, filename || 'DXF');
   }
   return produced;
 }
@@ -23278,16 +23292,12 @@ function importDXF(text, filename) {
     document.getElementById('loading').style.display = 'block';
     setTimeout(() => {
       try {
-        const n = parseDXF(text);
-        pushHistory('Import DXF');
+        const n = parseDXF(text, filename);
         let extra = '';
-        if (_dxfLastImportInfo && _dxfLastImportInfo.recentered) {
-          const s = _dxfLastImportInfo.scale;
-          extra = s !== 1
-            ? ` — Unit calibration(×${s})  then move to origin, Place on grid`
-            : ` — Move to origin and place on the grid`;
+        if (_dxfLastImportInfo && _dxfLastImportInfo.recentered && _dxfLastImportInfo.scale !== 1) {
+          extra = ` — Unit calibration(×${_dxfLastImportInfo.scale})`;
         }
-        setStatus('msg', `${filename}: ${n} objects imported${extra}`);
+        setStatus('msg', `${filename}: ${n} object(s) ready${extra} — click to place, Esc to cancel`);
       } catch (err) {
         console.error(err);
         showError('DXF import failed: ' + err.message);
@@ -25147,7 +25157,11 @@ function _placementConfirm(e) {
     }
     obj.rebuild();
     addObject(obj);
+    // DXF/DWG underlays carry their CAD layer — addObject just stamped the
+    // active layer over it, so put the preset back.
+    if (obj._presetLayerId) { obj.layerId = obj._presetLayerId; delete obj._presetLayerId; }
   }
+  applyLayerVisibility();
   // (Import auto-wrap removed — imported objects stay independent so
   //  single-click selects just the clicked one. User can multi-select and
   //  Edit → Make Group manually if they want to bundle them.)
@@ -25311,7 +25325,7 @@ function _placementConfirm(e) {
   _placement.ghost = null;
   _placement.objs = null;
 
-  pushHistory('Import OBJ');
+  pushHistory('Import ' + (fname || 'model'));
   setStatus('msg', 'Imported ' + count + ' object(s) from ' + fname);
   renderOutliner();
   zoomAll();
@@ -27560,7 +27574,7 @@ function renderLayers() {
     const expanded = !!L._expanded;
     row.innerHTML = `
       <span class="lyr-arrow" title="Expand properties" style="cursor:pointer; color:#888; width:10px; display:inline-block; user-select:none;">${expanded ? '▾' : '▸'}</span>
-      <span class="eye" title="Toggle Visibility">${L.visible ? '👁' : '—'}</span>
+      <span class="eye" title="Toggle Visibility (⌘-click: solo)">${L.visible ? '👁' : '—'}</span>
       <span class="lock" title="Lock">${L.locked ? '🔒' : '🔓'}</span>
       <input type="color" class="swatch-input" value="${(L.color && L.color.length === 4)
           ? '#' + L.color.slice(1).split('').map(x => x + x).join('') : (L.color || '#888888')}"
@@ -27573,7 +27587,33 @@ function renderLayers() {
       L._expanded = !L._expanded;
       renderLayers();
     };
-    row.querySelector('.eye').onclick = (e) => { e.stopPropagation(); L.visible = !L.visible; renderLayers(); applyLayerVisibility(); };
+    row.querySelector('.eye').onclick = (e) => {
+      e.stopPropagation();
+      if (e.metaKey || e.ctrlKey) {
+        // SOLO: ⌘-click isolates this layer (hides every other layer);
+        // ⌘-click the same eye again restores the pre-solo visibility.
+        if (Model._layerSolo && Model._layerSolo.id === L.id) {
+          for (const o of Model.layers) {
+            const prev = Model._layerSolo.backup[o.id];
+            if (prev != null) o.visible = prev;
+          }
+          Model._layerSolo = null;
+        } else {
+          // Keep the ORIGINAL pre-solo snapshot when hopping between solos,
+          // so the final un-solo restores what the user had at the start.
+          const backup = Model._layerSolo
+            ? Model._layerSolo.backup
+            : Object.fromEntries(Model.layers.map(o => [o.id, o.visible]));
+          for (const o of Model.layers) o.visible = (o.id === L.id);
+          Model._layerSolo = { id: L.id, backup };
+        }
+        renderLayers(); applyLayerVisibility();
+        return;
+      }
+      L.visible = !L.visible;
+      if (Model._layerSolo) Model._layerSolo = null;   // manual toggle exits solo
+      renderLayers(); applyLayerVisibility();
+    };
     row.querySelector('.lock').onclick = (e) => { e.stopPropagation(); L.locked = !L.locked; renderLayers(); };
     const sw = row.querySelector('.swatch-input');
     sw.onclick = (e) => e.stopPropagation();
