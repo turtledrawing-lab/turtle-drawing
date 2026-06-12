@@ -80,6 +80,14 @@
     });
   }
 
+  /* ---------- 1b. Install prompt capture -------------------------------- */
+  // Chromium fires beforeinstallprompt exactly once, before any UI exists to
+  // ask for it — stash it so Help > "Install as App" can replay it on demand.
+  window.addEventListener('beforeinstallprompt', (e) => {
+    try { e.preventDefault(); } catch (_) {}
+    window._tdInstallPrompt = e;
+  });
+
   /* ---------- 2. PWA .tt file handling (Chromium installed app) -------- */
   if ('launchQueue' in window) {
     try {

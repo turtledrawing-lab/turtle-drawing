@@ -951,6 +951,8 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
         <div class="sep"></div>
         <div data-act="toggle-turntable">Turntable Animation <span>Ctrl+Shift+T</span></div>
         <div class="sep"></div>
+        <div data-act="toggle-fullscreen">Focus Mode (Fullscreen) <span>Esc to exit</span></div>
+        <div class="sep"></div>
         <div data-act="toggle-grid">Toggle Grid</div>
         <div data-act="toggle-axes">Toggle Axes</div>
         <div data-act="toggle-colorlayer">Color by Layer</div>
@@ -1036,6 +1038,7 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
         <div data-act="help">Shortcuts &amp; Help</div>
         <div data-act="open-shortcuts">Keyboard Shortcuts...</div>
         <div class="sep"></div>
+        <div data-act="install-app">Install as App (no browser UI)</div>
         <div data-act="download-error-log">Download Error Log</div>
       </div>
     </div>
@@ -27072,6 +27075,28 @@ function _handleActionImpl(act) {
         })();
       } else if (typeof openFileDialog === 'function') {
         openFileDialog('.dae');
+      }
+      break;
+    case 'toggle-fullscreen':
+      // Web focus mode: hide every piece of browser chrome. Esc (or the same
+      // menu item) exits — the browser enforces its own exit affordance.
+      try {
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        else document.documentElement.requestFullscreen().catch((e) => {
+          showError('Fullscreen was blocked: ' + (e && e.message || e));
+        });
+      } catch (e) { showError('Fullscreen unavailable: ' + (e && e.message || e)); }
+      break;
+    case 'install-app':
+      // Chromium fires beforeinstallprompt once; ad/web_shell.js stashes it.
+      if (window._tdInstallPrompt) {
+        const p = window._tdInstallPrompt;
+        window._tdInstallPrompt = null;
+        p.prompt();
+      } else if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+        setStatus('msg', 'Already running as an installed app.');
+      } else {
+        showError('Install prompt unavailable — use the install icon in the address bar (Chrome/Edge), or Safari: File > Add to Dock.');
       }
       break;
     case 'toggle-grid':  grid.visible = !grid.visible; break;
