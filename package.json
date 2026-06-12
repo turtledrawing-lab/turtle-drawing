@@ -15,7 +15,9 @@
     "build:universal": "npm run icon && electron-builder --mac --universal -c.mac.notarize=false",
     "release": "bash build/release.sh",
     "release:install": "bash build/release.sh --install",
-    "build:web": "bash build/web.sh"
+    "build:web": "bash build/web.sh",
+    "release:all": "bash build/release-all.sh",
+    "deploy:web": "bash build/web.sh && npx wrangler pages deploy dist-web --project-name=${TD_PAGES_PROJECT:-turtle-drawing}"
   },
   "devDependencies": {
     "electron": "^31.0.0",
