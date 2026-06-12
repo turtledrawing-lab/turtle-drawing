@@ -1591,26 +1591,38 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
 <script src="vendor/LineSegmentsGeometry.js"></script>
 <script src="vendor/LineSegments2.js"></script>
 <script src="vendor/LineMaterial.js"></script>
-<!-- Mesh format loaders / exporters (three r128) -->
-<script src="vendor/GLTFLoader.js"></script>
+<!-- Mesh format loaders / exporters (three r128). STL stays eager (12 KB);
+     GLTFLoader / ColladaLoader / GLTFExporter, opentype.js, rhino3dm.js and
+     pdf-lib (~1 MB combined) load ON DEMAND via _ensureVendor() the first
+     time their feature is used — they were ~half of the boot JS. -->
 <script src="vendor/STLLoader.js"></script>
-<script src="vendor/ColladaLoader.js"></script>
-<script src="vendor/GLTFExporter.js"></script>
 <!-- three-mesh-bvh 0.5.24 — O(log n) raycasting on heavy meshes (global MeshBVHLib) -->
 <script src="vendor/three-mesh-bvh.umd.js"></script>
 <!-- Font loading + extruded text geometry (three 0.137 versions) -->
 <script src="vendor/FontLoader.js"></script>
 <script src="vendor/TextGeometry.js"></script>
-<!-- opentype.js — parse system .ttf/.otf so 3D Text can use any installed font -->
-<script src="vendor/opentype.min.js"></script>
 <!-- Evan Wallace's CSG (BSP-tree Boolean) — used for proper
      Union / Subtract / Intersect on triangulated meshes. Exposes global `CSG`. -->
 <script src="vendor/csg.js"></script>
-<!-- rhino3dm.js 8.4.0 — read/write native Rhino .3dm (lazy-init; wasm bytes
-     are fed via IPC because fetch() cannot read file:// URLs). -->
-<script src="vendor/rhino3dm.min.js"></script>
-<!-- pdf-lib for PDF export -->
-<script src="vendor/pdf-lib.min.js"></script>
+<script>
+/* On-demand vendor loader. Each lazy library has exactly one consumer choke
+   point (importGLB/importDAE/exportGLB/_getRhino/_geoFromFontBytes/toPDF),
+   which awaits this before first use. Works on file:// (Electron) and http.
+   The promise is cached; a failed load clears it so the user can retry. */
+const _vendorPromises = {};
+function _ensureVendor(src) {
+  if (_vendorPromises[src]) return _vendorPromises[src];
+  _vendorPromises[src] = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => { delete _vendorPromises[src]; reject(new Error('Failed to load ' + src)); };
+    document.head.appendChild(s);
+  });
+  return _vendorPromises[src];
+}
+window._ensureVendor = _ensureVendor;
+</script>
 <!-- Turtle Drawing's architectural-drawing layer (AD.*). Loaded here
      so these files see THREE + CSG. The individual modules register
      themselves on `window.AD`; AD.UI.install() is called from
@@ -23173,7 +23185,11 @@ function importSTL(arrayBuffer, filename) {
 /* Import a glTF/GLB file from an ArrayBuffer. */
 function importGLB(arrayBuffer, filename) {
   if (typeof THREE.GLTFLoader !== 'function') {
-    showError('GLTFLoader is not loaded.'); return;
+    // Lazy vendor: fetch the loader on first use, then re-enter.
+    _ensureVendor('vendor/GLTFLoader.js')
+      .then(() => importGLB(arrayBuffer, filename))
+      .catch((e) => showError('GLTFLoader could not be loaded: ' + e.message));
+    return;
   }
   const loader = new THREE.GLTFLoader();
   loader.parse(arrayBuffer, '', (gltf) => {
@@ -23192,7 +23208,10 @@ function importGLB(arrayBuffer, filename) {
    and Z_UP axis itself, so the scene comes in upright at real size. */
 function importDAE(text, filename) {
   if (typeof THREE.ColladaLoader !== 'function') {
-    showError('ColladaLoader is not loaded.'); return;
+    _ensureVendor('vendor/ColladaLoader.js')
+      .then(() => importDAE(text, filename))
+      .catch((e) => showError('ColladaLoader could not be loaded: ' + e.message));
+    return;
   }
   try {
     const collada = new THREE.ColladaLoader().parse(text, '');
@@ -23209,7 +23228,10 @@ function importDAE(text, filename) {
    parented under a shared "group_<id>" node. Meters, Y-up: glTF == THREE. */
 function exportGLB() {
   if (typeof THREE.GLTFExporter !== 'function') {
-    showError('GLTFExporter is not loaded.'); return;
+    _ensureVendor('vendor/GLTFExporter.js')
+      .then(() => exportGLB())
+      .catch((e) => showError('GLTFExporter could not be loaded: ' + e.message));
+    return;
   }
   const root = new THREE.Group();
   root.name = (currentFileName || 'drawing').replace(/\.tt$/i, '');
@@ -23996,7 +24018,8 @@ let _rhinoLib = null;
 async function _ensureRhinoLib() {
   if (_rhinoLib) return _rhinoLib;
   if (typeof rhino3dm !== 'function') {
-    throw new Error('rhino3dm.js not loaded');
+    await _ensureVendor('vendor/rhino3dm.min.js');
+    if (typeof rhino3dm !== 'function') throw new Error('rhino3dm.js could not be loaded');
   }
   // The page is served from file:// (both dev and packaged), where emscripten's
   // fetch('rhino3dm.wasm') is blocked — feed the wasm bytes through IPC instead.
@@ -30865,8 +30888,10 @@ const _TEXT_FONTS_OTF = [
 ];
 const _otfFontCache = {};
 /* Shared .ttf/.otf → extruded THREE geometry path (system fonts, bundled
-   fonts, and user-uploaded files all converge here). */
-function _geoFromFontBytes(ab, text, size, depth) {
+   fonts, and user-uploaded files all converge here). Async because the
+   opentype.js engine itself is lazy-loaded on first use. */
+async function _geoFromFontBytes(ab, text, size, depth) {
+  if (typeof opentype === 'undefined') await _ensureVendor('vendor/opentype.min.js');
   if (typeof opentype === 'undefined') throw new Error('Font engine unavailable');
   try { if (new DataView(ab).getUint32(0) === 0x74746366) ab = _ttcToSfnt(ab, 0); } catch (_) {}
   const otf = opentype.parse(ab);
@@ -31035,7 +31060,7 @@ async function open3DTextDialog() {
       // Uploaded .ttf/.otf/.ttc takes priority over the dropdown — works in
       // every browser (no system-font access needed) and in Electron.
       const ab = await fontFile.arrayBuffer();
-      geo = _geoFromFontBytes(ab, text, size, depth);
+      geo = await _geoFromFontBytes(ab, text, size, depth);
     } else if (fontKind === 'sys') {
       // System .ttf/.otf → parse with opentype.js, build extruded shapes.
       if (!window.electronReadFont) throw new Error('System font support unavailable');
@@ -31043,7 +31068,7 @@ async function open3DTextDialog() {
       if (!bytes) throw new Error('Could not read font file');
       const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
       const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-      geo = _geoFromFontBytes(ab, text, size, depth);
+      geo = await _geoFromFontBytes(ab, text, size, depth);
     } else if (fontKind === 'otf') {
       // Bundled outline font (Korean/CJK) — fetched once, cached for reuse.
       // Electron runs from file:// where fetch can't read local files (same
@@ -31063,7 +31088,7 @@ async function open3DTextDialog() {
         }
         _otfFontCache[fontVal] = ab;
       }
-      geo = _geoFromFontBytes(ab, text, size, depth);
+      geo = await _geoFromFontBytes(ab, text, size, depth);
     } else {
       // Built-in typeface.json font → THREE.TextGeometry.
       const font = await _loadTypeface(fontVal);

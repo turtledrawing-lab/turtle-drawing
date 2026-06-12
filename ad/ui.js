@@ -354,7 +354,7 @@
           : 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(item.svg);
         cell.innerHTML =
           `<div style="height:56px;display:flex;align-items:center;justify-content:center;">`
-          + `<img src="${swatchUrl}" style="max-height:52px;max-width:90%;"/>`
+          + `<img src="${swatchUrl}" loading="lazy" decoding="async" style="max-height:52px;max-width:90%;"/>`
           + `</div>`
           + `<div style="font-size:9px;padding:1px 2px;text-align:center;color:#333;`
           + `border-top:0.5px solid rgba(0,0,0,0.1);background:#fafafa;">${item.label}</div>`
@@ -389,7 +389,38 @@
       }
     };
     renderTabs();
-    renderGrid();
+    // Defer the thumbnail grid until the panel is first EXPANDED. Rendering
+    // it at boot placed ~88 <img> tags (~12 MB of entourage SVGs) inside the
+    // display:none body — and hidden images still download, which made this
+    // the single largest chunk of the web build's first load.
+    let _gridRendered = false;
+    const _renderGridOnce = () => {
+      if (_gridRendered) return;
+      _gridRendered = true;
+      renderGrid();
+    };
+    // Trigger on the grid actually becoming visible, regardless of HOW the
+    // panel was opened. There are at least three opening mechanisms: the
+    // header click toggle writes body.style.display inline; the collapsed
+    // (icon-strip) right panel opens sections as popups via a
+    // 'collapsed-active' CLASS with !important CSS (no inline style change);
+    // and floating detach sets display directly. An IntersectionObserver on
+    // the grid catches all of them; the style/class observers and the header
+    // click listener are belt-and-suspenders.
+    const bodyEl = sec.querySelector('#adEntBody');
+    const _gridMO = new MutationObserver(() => {
+      const visible = bodyEl.style.display !== 'none' || sec.classList.contains('collapsed-active');
+      if (visible) { _renderGridOnce(); _gridMO.disconnect(); }
+    });
+    _gridMO.observe(bodyEl, { attributes: true, attributeFilter: ['style'] });
+    _gridMO.observe(sec, { attributes: true, attributeFilter: ['class'] });
+    if (typeof IntersectionObserver === 'function') {
+      const _gridIO = new IntersectionObserver((entries) => {
+        if (entries.some(e => e.isIntersecting)) { _renderGridOnce(); _gridIO.disconnect(); }
+      });
+      _gridIO.observe(gridEl);
+    }
+    sec.querySelector('.panel-header').addEventListener('click', _renderGridOnce);
 
     // Upload button → file picker → ask for category/height → save.
     const uploadBtn = sec.querySelector('#adEntUpload');

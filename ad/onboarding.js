@@ -1721,13 +1721,7 @@
     render();
   };
 
-  window.addEventListener('DOMContentLoaded', () => {
-    setTimeout(() => {
-      try {
-        if (localStorage.getItem('turtle_onboarded') !== '1') {
-          window._startOnboardingTour();
-        }
-      } catch (_) {}
-    }, 1200);
-  });
+  // First-launch AUTO-start removed by request — the tour no longer pops up
+  // on a fresh profile. It stays available via Help ▸ Onboarding Tour
+  // (action 'start-onboarding' -> window._startOnboardingTour).
 })();

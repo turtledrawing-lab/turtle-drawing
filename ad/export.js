@@ -1028,6 +1028,9 @@
 
   /* ---------- PDF emitter (via pdf-lib) --------------------------------- */
   AD.Export.toPDF = async function (s2d) {
+    if (typeof PDFLib === 'undefined' && window._ensureVendor) {
+      await window._ensureVendor('vendor/pdf-lib.min.js');   // lazy: ~516 KB, PDF export only
+    }
     if (typeof PDFLib === 'undefined') {
       throw new Error('PDFLib not loaded');
     }
@@ -1544,8 +1547,11 @@
     AD.Export.download(opt.name, AD.Export.toSVG(s2d), 'image/svg+xml');
   };
   AD.Export.savePDF = async function () {
+    if (typeof PDFLib === 'undefined' && window._ensureVendor) {
+      try { await window._ensureVendor('vendor/pdf-lib.min.js'); } catch (_) {}
+    }
     if (typeof PDFLib === 'undefined') {
-      alert('PDF library not loaded yet. Try again shortly.');
+      alert('PDF library could not be loaded. Check your connection and try again.');
       return;
     }
     const opt = await _askExportOptions('pdf');
