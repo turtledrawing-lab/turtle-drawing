@@ -951,7 +951,7 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
         <div class="sep"></div>
         <div data-act="toggle-turntable">Turntable Animation <span>Ctrl+Shift+T</span></div>
         <div class="sep"></div>
-        <div data-act="toggle-fullscreen">Focus Mode (Fullscreen) <span>Esc to exit</span></div>
+        <div data-act="toggle-fullscreen">Focus Mode (Fullscreen) <span>⌘Esc / Ctrl+Esc to exit</span></div>
         <div class="sep"></div>
         <div data-act="toggle-grid">Toggle Grid</div>
         <div data-act="toggle-axes">Toggle Axes</div>
@@ -26355,6 +26355,22 @@ window.addEventListener('DOMContentLoaded', () => {
    Ignore clicks on buttons / inputs inside the header so action buttons
    (+ Add, Show All, ON/OFF, + Add) keep working.
    ALL sections start collapsed every session. */
+/* Focus-mode key wiring: release the Escape keyboard-lock whenever
+   fullscreen ends (any path), and make ⌘+Esc (mac) / Ctrl+Esc the deliberate
+   exit — plain Esc stays tool-cancel inside the locked fullscreen. */
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && navigator.keyboard && navigator.keyboard.unlock) {
+    try { navigator.keyboard.unlock(); } catch (_) {}
+  }
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && (e.metaKey || e.ctrlKey) && document.fullscreenElement) {
+    e.preventDefault();
+    e.stopPropagation();
+    document.exitFullscreen().catch(() => {});
+  }
+}, true);
+
 function _wirePanelHeader(h) {
   if (h._wired) return;
   h._wired = true;
@@ -27078,11 +27094,19 @@ function _handleActionImpl(act) {
       }
       break;
     case 'toggle-fullscreen':
-      // Web focus mode: hide every piece of browser chrome. Esc (or the same
-      // menu item) exits — the browser enforces its own exit affordance.
+      // Web focus mode: hide every piece of browser chrome. Plain Esc must
+      // stay an in-app key (tool cancel!) — so on Chromium we LOCK the Escape
+      // key while fullscreen, and the deliberate exit is ⌘+Esc / Ctrl+Esc
+      // (wired below), the menu item again, or Chrome's built-in
+      // press-AND-HOLD Esc. Safari/Firefox lack the Keyboard Lock API, so
+      // there a plain Esc still exits (browser-enforced).
       try {
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-        else document.documentElement.requestFullscreen().catch((e) => {
+        else document.documentElement.requestFullscreen().then(() => {
+          if (navigator.keyboard && navigator.keyboard.lock) {
+            navigator.keyboard.lock(['Escape']).catch(() => {});
+          }
+        }).catch((e) => {
           showError('Fullscreen was blocked: ' + (e && e.message || e));
         });
       } catch (e) { showError('Fullscreen unavailable: ' + (e && e.message || e)); }
