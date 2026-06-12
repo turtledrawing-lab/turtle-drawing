@@ -895,6 +895,7 @@ html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
         <div data-act="file-save-as">Save As...</div>
         <div class="sep"></div>
         <div data-act="import-dxf">Import DXF...</div>
+        <div data-act="import-dwg">Import DWG...</div>
         <div data-act="import-3dm">Import Rhino (.3dm)...</div>
         <div data-act="import-glb">Import glTF / GLB...</div>
         <div data-act="import-dae">Import Collada (.dae)...</div>
@@ -1629,6 +1630,7 @@ window._ensureVendor = _ensureVendor;
      ad/core.js's DOMContentLoaded handler after the base engine boots. -->
 <script src="ad/core.js"></script>
 <script src="ad/idb.js"></script>
+<script src="ad/dwg.js"></script>
 <script src="ad/hatch.js"></script>
 <script src="ad/hatch_lines.js"></script>
 <script src="ad/scenes.js"></script>
@@ -26643,6 +26645,19 @@ function _handleActionImpl(act) {
     case 'import-dxf':
       openFileDialog('.dxf');
       break;
+    case 'import-dwg':
+      if (typeof window.electronPickFile === 'function') {
+        (async () => {
+          const r = await window.electronPickFile({ filters: [{ name: 'DWG', extensions: ['dwg'] }] });
+          if (r && r.bytes) {
+            const ab = r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength);
+            importDWG(ab, r.name);
+          }
+        })();
+      } else if (typeof openFileDialog === 'function') {
+        openFileDialog('.dwg');
+      }
+      break;
     case 'download-error-log':
       // Web replacement for Help → Reveal Error Log (journal lives in IDB).
       (async () => {
@@ -29780,12 +29795,13 @@ document.getElementById('fileInput').addEventListener('change', e => {
     // Single file (tt, dxf, glb, stl, 3dm, dae, etc.)
     const file = files[0];
     const name = file.name.toLowerCase();
-    if (name.endsWith('.glb') || name.endsWith('.gltf') || name.endsWith('.stl') || name.endsWith('.3dm')) {
+    if (name.endsWith('.glb') || name.endsWith('.gltf') || name.endsWith('.stl') || name.endsWith('.3dm') || name.endsWith('.dwg')) {
       const reader = new FileReader();
       reader.onload = ev => {
         try {
           if (name.endsWith('.stl')) importSTL(ev.target.result, file.name);
           else if (name.endsWith('.3dm')) importRhino3dm(new Uint8Array(ev.target.result), file.name).catch(err => { console.error(err); showError('3DM import failed: ' + (err && err.message || err)); });
+          else if (name.endsWith('.dwg')) importDWG(ev.target.result, file.name);
           else                       importGLB(ev.target.result, file.name);
         } catch (err) { console.error(err); showError('Import error: ' + err.message); }
       };
@@ -29920,6 +29936,7 @@ document.getElementById('objFileInput').addEventListener('change', e => {
           if (ext === 'stl')  { f.arrayBuffer().then(ab => importSTL(ab, f.name)); return; }
           if (ext === '3dm')  { f.arrayBuffer().then(ab => importRhino3dm(new Uint8Array(ab), f.name)); return; }
           if (ext === 'dxf')  { f.text().then(t => importDXF(t, f.name)); return; }
+          if (ext === 'dwg')  { f.arrayBuffer().then(ab => importDWG(ab, f.name)); return; }
           if (ext === 'dae')  { f.text().then(t => importDAE(t, f.name)); return; }
         } catch (err) { console.error('[drop]', err); }
       }

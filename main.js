@@ -1242,6 +1242,7 @@ function createWindow(pendingDocJson) {
           label: 'Import',
           submenu: [
             { label: 'DXF...',                  click: send('import-dxf') },
+            { label: 'DWG...',                  click: send('import-dwg') },
             { label: 'Rhino (.3dm)...',         click: send('import-3dm') },
             { label: 'glTF / GLB...',           click: send('import-glb') },
             { label: 'Collada (.dae)...',       click: send('import-dae') },

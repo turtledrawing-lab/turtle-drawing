@@ -1,0 +1,6 @@
+libredwg-web.umd.js and libredwg-web.wasm are built from:
+  @mlightcad/libredwg-web (https://github.com/mlightcad/libredwg-web)
+  based on GNU LibreDWG (https://www.gnu.org/software/libredwg/)
+License: GPL-3.0 (https://www.gnu.org/licenses/gpl-3.0.html)
+These files are an independent conversion component loaded on demand;
+source code for them is available at the repositories above, unmodified.
