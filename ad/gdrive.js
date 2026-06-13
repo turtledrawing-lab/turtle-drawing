@@ -22,7 +22,7 @@
   // ── CONFIG ─────────────────────────────────────────────────────────────
   // Google Cloud Console → APIs & Services → Credentials → OAuth client ID
   // (Web application; Authorized JavaScript origins: https://tdw.kr).
-  const CLIENT_ID = '';   // ← paste the OAuth Web Client ID here to enable
+  const CLIENT_ID = '505623931645-848idqgu62euhainht8q162drr29ogvf.apps.googleusercontent.com';
   const SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const GSI_SRC = 'https://accounts.google.com/gsi/client';
 
