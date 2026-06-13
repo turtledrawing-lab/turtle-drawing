@@ -42,7 +42,16 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
    script when the preload bridge is absent. !important because the menubar's
    base rule (display:flex) comes later in the cascade. */
 html:not(.td-web) #menubar { display: none !important; }
-html.td-web #app { grid-template-rows: 26px minmax(0, 1fr) 22px; }
+html.td-web #app {
+  grid-template-rows: 26px minmax(0, 1fr) 22px;
+  /* Web layout: the toolbar runs the full window height (rows 1-3) and the
+     menubar starts to its RIGHT — it no longer spans over the toolbar column. */
+  grid-template-areas:
+    "toolbar menu menu"
+    "toolbar viewport right"
+    "toolbar status status"; }
+/* No macOS traffic lights on the web — reclaim the 36px reserved for them. */
+html.td-web #toolbar { padding-top: 10px; }
 
 /* Web "glass" chrome: on macOS the Electron window is transparent, so the
    0.32-alpha panels show the desktop through — in a browser there is nothing
