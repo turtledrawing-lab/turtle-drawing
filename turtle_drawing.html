@@ -33133,7 +33133,7 @@ document.addEventListener('click', (e) => {
       h /= 6; if (h < 0) h += 1;
     }
     H = h; S = s; V = v;
-    bSlider.value = Math.round(V * 100); bVal.textContent = bSlider.value;
+    bSlider.value = Math.round(V * 100); if (bVal) bVal.textContent = bSlider.value;
     drawWheel(V);
     updatePreview();
   };
