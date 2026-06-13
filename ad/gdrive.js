@@ -23,8 +23,14 @@
   // Google Cloud Console → APIs & Services → Credentials → OAuth client ID
   // (Web application; Authorized JavaScript origins: https://tdw.kr).
   const CLIENT_ID = '505623931645-848idqgu62euhainht8q162drr29ogvf.apps.googleusercontent.com';
+  // Google Picker (the native Drive popup) additionally needs an API key
+  // (Cloud Console → Credentials → API key) with the Picker API enabled.
+  // Empty key → graceful fallback to the built-in list modal.
+  const API_KEY = '';
+  const APP_ID = CLIENT_ID.split('-')[0];   // project number
   const SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const GSI_SRC = 'https://accounts.google.com/gsi/client';
+  const GAPI_SRC = 'https://apis.google.com/js/api.js';
 
   let _tokenClient = null;
   let _accessToken = null;
@@ -93,9 +99,12 @@
   }
 
   /* ── Save (create or update) ──────────────────────────────────────────── */
-  async function _upload(json, fname, fileId) {
+  async function _upload(json, fname, fileId, folderId) {
     const meta = { name: fname, mimeType: 'application/json' };
-    if (!fileId) meta.appProperties = { app: 'turtle-drawing' };
+    if (!fileId) {
+      meta.appProperties = { app: 'turtle-drawing' };
+      if (folderId) meta.parents = [folderId];
+    }
     const boundary = 'td' + Math.random().toString(36).slice(2);
     const body =
       '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
@@ -114,15 +123,62 @@
     return resp.json();
   }
 
+  let _pickerReady = false;
+  async function _ensurePicker() {
+    if (_pickerReady) return true;
+    if (!API_KEY) return false;
+    try {
+      await window._ensureVendor(GAPI_SRC);
+      await new Promise((res, rej) => gapi.load('picker', { callback: res, onerror: rej }));
+      _pickerReady = true;
+      return true;
+    } catch (e) { console.warn('[gdrive] picker unavailable:', e); return false; }
+  }
+
+  /* Native Drive popup. mode 'open' → pick a .tt file; mode 'folder' → pick a
+     destination folder. Resolves the picked doc ({id,name}) or null. */
+  function _showPicker(token, mode) {
+    return new Promise((resolve) => {
+      let view;
+      if (mode === 'folder') {
+        view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+          .setIncludeFolders(true)
+          .setSelectFolderEnabled(true)
+          .setMimeTypes('application/vnd.google-apps.folder');
+      } else {
+        view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+          .setIncludeFolders(true)
+          .setMimeTypes('application/json,text/plain,application/octet-stream');
+      }
+      const picker = new google.picker.PickerBuilder()
+        .setOAuthToken(token)
+        .setDeveloperKey(API_KEY)
+        .setAppId(APP_ID)
+        .setLocale('ko')
+        .addView(view)
+        .setTitle(mode === 'folder' ? '저장할 폴더 선택' : 'Turtle Drawing 문서 열기')
+        .setCallback((data) => {
+          if (data.action === google.picker.Action.PICKED) {
+            const d = data.docs && data.docs[0];
+            resolve(d ? { id: d.id, name: d.name } : null);
+          } else if (data.action === google.picker.Action.CANCEL) {
+            resolve(null);
+          }
+        })
+        .build();
+      picker.setVisible(true);
+    });
+  }
+
   /* Cmd+S path for Drive-backed tabs (json already built+guarded by saveTT). */
   AD.GDrive = {
     isConfigured: _configured,
 
-    async saveCurrent(json, fname, tab) {
+    async saveCurrent(json, fname, tab, folderId) {
       if (!_configured()) { _fail(_setupMsg()); return; }
       try {
         _say('Google Drive에 저장 중…');
-        const r = await _upload(json, fname, tab._driveFileId);
+        const r = await _upload(json, fname, tab._driveFileId, folderId);
         tab._driveFileId = r.id;
         try { _markSavedAs(r.name); } catch (_) {}
         _say('☁ Google Drive에 저장됨 — ' + r.name);
@@ -140,21 +196,42 @@
       const fname = ((window.currentFileName || 'drawing').replace(/\.tt$/i, '')) + '.tt';
       const T = AD.Tabs;
       const tab = (T && T.list) ? T.list.find(x => x.id === T.activeId) : null;
-      await AD.GDrive.saveCurrent(json, fname, tab || {});
+      // Native Drive popup: pick the destination folder (first save only —
+      // Cmd+S updates in place without any popup).
+      let folderId = null;
+      try {
+        const token = await _getToken();
+        if (await _ensurePicker()) {
+          const picked = await _showPicker(token, 'folder');
+          if (!picked) { _say('취소됨'); return; }
+          folderId = picked.id;
+        }
+      } catch (e) { _fail('Google 로그인 실패: ' + (e && e.message || e)); return; }
+      await AD.GDrive.saveCurrent(json, fname, tab || {}, folderId);
     },
 
     /* File ▸ Open from Google Drive — list this app's .tt files, pick one. */
     async open() {
       if (!_configured()) { _fail(_setupMsg()); return; }
       try {
-        _say('Google Drive 목록을 불러오는 중…');
-        const q = encodeURIComponent("appProperties has { key='app' and value='turtle-drawing' } and trashed=false");
-        const resp = await _api('https://www.googleapis.com/drive/v3/files?q=' + q
-          + '&orderBy=modifiedTime desc&pageSize=50&fields=files(id,name,modifiedTime,size)');
-        const { files } = await resp.json();
-        if (!files || !files.length) { _say('Drive에 저장된 Turtle Drawing 문서가 없습니다.'); return; }
-        const pick = await _pickModal(files);
-        if (!pick) { _say('취소됨'); return; }
+        const token = await _getToken();
+        let pick = null;
+        if (await _ensurePicker()) {
+          // Native Drive popup — picking a file also GRANTS drive.file access
+          // to it, so even .tt files uploaded outside the app become openable.
+          pick = await _showPicker(token, 'open');
+          if (!pick) { _say('취소됨'); return; }
+        } else {
+          // Fallback: app-created files via the REST list + built-in modal.
+          _say('Google Drive 목록을 불러오는 중…');
+          const q = encodeURIComponent("appProperties has { key='app' and value='turtle-drawing' } and trashed=false");
+          const resp = await _api('https://www.googleapis.com/drive/v3/files?q=' + q
+            + '&orderBy=modifiedTime desc&pageSize=50&fields=files(id,name,modifiedTime,size)');
+          const { files } = await resp.json();
+          if (!files || !files.length) { _say('Drive에 저장된 Turtle Drawing 문서가 없습니다.'); return; }
+          pick = await _pickModal(files);
+          if (!pick) { _say('취소됨'); return; }
+        }
         _say('내려받는 중 — ' + pick.name + '…');
         const dl = await _api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(pick.id) + '?alt=media');
         const text = await dl.text();
