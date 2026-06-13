@@ -1477,7 +1477,7 @@ function createWindow(pendingDocJson) {
             { type: 'separator' },
             { label: 'Section / Elevation SVG...', click: send('export-svg') },
             { label: 'Section / Elevation PDF...', click: send('export-pdf') },
-            { label: 'Section / Elevation DXF (per-layer colors)...', click: send('export-dxf') },
+            { label: 'Section / Elevation DXF (AutoCAD / DWG)...', click: send('export-dxf') },
           ],
         },
         ...(!isMac ? [
