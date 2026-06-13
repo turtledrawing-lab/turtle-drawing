@@ -435,7 +435,16 @@ ipcMain.handle('gdrive-auth', async () => {
     setTimeout(() => done(reject, new Error('sign-in timed out')), 180000);
   });
 });
-ipcMain.handle('gdrive-signout', async () => { try { fs.unlinkSync(_gdriveTokenPath()); } catch (_) {} return true; });
+ipcMain.handle('gdrive-signout', async () => {
+  try { fs.unlinkSync(_gdriveTokenPath()); } catch (_) {}
+  // Also clear the Picker window's persistent Google web session so a full
+  // sign-out really logs out (next picker open re-prompts).
+  try {
+    const { session } = require('electron');
+    await session.fromPartition('persist:gdrive').clearStorageData();
+  } catch (_) {}
+  return true;
+});
 
 // Google Drive Picker window. The official Picker is a web widget that needs a
 // real https origin, which the file:// renderer can't provide — so we host it
@@ -443,7 +452,9 @@ ipcMain.handle('gdrive-signout', async () => { try { fs.unlinkSync(_gdriveTokenP
 // the renderer's OAuth token + API key over IPC. Resolves with the picked
 // { id, name }, null on cancel, or { failed:true } when the window can't load
 // (the renderer then falls back to its built-in list).
-const GDRIVE_PICKER_URL = 'https://tdw.kr/desktop-picker.html';
+// Cloudflare Pages serves the page at the extensionless path (it 308-redirects
+// /desktop-picker.html → /desktop-picker), so point straight at the clean URL.
+const GDRIVE_PICKER_URL = 'https://tdw.kr/desktop-picker';
 ipcMain.handle('gdrive-open-picker', async (event, cfg) => {
   const parent = BrowserWindow.fromWebContents(event.sender);
   return new Promise((resolve) => {
@@ -469,6 +480,12 @@ ipcMain.handle('gdrive-open-picker', async (event, cfg) => {
         contextIsolation: true,
         sandbox: true,
         preload: path.join(__dirname, 'picker-preload.js'),
+        // The Picker browses Drive using the window's own Google web session
+        // (cookies), not the OAuth token — and the desktop OAuth happened in the
+        // system browser, whose cookies we can't share. So the first picker open
+        // shows a Google sign-in; a dedicated PERSISTENT partition keeps that
+        // login so later opens (and restarts) skip it. Sign-out clears it.
+        partition: 'persist:gdrive',
       },
     });
     pick.setMenuBarVisibility(false);
