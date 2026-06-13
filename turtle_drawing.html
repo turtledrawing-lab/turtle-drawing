@@ -1126,6 +1126,13 @@ html.td-web.theme-apple #toolbar {
     </div>
     <div class="menu-item" data-menu="help">Help
       <div class="dropdown">
+        <div class="submenu">Language <span>▸</span>
+          <div class="subdropdown">
+            <div data-act="lang-en">English</div>
+            <div data-act="lang-ko">한국어</div>
+          </div>
+        </div>
+        <div class="sep"></div>
         <div data-act="start-onboarding">Onboarding Tour</div>
         <div class="sep"></div>
         <div data-act="help">Shortcuts &amp; Help</div>
@@ -1740,6 +1747,7 @@ window._ensureVendor = _ensureVendor;
 <script src="ad/clipboard.js"></script>
 <script src="ad/onboarding.js"></script>
 <script src="ad/web_shell.js"></script>
+<script src="ad/i18n.js"></script>
 <script src="ad/ui.js"></script>
 <script>
 /* BVH-accelerated raycasting (three-mesh-bvh). Patched FIRST so every
@@ -26670,6 +26678,8 @@ function handleAction(act) {
 }
 function _handleActionImpl(act) {
   switch (act) {
+    case 'lang-en': try { AD.I18n.set('en'); } catch (_) {} return;
+    case 'lang-ko': try { AD.I18n.set('ko'); } catch (_) {} return;
     case 'reverse-faces': {
       // Flip face orientation (front/back) — reverses winding + normal, and
       // reverses any hole loops to keep their opposite winding.

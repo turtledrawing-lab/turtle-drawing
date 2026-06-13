@@ -64,6 +64,7 @@ cp -R ad "$OUT/ad"
 cp -R vendor "$OUT/vendor"
 cp web/manifest.webmanifest "$OUT/manifest.webmanifest"
 cp web/desktop-picker.html "$OUT/desktop-picker.html"
+cp i18n-menu.json "$OUT/i18n-menu.json"
 cp -R web/icons "$OUT/icons"
 
 # Cache policy for Cloudflare Pages / Netlify (other hosts ignore this file).
