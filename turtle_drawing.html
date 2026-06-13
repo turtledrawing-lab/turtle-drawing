@@ -58,8 +58,11 @@ html.td-web #viewport { grid-area: 1 / 1 / 4 / 4; z-index: 0; }
 html.td-web #threeCanvas, html.td-web #overlay {
   top: 0 !important; height: 100% !important; }
 html.td-web #adTabBar { top: 26px !important; left: 80px !important; }
-html.td-web #menubar, html.td-web #toolbar, html.td-web #rightpanel, html.td-web #statusbar {
+html.td-web #toolbar, html.td-web #rightpanel, html.td-web #statusbar {
   position: relative; z-index: 5; }
+/* The menubar keeps its base z-index:1000 — putting it in the z:5 group
+   dropped its dropdowns BELOW the toolbar (later in DOM paints on top at
+   equal z), clipping the left edge of the File/Edit menus. */
 /* !important because the theme stylesheet (.theme-apple #rightpanel) also
    uses !important — among important declarations the higher-specificity
    selector wins. Scoped to the light (apple) theme + themeless default;
