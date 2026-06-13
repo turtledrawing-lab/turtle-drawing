@@ -1,6 +1,6 @@
 {
   "name": "turtle-drawing",
-  "version": "1.0.0-beta.6",
+  "version": "1.0.0-beta.7",
   "description": "Turtle Drawing — architectural sectional perspective tool.",
   "main": "main.js",
   "author": "sooyonghwang",
@@ -74,6 +74,7 @@
       "splash.html",
       "package.json",
       "build/icon.icns",
+      "build/gdrive-desktop.json",
       "build/turtle.png",
       "build/turtle_square.png",
       "ad/**/*",

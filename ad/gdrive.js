@@ -36,7 +36,11 @@
   let _accessToken = null;
   let _tokenExp = 0;
 
-  const _configured = () => !!CLIENT_ID;
+  // Desktop (Electron) signs in through the main-process loopback/PKCE flow
+  // (window.electronGDriveAuth); the browser build uses Google Identity
+  // Services. Either path is "configured" when its credential is present.
+  const _isDesktop = () => !!window.electronGDriveAuth;
+  const _configured = () => !!CLIENT_ID || _isDesktop();
   const _say = (m) => { try { setStatus('msg', m); } catch (_) { console.log('[gdrive]', m); } };
   const _fail = (m) => { try { showError(m); } catch (_) { alert(m); } };
 
@@ -51,6 +55,23 @@
   /* Get an access token. First call pops the Google consent window; later
      calls reuse the cached token or refresh silently (prompt: ''). */
   function _getToken() {
+    // Desktop: try a silent refresh (stored refresh_token in main), then fall
+    // back to the interactive system-browser flow.
+    if (_isDesktop()) {
+      return (async () => {
+        if (_accessToken && Date.now() < _tokenExp - 60000) return _accessToken;
+        let tok = null;
+        try { tok = await window.electronGDriveSilent(); } catch (_) {}
+        if (!tok || !tok.access_token) {
+          _say('브라우저에서 Google 로그인을 진행해주세요…');
+          tok = await window.electronGDriveAuth();
+        }
+        if (!tok || !tok.access_token) throw new Error('Google 로그인에 실패했습니다');
+        _accessToken = tok.access_token;
+        _tokenExp = Date.now() + ((tok.expires_in || 3600) * 1000);
+        return _accessToken;
+      })();
+    }
     return new Promise(async (resolve, reject) => {
       try {
         if (_accessToken && Date.now() < _tokenExp - 60000) { resolve(_accessToken); return; }
@@ -126,6 +147,9 @@
   let _pickerReady = false;
   async function _ensurePicker() {
     if (_pickerReady) return true;
+    // Desktop: the Google Picker is a web widget that needs a real https
+    // origin, so on file:// Electron we use the built-in list modal instead.
+    if (_isDesktop()) return false;
     if (!API_KEY) return false;
     try {
       await window._ensureVendor(GAPI_SRC);
@@ -250,6 +274,8 @@
       try { if (_accessToken && window.google) google.accounts.oauth2.revoke(_accessToken, () => {}); } catch (_) {}
       _accessToken = null; _tokenExp = 0;
       try { localStorage.removeItem('turtle_gdrive_granted'); } catch (_) {}
+      // Desktop: drop the stored refresh_token in the main process too.
+      try { if (window.electronGDriveSignout) window.electronGDriveSignout(); } catch (_) {}
       _say('Google Drive에서 로그아웃했습니다.');
     },
   };

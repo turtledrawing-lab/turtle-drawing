@@ -8,3 +8,4 @@ backups/
 *.p12
 .claude/settings.local.json
 dist-web/
+build/gdrive-desktop.json

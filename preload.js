@@ -49,6 +49,11 @@ window.electronReadVendor = async (name) => {
 window.electronErrorLog = async (lines) => {
   try { return await ipcRenderer.invoke('error-journal-append', lines); } catch (_) { return false; }
 };
+// Google Drive desktop OAuth (installed-app flow lives in main; GIS can't run
+// on file://). Silent first, interactive on demand. Returns {access_token,…}.
+window.electronGDriveSilent  = async () => { try { return await ipcRenderer.invoke('gdrive-token-silent'); } catch (_) { return null; } };
+window.electronGDriveAuth    = async () => ipcRenderer.invoke('gdrive-auth');
+window.electronGDriveSignout = async () => { try { return await ipcRenderer.invoke('gdrive-signout'); } catch (_) { return false; } };
 
 // Detach the current tab's document into a new top-level window.
 window.electronDetachTab = async (docJson) => {

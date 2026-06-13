@@ -336,6 +336,107 @@ ipcMain.handle('reveal-error-log', async () => {
   } catch (_) { return false; }
 });
 
+/* ── Google Drive desktop OAuth (installed-app flow: loopback + PKCE) ───────
+   The web build signs in with Google Identity Services in the browser, but
+   GIS rejects the file:// origin Electron loads from. Desktop apps use the
+   standard "installed application" flow instead: open the system browser,
+   catch the redirect on a transient 127.0.0.1 server, and exchange the code
+   (with PKCE) for tokens. The refresh token is stored in userData so later
+   launches sign in silently. The Desktop-app client secret is NOT
+   confidential (Google's own docs say so) — PKCE is what protects the flow. */
+// Credentials live in build/gdrive-desktop.json (gitignored, bundled into the
+// app by electron-builder) — kept out of the PUBLIC git repo so GitHub secret
+// scanning doesn't block pushes and the secret isn't published in source.
+let GDRIVE_DESKTOP_CLIENT_ID = '';
+let GDRIVE_DESKTOP_CLIENT_SECRET = '';
+try {
+  const _gc = JSON.parse(fs.readFileSync(path.join(__dirname, 'build', 'gdrive-desktop.json'), 'utf8'));
+  GDRIVE_DESKTOP_CLIENT_ID = _gc.client_id || '';
+  GDRIVE_DESKTOP_CLIENT_SECRET = _gc.client_secret || '';
+} catch (_) {}
+const _gdriveTokenPath = () => path.join(app.getPath('userData'), 'gdrive-token.json');
+function _gdriveSaveRefresh(rt) {
+  try { if (rt) fs.writeFileSync(_gdriveTokenPath(), JSON.stringify({ refresh_token: rt }), 'utf8'); } catch (_) {}
+}
+function _gdriveLoadRefresh() {
+  try { return JSON.parse(fs.readFileSync(_gdriveTokenPath(), 'utf8')).refresh_token || null; } catch (_) { return null; }
+}
+async function _gdriveExchange(params) {
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params),
+  });
+  return resp.json();
+}
+// Silent refresh from the stored refresh_token → {access_token,expires_in} | null.
+ipcMain.handle('gdrive-token-silent', async () => {
+  if (!GDRIVE_DESKTOP_CLIENT_ID) return null;
+  const rt = _gdriveLoadRefresh();
+  if (!rt) return null;
+  try {
+    const tok = await _gdriveExchange({
+      client_id: GDRIVE_DESKTOP_CLIENT_ID,
+      client_secret: GDRIVE_DESKTOP_CLIENT_SECRET,
+      refresh_token: rt,
+      grant_type: 'refresh_token',
+    });
+    if (tok && tok.access_token) return { access_token: tok.access_token, expires_in: tok.expires_in };
+    if (tok && tok.error === 'invalid_grant') { try { fs.unlinkSync(_gdriveTokenPath()); } catch (_) {} }
+  } catch (_) {}
+  return null;
+});
+// Interactive sign-in: system browser → loopback redirect → token exchange.
+ipcMain.handle('gdrive-auth', async () => {
+  if (!GDRIVE_DESKTOP_CLIENT_ID) throw new Error('Desktop Google Drive client not configured');
+  const crypto = require('crypto');
+  const http = require('http');
+  const { shell } = require('electron');
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  return new Promise((resolve, reject) => {
+    let settled = false, redirectPort = 0;
+    const done = (fn, arg) => { if (settled) return; settled = true; try { server.close(); } catch (_) {} fn(arg); };
+    const server = http.createServer(async (req, res) => {
+      try {
+        const u = new URL(req.url, 'http://127.0.0.1');
+        const code = u.searchParams.get('code');
+        const err = u.searchParams.get('error');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<html><body style="font-family:-apple-system,sans-serif;text-align:center;padding-top:60px;color:#222"><h2>로그인이 완료되었습니다 ✓</h2><p>이 탭을 닫고 Turtle Drawing으로 돌아가세요.</p></body></html>');
+        if (err || !code) { done(reject, new Error(err || 'no authorization code')); return; }
+        const tok = await _gdriveExchange({
+          client_id: GDRIVE_DESKTOP_CLIENT_ID,
+          client_secret: GDRIVE_DESKTOP_CLIENT_SECRET,
+          code, code_verifier: verifier,
+          grant_type: 'authorization_code',
+          redirect_uri: 'http://127.0.0.1:' + redirectPort,
+        });
+        if (tok && tok.access_token) {
+          if (tok.refresh_token) _gdriveSaveRefresh(tok.refresh_token);
+          done(resolve, { access_token: tok.access_token, expires_in: tok.expires_in });
+        } else done(reject, new Error((tok && (tok.error_description || tok.error)) || 'token exchange failed'));
+      } catch (e) { done(reject, e); }
+    });
+    server.listen(0, '127.0.0.1', () => {
+      redirectPort = server.address().port;
+      const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
+        client_id: GDRIVE_DESKTOP_CLIENT_ID,
+        redirect_uri: 'http://127.0.0.1:' + redirectPort,
+        response_type: 'code',
+        scope: 'https://www.googleapis.com/auth/drive.file',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        access_type: 'offline',
+        prompt: 'consent',
+      });
+      shell.openExternal(authUrl);
+    });
+    setTimeout(() => done(reject, new Error('sign-in timed out')), 180000);
+  });
+});
+ipcMain.handle('gdrive-signout', async () => { try { fs.unlinkSync(_gdriveTokenPath()); } catch (_) {} return true; });
+
 let autoUpdater = null;
 try {
   // Only enable auto-updater for real packaged builds where the
@@ -1238,6 +1339,9 @@ function createWindow(pendingDocJson) {
         { label: 'Save',          accelerator: 'CmdOrCtrl+S',       click: send('file-save') },
         { label: 'Save As...',    accelerator: 'Shift+CmdOrCtrl+S', click: send('file-save-as') },
         { type: 'separator' },
+        { label: 'Open from Google Drive...', click: send('gdrive-open') },
+        { label: 'Save to Google Drive',      click: send('gdrive-save') },
+        { type: 'separator' },
         {
           label: 'Import',
           submenu: [
@@ -1438,6 +1542,8 @@ function createWindow(pendingDocJson) {
         { label: 'Onboarding Tour', click: send('start-onboarding') },
         { type: 'separator' },
         { label: 'Shortcuts & Help', click: send('help') },
+        { type: 'separator' },
+        { label: 'Sign out of Google Drive', click: send('gdrive-signout') },
         { type: 'separator' },
         {
           label: 'Reveal Error Log…',
