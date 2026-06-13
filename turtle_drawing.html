@@ -941,6 +941,9 @@ html.td-web.theme-apple #rightpanel {
         <div data-act="file-save">Save <span>Ctrl+S</span></div>
         <div data-act="file-save-as">Save As...</div>
         <div class="sep"></div>
+        <div data-act="gdrive-open">Open from Google Drive...</div>
+        <div data-act="gdrive-save">Save to Google Drive</div>
+        <div class="sep"></div>
         <div class="submenu">Import <span>▸</span>
           <div class="subdropdown">
             <div data-act="import-dxf">DXF...</div>
@@ -1110,6 +1113,7 @@ html.td-web.theme-apple #rightpanel {
         <div data-act="open-shortcuts">Keyboard Shortcuts...</div>
         <div class="sep"></div>
         <div data-act="install-app">Install as App (no browser UI)</div>
+        <div data-act="gdrive-signout">Sign out of Google Drive</div>
         <div data-act="download-error-log">Download Error Log</div>
       </div>
     </div>
@@ -1705,6 +1709,7 @@ window._ensureVendor = _ensureVendor;
 <script src="ad/core.js"></script>
 <script src="ad/idb.js"></script>
 <script src="ad/dwg.js"></script>
+<script src="ad/gdrive.js"></script>
 <script src="ad/hatch.js"></script>
 <script src="ad/hatch_lines.js"></script>
 <script src="ad/scenes.js"></script>
@@ -23930,16 +23935,16 @@ function _markSavedAs(fname) {
   } catch (_) {}
   setStatus('msg', 'Saved ' + fname);
 }
-function saveTT(name, opts) {
-  // Hard guard: NaN vertices serialize as null and the file may never reopen.
-  // Block the save outright — the model is fixable (undo / delete the object),
-  // a corrupted .tt overwriting the last good save is not.
+/* Serialize the live scene to .tt JSON with the save guards (NaN block,
+   integrity check). Shared by local saves AND cloud (Google Drive) saves.
+   Returns null when the save must be blocked (error already shown). */
+window._buildTTJson = function () {
   try {
     const nan = _saveNaNScan();
     if (nan.bad > 0) {
       showError('저장이 차단되었습니다 — 좌표가 손상된(NaN) 객체 ' + nan.bad + '개: ' +
         nan.names.join(', ') + '\n실행 취소(Cmd+Z)로 되돌리거나 해당 객체를 삭제한 뒤 다시 저장하세요.');
-      return;
+      return null;
     }
   } catch (_) {}
   try { _saveIntegrityCheck(); } catch (_) {}
@@ -23948,7 +23953,24 @@ function saveTT(name, opts) {
   // doubles both the file size and the stringify time on heavy models.
   let json = JSON.stringify(doc, null, 2);
   if (json.length > 8000000) json = JSON.stringify(doc);
+  return json;
+};
+
+function saveTT(name, opts) {
+  const json = window._buildTTJson();
+  if (json == null) return;
   const fname = (name || currentFileName || 'drawing').replace(/\.tt$/i, '') + '.tt';
+  // Cloud-backed tab: a document opened from (or saved to) Google Drive keeps
+  // saving back to Drive on Cmd+S — that's what makes "work from anywhere"
+  // actually work. Save As (forceDialog) breaks the link deliberately.
+  if (!(opts && opts.forceDialog) && !name && window.AD && AD.GDrive) {
+    const T = AD.Tabs;
+    const tab = (T && T.list) ? T.list.find(x => x.id === T.activeId) : null;
+    if (tab && tab._driveFileId) {
+      AD.GDrive.saveCurrent(json, fname, tab);
+      return;
+    }
+  }
   if (window.electronSaveTT) {
     const forceDialog = !!(opts && opts.forceDialog) || !!name;
     const known = (!forceDialog && window.currentFilePath) ? window.currentFilePath : null;
@@ -26764,6 +26786,15 @@ function _handleActionImpl(act) {
       } else if (typeof openFileDialog === 'function') {
         openFileDialog('.dwg');
       }
+      break;
+    case 'gdrive-open':
+      if (window.AD && AD.GDrive) AD.GDrive.open();
+      break;
+    case 'gdrive-save':
+      if (window.AD && AD.GDrive) AD.GDrive.saveAs();
+      break;
+    case 'gdrive-signout':
+      if (window.AD && AD.GDrive) AD.GDrive.signOut();
       break;
     case 'download-error-log':
       // Web replacement for Help → Reveal Error Log (journal lives in IDB).
