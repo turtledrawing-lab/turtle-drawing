@@ -79,9 +79,16 @@ html.td-web #toolbar, html.td-web #rightpanel, html.td-web #statusbar {
 html.td-web #rightpanel,
 html.td-web .theme-apple #rightpanel,
 html.td-web.theme-apple #rightpanel {
-  background: rgba(240, 240, 245, 0.45) !important;
+  background: rgba(240, 240, 245, 0.5) !important;
   -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
   backdrop-filter: blur(40px) saturate(180%) !important; }
+/* Left toolbar matched to ~50% on web (the .theme-apple base is 0.32). Higher
+   specificity than .theme-apple #toolbar, so this wins among !important rules.
+   Web-only — the desktop toolbar keeps its own translucency. */
+html.td-web #toolbar,
+html.td-web .theme-apple #toolbar,
+html.td-web.theme-apple #toolbar {
+  background: rgba(240, 240, 245, 0.5) !important; }
 /* Explicit min-width:0 on children so grid can shrink them below intrinsic size */
 #app > * { min-width: 0; }
 #toolbar, #viewport, #rightpanel { min-width: 0; }
@@ -90,7 +97,7 @@ html.td-web.theme-apple #rightpanel {
 /* ─── Menu bar (macOS) ─────────────────────────────────────────────────── */
 #menubar { grid-area: menu;
   position: relative; z-index: 1000;
-  background: rgba(246, 246, 246, 0.90);
+  background: rgba(246, 246, 246, 0.5);
   -webkit-backdrop-filter: saturate(1.8) blur(20px);
   backdrop-filter: saturate(1.8) blur(20px);
   border-bottom: 0.5px solid rgba(0, 0, 0, 0.12);
