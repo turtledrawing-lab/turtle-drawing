@@ -1422,7 +1422,7 @@ function createWindow(pendingDocJson) {
       submenu: [
         { role: 'about', label: 'About Turtle Drawing' },
         { type: 'separator' },
-        { label: 'Check for updates...', click: () => checkForUpdatesManually(win) },
+        { label: 'Check for updates...', click: () => checkForUpdatesManually(BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows().find(w => !w.isDestroyed())) },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -1746,6 +1746,7 @@ function checkForUpdatesSilently(win) {
 }
 
 function checkForUpdatesManually(win) {
+  if (!win || win.isDestroyed()) win = undefined;   // windowless dialog is safe; never pass a destroyed window
   if (!autoUpdater) {
     dialog.showMessageBox(win, { type: 'info', message: 'Updates work only in distributed builds.' });
     return;

@@ -38,6 +38,7 @@
   }
 
   function apply(lang) {
+    if (!orig.size && document.getElementById('menubar')) capture();   // cover clicks before the fetch settles
     _lang = (lang === 'ko') ? 'ko' : 'en';
     orig.forEach((key, el) => setLead(el, _lang === 'ko' ? (KO[key] || key) : key));
     // Language picker rows: show each language in its own script and tick the active one.
@@ -67,16 +68,19 @@
 
   function init() {
     if (!document.getElementById('menubar')) return;
-    capture();
+    if (!orig.size) capture();
     apply(get());
   }
+
+  // Capture + apply as soon as the DOM is ready, INDEPENDENT of the network —
+  // so an early language click isn't a dead no-op. The fetch then loads the
+  // Korean strings and re-applies once they arrive.
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
 
   fetch('i18n-menu.json')
     .then((r) => r.json())
     .then((j) => { KO = (j && j.ko) || {}; })
     .catch(() => { KO = {}; })
-    .finally(() => {
-      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-      else init();
-    });
+    .finally(() => { init(); });
 })();
