@@ -499,6 +499,22 @@ ipcMain.handle('gdrive-open-picker', async (event, cfg) => {
       },
     });
     pick.setMenuBarVisibility(false);
+    // First-login robustness: the Google sign-in opens as a child popup. The
+    // picker built before any Google web session exists can error ("invalid
+    // developer key") when it refreshes itself right after login. When that
+    // popup closes, reload the picker page ONCE so it rebuilds cleanly with the
+    // now-established session. (Subsequent opens already have the session and
+    // skip this.)
+    let reloadedAfterLogin = false;
+    pick.webContents.on('did-create-window', (child) => {
+      try {
+        child.on('closed', () => {
+          if (reloadedAfterLogin || settled) return;
+          reloadedAfterLogin = true;
+          try { if (pick && !pick.isDestroyed()) pick.webContents.reload(); } catch (_) {}
+        });
+      } catch (_) {}
+    });
     // Contain the token-bearing MAIN frame: block it from navigating away from
     // the allow-listed origins (defense-in-depth around the OAuth token the
     // preload hands the page; the preload also only releases the token to the
