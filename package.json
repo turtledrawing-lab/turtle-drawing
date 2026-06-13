@@ -1,6 +1,6 @@
 {
   "name": "turtle-drawing",
-  "version": "1.0.0-beta.7",
+  "version": "1.0.0-beta.8",
   "description": "Turtle Drawing — architectural sectional perspective tool.",
   "main": "main.js",
   "author": "sooyonghwang",
@@ -70,6 +70,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "picker-preload.js",
       "turtle_drawing.html",
       "splash.html",
       "package.json",

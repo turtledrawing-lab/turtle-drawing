@@ -437,6 +437,54 @@ ipcMain.handle('gdrive-auth', async () => {
 });
 ipcMain.handle('gdrive-signout', async () => { try { fs.unlinkSync(_gdriveTokenPath()); } catch (_) {} return true; });
 
+// Google Drive Picker window. The official Picker is a web widget that needs a
+// real https origin, which the file:// renderer can't provide — so we host it
+// at https://tdw.kr/desktop-picker.html in a dedicated child window and relay
+// the renderer's OAuth token + API key over IPC. Resolves with the picked
+// { id, name }, null on cancel, or { failed:true } when the window can't load
+// (the renderer then falls back to its built-in list).
+const GDRIVE_PICKER_URL = 'https://tdw.kr/desktop-picker.html';
+ipcMain.handle('gdrive-open-picker', async (event, cfg) => {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  return new Promise((resolve) => {
+    let settled = false;
+    let pick = null;
+    const finish = (val) => {
+      if (settled) return; settled = true;
+      ipcMain.removeListener('gdrive-picker-result', onResult);
+      try { if (pick && !pick.isDestroyed()) pick.close(); } catch (_) {}
+      resolve(val);
+    };
+    const onResult = (_e, result) => finish(result);
+    ipcMain.on('gdrive-picker-result', onResult);
+    pick = new BrowserWindow({
+      width: 760, height: 580,
+      parent: parent || undefined,
+      modal: !!parent,
+      title: 'Google Drive',
+      backgroundColor: '#1c1c1e',
+      minimizable: false, maximizable: false, fullscreenable: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        preload: path.join(__dirname, 'picker-preload.js'),
+      },
+    });
+    pick.setMenuBarVisibility(false);
+    pick.webContents.on('did-finish-load', () => {
+      try { pick.webContents.send('picker-config', cfg || {}); } catch (_) {}
+    });
+    pick.webContents.on('did-fail-load', (_e, code) => {
+      if (code === -3) return; // ABORTED (e.g. an internal redirect) — ignore
+      finish({ failed: true });
+    });
+    pick.on('closed', () => finish(null));
+    pick.loadURL(GDRIVE_PICKER_URL);
+    setTimeout(() => finish({ failed: true }), 120000);
+  });
+});
+
 let autoUpdater = null;
 try {
   // Only enable auto-updater for real packaged builds where the

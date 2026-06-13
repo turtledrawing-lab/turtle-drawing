@@ -54,6 +54,9 @@ window.electronErrorLog = async (lines) => {
 window.electronGDriveSilent  = async () => { try { return await ipcRenderer.invoke('gdrive-token-silent'); } catch (_) { return null; } };
 window.electronGDriveAuth    = async () => ipcRenderer.invoke('gdrive-auth');
 window.electronGDriveSignout = async () => { try { return await ipcRenderer.invoke('gdrive-signout'); } catch (_) { return false; } };
+// Official Google Picker in a dedicated https window (file:// can't run it).
+// cfg: { token, apiKey, appId, mode, locale } → { id,name } | null | {failed}.
+window.electronGDrivePicker = async (cfg) => { try { return await ipcRenderer.invoke('gdrive-open-picker', cfg); } catch (_) { return { failed: true }; } };
 
 // Detach the current tab's document into a new top-level window.
 window.electronDetachTab = async (docJson) => {

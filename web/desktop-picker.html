@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Google Drive</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1c1c1e;
+    font: 13px -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  #msg { position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px; color: #f2f2f7;
+    text-align: center; padding: 24px; box-sizing: border-box; }
+  .spin { width: 26px; height: 26px; border: 3px solid rgba(255,255,255,0.22);
+    border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div id="msg"><div class="spin"></div><div>Google Drive 여는 중…</div></div>
+  <!-- Picker host page for the Turtle Drawing DESKTOP app. The Electron
+       renderer runs from file://, which Google's Picker iframe rejects, so the
+       app opens this page (a real https origin) in a child window, hands it the
+       OAuth token + API key over IPC (window.electronPicker), and gets the
+       picked file back. Harmless if opened directly in a browser. -->
+  <script src="https://apis.google.com/js/api.js"></script>
+  <script>
+  (function () {
+    var msg = document.getElementById('msg');
+    function show(html) { if (msg) { msg.innerHTML = html; msg.style.display = 'flex'; } }
+    function hide() { if (msg) msg.style.display = 'none'; }
+    function done(r) { try { window.electronPicker.done(r); } catch (e) {} }
+
+    if (!window.electronPicker) {
+      show('이 페이지는 Turtle Drawing 데스크톱 앱에서 사용됩니다.');
+      return;
+    }
+
+    window.electronPicker.getConfig().then(function (cfg) {
+      gapi.load('picker', {
+        callback: function () { build(cfg); },
+        onerror: function () { show('Picker 로드 실패'); done({ failed: true }); },
+      });
+    }).catch(function () { done({ failed: true }); });
+
+    function build(cfg) {
+      try {
+        var view;
+        if (cfg.mode === 'folder') {
+          view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+            .setIncludeFolders(true)
+            .setSelectFolderEnabled(true)
+            .setMimeTypes('application/vnd.google-apps.folder');
+        } else {
+          view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+            .setIncludeFolders(true)
+            .setMimeTypes('application/json,text/plain,application/octet-stream');
+        }
+        var b = new google.picker.PickerBuilder()
+          .setOAuthToken(cfg.token)
+          .setDeveloperKey(cfg.apiKey)
+          .setOrigin(window.location.protocol + '//' + window.location.host)
+          .addView(view)
+          .setLocale(cfg.locale || 'ko')
+          .setTitle(cfg.mode === 'folder' ? '저장할 폴더 선택' : 'Turtle Drawing 문서 열기')
+          .setCallback(function (data) {
+            var A = google.picker.Action;
+            if (data.action === A.PICKED) {
+              var d = data.docs && data.docs[0];
+              done(d ? { id: d.id, name: d.name } : null);
+            } else if (data.action === A.CANCEL) {
+              done(null);
+            }
+          });
+        if (cfg.appId) b.setAppId(cfg.appId);
+        var picker = b.build();
+        picker.setVisible(true);
+        hide();
+      } catch (e) {
+        show('Picker 오류: ' + (e && e.message || e));
+        done({ failed: true });
+      }
+    }
+  })();
+  </script>
+</body>
+</html>
