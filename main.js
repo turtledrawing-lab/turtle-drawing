@@ -455,19 +455,29 @@ ipcMain.handle('gdrive-signout', async () => {
 // Cloudflare Pages serves the page at the extensionless path (it 308-redirects
 // /desktop-picker.html → /desktop-picker), so point straight at the clean URL.
 const GDRIVE_PICKER_URL = 'https://tdw.kr/desktop-picker';
+// Origins the token-bearing picker window may legitimately navigate to: our
+// host page plus the Google domains the Picker widget and sign-in use. Anything
+// else is blocked so a compromised/MITM'd page can't pivot the preload (which
+// holds the OAuth token) to an attacker origin.
+const GDRIVE_PICKER_ORIGINS = new Set([
+  'https://tdw.kr',
+  'https://accounts.google.com',
+  'https://content.googleapis.com',
+  'https://apis.google.com',
+  'https://docs.google.com',
+  'https://drive.google.com',
+]);
 ipcMain.handle('gdrive-open-picker', async (event, cfg) => {
   const parent = BrowserWindow.fromWebContents(event.sender);
   return new Promise((resolve) => {
     let settled = false;
     let pick = null;
+    let loaded = false;
     const finish = (val) => {
       if (settled) return; settled = true;
-      ipcMain.removeListener('gdrive-picker-result', onResult);
       try { if (pick && !pick.isDestroyed()) pick.close(); } catch (_) {}
       resolve(val);
     };
-    const onResult = (_e, result) => finish(result);
-    ipcMain.on('gdrive-picker-result', onResult);
     pick = new BrowserWindow({
       width: 760, height: 580,
       parent: parent || undefined,
@@ -489,10 +499,31 @@ ipcMain.handle('gdrive-open-picker', async (event, cfg) => {
       },
     });
     pick.setMenuBarVisibility(false);
+    // Contain the token-bearing MAIN frame: block it from navigating away from
+    // the allow-listed origins (defense-in-depth around the OAuth token the
+    // preload hands the page; the preload also only releases the token to the
+    // tdw.kr origin). We deliberately do NOT deny window.open — the Google
+    // sign-in the Picker needs opens as a popup, which is a separate webContents
+    // (no token preload that would expose it via getConfig's origin gate).
+    const navGuard = (e, url) => {
+      let origin = null;
+      try { origin = new URL(url).origin; } catch (_) {}
+      if (!origin || !GDRIVE_PICKER_ORIGINS.has(origin)) e.preventDefault();
+    };
+    pick.webContents.on('will-navigate', navGuard);
+    pick.webContents.on('will-redirect', navGuard);
+    // Result comes ONLY from this window's renderer — per-webContents IPC, not
+    // the global ipcMain channel, so concurrent picker windows can't cross-talk.
+    pick.webContents.ipc.on('gdrive-picker-result', (_e, result) => finish(result));
     pick.webContents.on('did-finish-load', () => {
+      loaded = true;
       try { pick.webContents.send('picker-config', cfg || {}); } catch (_) {}
     });
-    pick.webContents.on('did-fail-load', (_e, code) => {
+    pick.webContents.on('did-fail-load', (_e, code, _desc, _url, isMainFrame) => {
+      // Only a MAIN-frame load failure before the host page loads is fatal.
+      // Subframe failures (the Google Picker iframes) and any failure after the
+      // page is up must NOT tear the picker down mid-use.
+      if (!isMainFrame || loaded) return;
       if (code === -3) return; // ABORTED (e.g. an internal redirect) — ignore
       finish({ failed: true });
     });

@@ -205,7 +205,9 @@
       const r = await window.electronGDrivePicker({ token, apiKey: API_KEY, appId: APP_ID, mode, locale: 'ko' });
       if (!r) return null;            // window closed without a pick → cancel
       if (r.failed) return undefined; // couldn't load → fall back
-      if (r.id) return { id: r.id, name: r.name };
+      // The id comes from a remote page — treat as untrusted; only accept a
+      // well-formed Drive file id (defense-in-depth before we fetch it).
+      if (r.id && /^[A-Za-z0-9_-]{10,}$/.test(r.id)) return { id: String(r.id), name: String(r.name || '') };
       return null;
     } catch (_) { return undefined; }
   }
@@ -244,7 +246,10 @@
           const r = await _desktopPicker('folder');
           if (r && r.id) folderId = r.id;
           else if (r === null) { _say('취소됨'); return; }
-          // r === undefined → no folder popup → save to Drive root
+          // In this branch the picker IS applicable, so undefined means the
+          // window failed to load/timed out — surface it instead of silently
+          // saving to Drive root.
+          else { _fail('Google Drive 폴더 선택 창을 열지 못했습니다 — 다시 시도해주세요.'); return; }
         } else {
           const token = await _getToken();
           if (await _ensurePicker()) {
