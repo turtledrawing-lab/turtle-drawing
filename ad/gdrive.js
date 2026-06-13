@@ -26,7 +26,7 @@
   // Google Picker (the native Drive popup) additionally needs an API key
   // (Cloud Console → Credentials → API key) with the Picker API enabled.
   // Empty key → graceful fallback to the built-in list modal.
-  const API_KEY = '';
+  const API_KEY = 'AIzaSyDniPLIFNKq7Ak5_SSwzulAxcBpIWA0iQE';
   const APP_ID = CLIENT_ID.split('-')[0];   // project number
   const SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const GSI_SRC = 'https://accounts.google.com/gsi/client';
