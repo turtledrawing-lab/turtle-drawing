@@ -581,6 +581,40 @@ function showSplashOnce() {
   return splash;
 }
 
+/* ── Native menu language (Korean / English) ──────────────────────────────
+   Shares the same English→Korean label map as the web menu (i18n-menu.json).
+   The menu template is rebuilt from its English literals each time and then
+   translated in place, so switching languages re-translates cleanly. The
+   choice persists in userData; default follows the OS locale. */
+let MENU_I18N = {};
+try { MENU_I18N = (JSON.parse(fs.readFileSync(path.join(__dirname, 'i18n-menu.json'), 'utf8')).ko) || {}; } catch (_) {}
+const _menuLangPath = () => path.join(app.getPath('userData'), 'menu-lang.json');
+function _loadMenuLang() {
+  try { const v = JSON.parse(fs.readFileSync(_menuLangPath(), 'utf8')).lang; if (v === 'ko' || v === 'en') return v; } catch (_) {}
+  try { if ((app.getLocale() || '').toLowerCase().indexOf('ko') === 0) return 'ko'; } catch (_) {}
+  return 'en';
+}
+// Resolved lazily on the first menu build — app.getLocale() is only reliable
+// after the app is ready (this module evaluates before that).
+let _menuLang = 'en';
+let _menuLangLoaded = false;
+function ensureMenuLang() { if (!_menuLangLoaded) { _menuLangLoaded = true; _menuLang = _loadMenuLang(); } }
+const T = (s) => ((_menuLang === 'ko' && typeof s === 'string' && MENU_I18N[s]) ? MENU_I18N[s] : s);
+function _translateTemplate(items) {
+  if (!Array.isArray(items)) return items;
+  for (const it of items) {
+    if (it && typeof it.label === 'string') it.label = T(it.label);
+    if (it && it.submenu) _translateTemplate(it.submenu);
+  }
+  return items;
+}
+let _rebuildMenu = null;   // set by the most recent createWindow; the app menu is global
+function setMenuLang(lang) {
+  _menuLang = (lang === 'ko') ? 'ko' : 'en';
+  try { fs.writeFileSync(_menuLangPath(), JSON.stringify({ lang: _menuLang }), 'utf8'); } catch (_) {}
+  try { if (_rebuildMenu) _rebuildMenu(); } catch (_) {}
+}
+
 function createWindow(pendingDocJson) {
   const splash = showSplashOnce();
 
@@ -1380,6 +1414,8 @@ function createWindow(pendingDocJson) {
 
   const isMac = process.platform === 'darwin';
 
+  const buildMenu = () => {
+  ensureMenuLang();
   const template = [
     ...(isMac ? [{
       label: app.name,
@@ -1651,6 +1687,14 @@ function createWindow(pendingDocJson) {
     {
       label: 'Help',
       submenu: [
+        {
+          label: 'Language',
+          submenu: [
+            { label: 'English', type: 'radio', checked: _menuLang === 'en', click: () => setMenuLang('en') },
+            { label: '한국어',   type: 'radio', checked: _menuLang === 'ko', click: () => setMenuLang('ko') },
+          ],
+        },
+        { type: 'separator' },
         { label: 'Onboarding Tour', click: send('start-onboarding') },
         { type: 'separator' },
         { label: 'Shortcuts & Help', click: send('help') },
@@ -1672,7 +1716,11 @@ function createWindow(pendingDocJson) {
     },
   ];
 
+  _translateTemplate(template);
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  };
+  _rebuildMenu = buildMenu;
+  buildMenu();
 
   setTimeout(() => checkForUpdatesSilently(win), 3000);
   return win;
