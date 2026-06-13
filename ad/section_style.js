@@ -303,7 +303,11 @@
           // Thick cut edges.
           if (typeof THREE.LineSegments2 === 'function') {
             const positions = [];
-            const eoff = sp.plane.normal.clone().multiplyScalar(0.004);
+            // Sit the edge just IN FRONT of the cut fills (smallest inward
+            // offset) so depthTest can be on: the line stays visible on the
+            // cut side (nothing in front of it) but the kept solid occludes
+            // it from the BACK, instead of the line bleeding through the model.
+            const eoff = sp.plane.normal.clone().multiplyScalar(0.001);
             for (const s of boundary) {
               const a = s[0].clone().add(eoff);
               const b = s[1].clone().add(eoff);
@@ -318,7 +322,7 @@
               linewidth: pxWidth,
               resolution: new THREE.Vector2(vp ? vp.clientWidth : 1280,
                                             vp ? vp.clientHeight : 720),
-              depthTest: false,
+              depthTest: true,
               clippingPlanes: [],
             });
             const mesh = new THREE.LineSegments2(gm, mat);
@@ -511,7 +515,10 @@
     let u = Math.abs(n.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
     u.sub(n.clone().multiplyScalar(u.dot(n))).normalize();
     const v = new THREE.Vector3().crossVectors(n, u);
-    const lift = plane.normal.clone().multiplyScalar(0.005);
+    // Hatch lines sit just in front of the white base (0.003) but behind the
+    // cut edge (0.001), so with depthTest on they layer correctly on the cut
+    // side and the kept solid occludes them from the back.
+    const lift = plane.normal.clone().multiplyScalar(0.002);
 
     // Paint a white base plane under the hatch first — earcut
     // triangulation with hole subtraction so cut polygons with voids
@@ -613,7 +620,7 @@
     const geom = new THREE.BufferGeometry().setFromPoints(allPoints);
     // Hatch lines draw on top of the white fill.
     const mat = new THREE.LineBasicMaterial({
-      color: 0x1a1a1a, depthWrite: false, depthTest: false,
+      color: 0x1a1a1a, depthWrite: false, depthTest: true,
     });
     const ls = new THREE.LineSegments(geom, mat);
     ls.renderOrder = 210;
