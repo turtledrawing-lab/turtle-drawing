@@ -467,7 +467,12 @@
     geo.computeVertexNormals();
     const mat = new THREE.MeshBasicMaterial({
       color, side: THREE.DoubleSide,
-      depthTest: false, depthWrite: false,
+      // The cut fill is a SOLID cap — it must write depth and occlude the
+      // interior back-faces exposed behind the cut. With depthWrite/Test off
+      // the (opaque) cap failed to hide them, so the remaining solid looked
+      // see-through past the cut. The 0.006 normal offset (above) lifts the
+      // cap just inside the kept half so it never z-fights the clipped edge.
+      depthTest: true, depthWrite: true,
       clippingPlanes: [],
     });
     const mesh = new THREE.Mesh(geo, mat);
