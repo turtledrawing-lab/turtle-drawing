@@ -22201,7 +22201,12 @@ Tools.section = {
   },
 
   onPointerMove(e) {
-    const hits = raycastObjects(e, { skipOuterGroups: true });
+    // Section planes don't merge or modify geometry — they only read a face's
+    // plane to seed a clipping plane — so they must hover ANY visible face,
+    // including faces of grouped objects. skipOuterGroups (the guard that keeps
+    // drawing tools from welding into outside groups) wrongly excluded grouped
+    // objects here, so the cursor never picked up their faces.
+    const hits = raycastObjects(e, {});
     if (hits.length) {
       const o = hits[0].object.userData.sketchObject;
       const fi = o.mesh.geometry.userData.faceIdxMap[hits[0].faceIndex];
