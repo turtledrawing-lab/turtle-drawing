@@ -921,19 +921,17 @@ input[type="range"]:hover { accent-color: #22a722; }
      of it (over the viewport) instead of on top of its collapse button.
      var(--right-w) tracks the panel's live width (40px collapsed / saved px). */
   html.td-web #mobileFsBtn { display: flex;
-    right: calc(env(safe-area-inset-right, 0px) + var(--right-w, 240px) + 10px) !important; }
+    right: calc(var(--right-w, 240px) + 10px) !important; }
   html.td-web #menubar { padding: 0 4px; gap: 0; }
   html.td-web #menubar .menu-item { padding: 0 7px; }
-  /* Full-screen safe-area inset: pull the whole UI in from the notch / rounded
-     corners so edge text isn't clipped. The viewport is interior (framed by the
-     chrome) so it stays large — only the edge chrome moves inward. env()=0 when
-     there's no unsafe area, so this is a no-op on normal screens. Fixed-position
-     chrome (tab bar, fs button) is screen-relative, so it adds its own insets. */
+  /* Full-screen inset: only TOP/BOTTOM (status notch + home indicator). The
+     LEFT/RIGHT edges run to the screen edge on purpose — the user wants the
+     landscape layout to use the full width — so no horizontal inset here.
+     env()=0 on normal screens, so this is a no-op there. */
   html.td-web #app { box-sizing: border-box;
-    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
-             env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+    padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px) 0; }
   html.td-web #adTabBar { top: calc(26px + env(safe-area-inset-top, 0px)) !important;
-                          left: calc(var(--toolbar-w, 80px) + env(safe-area-inset-left, 0px)) !important; }
+                          left: var(--toolbar-w, 80px) !important; }
 }
 /* Floating bottom tool bar — phones only (full-screen viewer + quick tools). */
 #mobileToolbar { display: none; gap: 5px; position: fixed; left: 50%;
