@@ -30,6 +30,9 @@ html, body { background: transparent !important; width: 100%; height: 100%; over
   letter-spacing: -0.003em;
   color: #1d1d1f; user-select: none; }
 
+/* Left toolbar width, mirrored as a custom property so screen-fixed chrome
+   (e.g. #adTabBar) can align to it across the responsive breakpoints below. */
+:root { --toolbar-w: 80px; }
 #app { background: transparent; display: grid; width: 100vw; height: 100vh; min-width: 0;
   grid-template-rows: 0 minmax(0, 1fr) 22px;
   grid-template-columns: 80px minmax(0, 1fr) var(--right-w, 240px);
@@ -889,36 +892,52 @@ input[type="range"]:hover { accent-color: #22a722; }
    tap to select) — the old "Desktop browser required" block is removed. */
 /* Compact layout for narrow windows — keep 3 columns but shrink right panel */
 @media (max-width: 900px) {
+  :root { --toolbar-w: 72px; }
   #app { grid-template-columns: 72px minmax(0, 1fr) var(--right-w, 240px); }
 }
 @media (max-width: 700px) {
+  :root { --toolbar-w: 64px; }
   #app { grid-template-columns: 64px minmax(0, 1fr) var(--right-w, 220px); }
 }
-/* Phone layout: hide the side panels so the 3D view fills the screen; tools live
-   in the floating bottom bar, orbit/zoom/select are touch gestures. The two
-   clauses catch a phone in EITHER orientation — portrait matches max-width:640,
-   landscape (width grows past 640) matches short height + a width ceiling that
-   excludes a wide-but-short DESKTOP window (phones max ~932px wide in landscape). */
-@media (max-width: 640px), (max-height: 480px) and (max-width: 950px) {
-  html.td-web #toolbar, html.td-web #rightpanel { display: none !important; }
-  html.td-web #app { grid-template-columns: 0 minmax(0, 1fr) 0 !important; }
-  html.td-web #adTabBar { left: 6px !important; }
-  #menubar { padding: 0 4px; gap: 0; }
-  #menubar .menu-item { padding: 0 7px; }
+/* ── Phone layout ──────────────────────────────────────────────────────────
+   PORTRAIT = immersive: hide BOTH side panels and the top menu so the 3D view
+   gets the whole screen; tools live in the floating bottom bar (orbit/zoom/
+   select are touch gestures). LANDSCAPE = the full compact-desktop layout
+   (left toolbar + right panel + top menu) — the user wants the side menus there.
+   The full-screen toggle shows in both. The landscape clause carries a width
+   ceiling (≤950) so a wide-but-short DESKTOP window isn't mistaken for a phone. */
+@media (max-width: 640px) and (orientation: portrait) {
+  html.td-web #toolbar, html.td-web #rightpanel, html.td-web #menubar { display: none !important; }
+  html.td-web #app { grid-template-columns: 0 minmax(0, 1fr) 0 !important;
+                     grid-template-rows: 0 minmax(0, 1fr) 22px !important; }
+  /* Tab bar to the top-left, clear of the notch / rounded corner. */
+  html.td-web #adTabBar { top: max(6px, env(safe-area-inset-top, 0px)) !important;
+                          left: max(6px, env(safe-area-inset-left, 0px)) !important; }
   html.td-web #mobileToolbar { display: flex; }
   html.td-web #mobileFsBtn { display: flex; }
 }
-/* Portrait phone: also hide the top menubar for an immersive full-screen view.
-   Like the side panels, the menu is hidden by default — rotate to LANDSCAPE to
-   bring it back and reach File / Edit / … (it shows again in the landscape rule
-   above since this portrait-only rule no longer matches). */
-@media (max-width: 640px) and (orientation: portrait) {
-  html.td-web #menubar { display: none !important; }
-  html.td-web #app { grid-template-rows: 0 minmax(0, 1fr) 22px !important; }
-  html.td-web #adTabBar { top: 6px !important; }
+@media (max-height: 480px) and (max-width: 950px) and (orientation: landscape) {
+  /* The right panel is visible here, so float the full-screen button just LEFT
+     of it (over the viewport) instead of on top of its collapse button.
+     var(--right-w) tracks the panel's live width (40px collapsed / saved px). */
+  html.td-web #mobileFsBtn { display: flex;
+    right: calc(env(safe-area-inset-right, 0px) + var(--right-w, 240px) + 10px) !important; }
+  html.td-web #menubar { padding: 0 4px; gap: 0; }
+  html.td-web #menubar .menu-item { padding: 0 7px; }
+  /* Full-screen safe-area inset: pull the whole UI in from the notch / rounded
+     corners so edge text isn't clipped. The viewport is interior (framed by the
+     chrome) so it stays large — only the edge chrome moves inward. env()=0 when
+     there's no unsafe area, so this is a no-op on normal screens. Fixed-position
+     chrome (tab bar, fs button) is screen-relative, so it adds its own insets. */
+  html.td-web #app { box-sizing: border-box;
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+             env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+  html.td-web #adTabBar { top: calc(26px + env(safe-area-inset-top, 0px)) !important;
+                          left: calc(var(--toolbar-w, 80px) + env(safe-area-inset-left, 0px)) !important; }
 }
 /* Floating bottom tool bar — phones only (full-screen viewer + quick tools). */
-#mobileToolbar { display: none; gap: 5px; position: fixed; left: 50%; bottom: 30px;
+#mobileToolbar { display: none; gap: 5px; position: fixed; left: 50%;
+  bottom: max(30px, calc(env(safe-area-inset-bottom, 0px) + 16px));
   transform: translateX(-50%); z-index: 5000; padding: 6px;
   background: rgba(246, 246, 246, 0.86); border: 0.5px solid rgba(0,0,0,0.1);
   border-radius: 16px; box-shadow: 0 6px 24px rgba(0,0,0,0.18);
