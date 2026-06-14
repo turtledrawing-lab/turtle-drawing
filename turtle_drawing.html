@@ -89,6 +89,15 @@ html.td-web #toolbar,
 html.td-web .theme-apple #toolbar,
 html.td-web.theme-apple #toolbar {
   background: rgba(240, 240, 245, 0.5) !important; }
+/* Web: the real turtle app icon sits in the toolbar's top-left corner, with the
+   tool buttons starting below it. Hidden on desktop (native traffic lights live
+   there). Reclaim the macOS traffic-light top padding on web. */
+#toolbarLogo { display: none; }
+html.td-web #toolbar { padding-top: 8px !important; }
+html.td-web #toolbarLogo {
+  display: block; grid-column: 1 / -1;
+  width: 32px; height: 32px; margin: 2px auto 12px;
+  border-radius: 8px; -webkit-user-drag: none; user-select: none; }
 /* Explicit min-width:0 on children so grid can shrink them below intrinsic size */
 #app > * { min-width: 0; }
 #toolbar, #viewport, #rightpanel { min-width: 0; }
@@ -933,25 +942,9 @@ html.td-web.theme-apple #toolbar {
 <div id="app">
   <!-- ============================================================ Menu Bar -->
   <div id="menubar">
-    <svg id="app-logo" width="16" height="16" viewBox="0 0 64 64" style="margin:0 4px 0 2px;flex-shrink:0;vertical-align:middle">
-      <!-- simplified turtle shell -->
-      <ellipse cx="32" cy="32" rx="30" ry="30" fill="#2d6e2d"/>
-      <ellipse cx="32" cy="32" rx="25" ry="25" fill="#5cb85c"/>
-      <!-- center hex -->
-      <polygon points="32,22 40,27 40,37 32,42 24,37 24,27" fill="#3a8c3a" stroke="#2d6e2d" stroke-width="1.2"/>
-      <!-- top -->
-      <polygon points="26,21 32,14 38,21 32,22" fill="#4da64d" stroke="#2d6e2d" stroke-width="0.8"/>
-      <!-- bottom -->
-      <polygon points="26,43 32,50 38,43 32,42" fill="#4da64d" stroke="#2d6e2d" stroke-width="0.8"/>
-      <!-- top-right -->
-      <polygon points="40,27 46,20 48,28 40,28" fill="#4da64d" stroke="#2d6e2d" stroke-width="0.8"/>
-      <!-- top-left -->
-      <polygon points="24,27 18,20 16,28 24,28" fill="#4da64d" stroke="#2d6e2d" stroke-width="0.8"/>
-      <!-- bottom-right -->
-      <polygon points="40,37 48,36 46,44 40,37" fill="#4da64d" stroke="#2d6e2d" stroke-width="0.8"/>
-      <!-- bottom-left -->
-      <polygon points="24,37 16,36 18,44 24,37" fill="#4da64d" stroke="#2d6e2d" stroke-width="0.8"/>
-    </svg>
+    <!-- App logo removed on web — the real turtle app icon now sits in the
+         toolbar's top-left corner (#toolbarLogo). -->
+
     <div class="menu-item" data-menu="file">File
       <div class="dropdown">
         <div data-act="new">New <span>Ctrl+N</span></div>
@@ -1147,6 +1140,7 @@ html.td-web.theme-apple #toolbar {
 
   <!-- ============================================================ Toolbar -->
   <div id="toolbar" style="position:relative;">
+    <img id="toolbarLogo" src="icons/icon-192.png" alt="Turtle Drawing" width="32" height="32">
     <button data-tool="select" title="Select (Space)">◰</button>
     <button data-tool="move"   title="Move (M)">✥</button>
     <button data-tool="rotate" title="Rotate (Q)">⟳</button>
@@ -31923,7 +31917,9 @@ animate();
   function save(order) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(order)); } catch (_) {} }
 
   function rebuild(order) {
+    const logo = tb.querySelector('#toolbarLogo');   // pinned brand logo — not a draggable button
     while (tb.firstChild) tb.removeChild(tb.firstChild);
+    if (logo) tb.appendChild(logo);                  // keep it pinned at the top across rebuilds
     let lastWasSep = true;
     for (const id of order) {
       if (id === '|') {
