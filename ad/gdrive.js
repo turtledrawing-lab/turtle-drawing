@@ -41,6 +41,23 @@
   // Services. Either path is "configured" when its credential is present.
   const _isDesktop = () => !!window.electronGDriveAuth;
   const _configured = () => !!CLIENT_ID || _isDesktop();
+
+  // The native Google Picker renders a docs.google.com iframe that needs the
+  // user's Google SESSION cookie. Safari and ALL iOS browsers (WebKit) block
+  // that as a third-party cookie under ITP, so the Picker fails with "invalid
+  // developer key" / "can't access your Google account". On those we skip the
+  // Picker and use the built-in REST list modal, which only needs the OAuth
+  // token we already hold (no third-party cookie, no developer key).
+  const _pickerBlocked = () => {
+    try {
+      const ua = navigator.userAgent || '';
+      const iOS = /iPad|iPhone|iPod/.test(ua) ||
+        (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1); // iPadOS 13+
+      const macSafari = navigator.vendor === 'Apple Computer, Inc.' &&
+        /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Android/.test(ua);
+      return iOS || macSafari;
+    } catch (_) { return false; }
+  };
   const _say = (m) => { try { setStatus('msg', m); } catch (_) { console.log('[gdrive]', m); } };
   const _fail = (m) => { try { showError(m); } catch (_) { alert(m); } };
 
@@ -151,6 +168,7 @@
     // origin, so on file:// Electron we use the built-in list modal instead.
     if (_isDesktop()) return false;
     if (!API_KEY) return false;
+    if (_pickerBlocked()) return false;   // Safari/iOS: third-party cookies kill the Picker → REST list
     try {
       await window._ensureVendor(GAPI_SRC);
       await new Promise((res, rej) => gapi.load('picker', { callback: res, onerror: rej }));
@@ -331,14 +349,14 @@
         'display:flex;align-items:center;justify-content:center;font:13px -apple-system,sans-serif;';
       const box = document.createElement('div');
       box.style.cssText =
-        'background:#fff;border-radius:10px;min-width:380px;max-width:520px;max-height:70vh;' +
+        'background:#fff;border-radius:10px;width:min(520px,92vw);max-height:78vh;' +
         'box-shadow:0 12px 40px rgba(0,0,0,0.3);display:flex;flex-direction:column;overflow:hidden;';
       box.innerHTML = '<div style="padding:12px 16px;font-weight:600;border-bottom:0.5px solid rgba(0,0,0,0.1);">Google Drive — Turtle Drawing 문서</div>';
       const list = document.createElement('div');
       list.style.cssText = 'overflow-y:auto;padding:6px;';
       for (const f of files) {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;justify-content:space-between;gap:16px;padding:8px 10px;border-radius:6px;cursor:pointer;';
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 12px;border-radius:6px;cursor:pointer;';
         const when = f.modifiedTime ? new Date(f.modifiedTime).toLocaleString() : '';
         row.innerHTML = '<span style="font-weight:500;">' + f.name.replace(/</g, '&lt;') + '</span>'
           + '<span style="color:#888;font-size:11px;">' + when + '</span>';
