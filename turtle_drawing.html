@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>Turtle Drawing</title>
 <script>
 /* Runtime detection: under Electron, preload.js runs before any page script
@@ -342,7 +343,7 @@ input[type="range"]:hover { accent-color: #22a722; }
   pointer-events: none;
   z-index: 0;
 }
-#threeCanvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; display: block; z-index: 1; }
+#threeCanvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; display: block; z-index: 1; touch-action: none; }
 #overlay     { position: absolute; inset: 0; width: 100% !important; height: 100% !important; pointer-events: none; z-index: 2; }
 #overlay { position: absolute; inset: 0; pointer-events: none; }
 #sceneTabs { font-size: 12px; }
@@ -884,13 +885,8 @@ input[type="range"]:hover { accent-color: #22a722; }
   height: 0; pointer-events: none; margin: 5px 10px; background: transparent; }
 #contextMenu .sep:hover { background: transparent; }
 
-/* Mobile block (touch-primary small screens) */
-@media (max-width: 480px) {
-  #app { display: none; }
-  body::before { content: "Desktop browser required for Turtle Drawing.";
-    display: flex; align-items: center; justify-content: center;
-    width: 100vw; height: 100vh; font-size: 18px; padding: 40px; text-align: center; }
-}
+/* Phones are supported now (touch: 1-finger orbit, 2-finger pinch-zoom/pan,
+   tap to select) — the old "Desktop browser required" block is removed. */
 /* Compact layout for narrow windows — keep 3 columns but shrink right panel */
 @media (max-width: 900px) {
   #app { grid-template-columns: 72px minmax(0, 1fr) var(--right-w, 240px); }
@@ -3848,6 +3844,111 @@ class OrbitController {
   }
 }
 const controls = new OrbitController(camera, CAN);
+
+/* ── Touch gestures (mobile) ───────────────────────────────────────────────
+   The desktop controls are mouse-only (middle-drag orbit, wheel zoom), so a
+   phone has no way to navigate. Add touch on the SAME canvas, in the CAPTURE
+   phase, acting ONLY on pointerType 'touch' and stopping propagation so neither
+   the tool handlers nor the mouse OrbitControls below ever see the touch.
+     • 1 finger drag  → orbit
+     • 2 fingers      → pinch zoom + drag pan
+     • tap (no move)  → click the active tool (select / place a point)
+   Mouse & pen are completely untouched. */
+(function initTouchControls() {
+  const dom = CAN;
+  const tp = new Map();                 // pointerId → {x, y}
+  let mode = 'none';                    // none | down1 | orbit | pinch
+  let startDist = 0, startRadius = 0, lastCx = 0, lastCy = 0;
+  let downX = 0, downY = 0, downT = 0, moved = false;
+  const TAP_MOVE = 9, TAP_MS = 500;
+  const V = (typeof THREE !== 'undefined') ? THREE.Vector3 : null;
+  const pts = () => [...tp.values()];
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const mid  = (a) => ({ x: (a[0].x + a[1].x) / 2, y: (a[0].y + a[1].y) / 2 });
+
+  function panBy(dx, dy) {
+    if (!V) return;
+    const factor = controls.spherical.radius * 0.0022;
+    const xAxis = new V(), yAxis = new V();
+    camera.matrix.extractBasis(xAxis, yAxis, new V());
+    controls.target.addScaledVector(xAxis, -dx * factor);
+    controls.target.addScaledVector(yAxis,  dy * factor);
+  }
+  function orbitBy(dx, dy) {
+    controls.spherical.theta -= dx * 0.005;
+    controls.spherical.phi   -= dy * 0.005;
+    controls.spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, controls.spherical.phi));
+  }
+
+  function onDown(e) {
+    if (e.pointerType !== 'touch' || !controls.enabled) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    tp.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { dom.setPointerCapture(e.pointerId); } catch (_) {}
+    if (tp.size === 1) {
+      mode = 'down1'; moved = false;
+      downX = lastCx = e.clientX; downY = lastCy = e.clientY; downT = performance.now();
+    } else if (tp.size === 2) {
+      const p = pts();
+      mode = 'pinch';
+      startDist = dist(p[0], p[1]) || 1;
+      startRadius = controls.spherical.radius;
+      const c = mid(p); lastCx = c.x; lastCy = c.y;
+      controls.state = 'pan';
+    }
+  }
+  function onMove(e) {
+    if (e.pointerType !== 'touch' || !tp.has(e.pointerId)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    tp.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === 'pinch' && tp.size >= 2) {
+      const p = pts();
+      const d = dist(p[0], p[1]) || 1;
+      controls.spherical.radius = Math.max(controls.minDistance,
+        Math.min(controls.maxDistance, startRadius * (startDist / d)));
+      const c = mid(p);
+      panBy(c.x - lastCx, c.y - lastCy);
+      lastCx = c.x; lastCy = c.y;
+    } else if (tp.size === 1) {
+      const dx = e.clientX - lastCx, dy = e.clientY - lastCy;
+      lastCx = e.clientX; lastCy = e.clientY;
+      if (!moved && Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE) {
+        moved = true; mode = 'orbit'; controls.state = 'orbit';
+      }
+      if (mode === 'orbit') orbitBy(dx, dy);
+    }
+  }
+  function onUp(e) {
+    if (e.pointerType !== 'touch' || !tp.has(e.pointerId)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    const wasTap = mode === 'down1' && !moved &&
+      (performance.now() - downT) < TAP_MS &&
+      Math.hypot(e.clientX - downX, e.clientY - downY) <= TAP_MOVE;
+    tp.delete(e.pointerId);
+    try { dom.releasePointerCapture(e.pointerId); } catch (_) {}
+    if (wasTap) {
+      // Tap → drive the active tool at that point (select / place a point).
+      const synth = { clientX: downX, clientY: downY, button: 0, buttons: 0,
+        pointerType: 'touch', pointerId: e.pointerId, target: dom,
+        shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
+        preventDefault() {}, stopPropagation() {} };
+      try {
+        if (ToolMgr.active && ToolMgr.active.onPointerDown) ToolMgr.active.onPointerDown(synth);
+        if (ToolMgr.active && ToolMgr.active.onPointerUp)   ToolMgr.active.onPointerUp(synth);
+      } catch (err) { console.error('[touch-tap]', err); }
+    }
+    if (tp.size === 0) { mode = 'none'; controls.state = 'none'; }
+    else if (tp.size === 1) {            // 2→1: keep orbiting with the remaining finger
+      const r = pts()[0]; lastCx = downX = r.x; lastCy = downY = r.y;
+      mode = 'orbit'; moved = true; downT = performance.now();
+      controls.state = 'orbit';
+    }
+  }
+  dom.addEventListener('pointerdown', onDown, { capture: true, passive: false });
+  dom.addEventListener('pointermove', onMove, { capture: true, passive: false });
+  dom.addEventListener('pointerup',   onUp,   { capture: true, passive: false });
+  dom.addEventListener('pointercancel', onUp, { capture: true, passive: false });
+})();
 
 /* ========================================================================== */
 /* 3. EDITABLE MESH                                                            */
