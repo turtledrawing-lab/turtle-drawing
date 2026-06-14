@@ -300,14 +300,18 @@
             pick = await _showPicker(token, 'open');
             if (!pick) { _say('취소됨'); return; }
           } else {
-            // Fallback: app-created files via the REST list + built-in modal.
+            // Fallback (iOS/Safari, or no API key): list the app's files via REST
+            // and show the built-in modal — grouped by parent folder, searchable.
+            // drive.file scope means we only see files THIS app created/opened and
+            // the folders it was granted (e.g. a desktop "save into folder").
             _say('Google Drive 목록을 불러오는 중…');
             const q = encodeURIComponent("appProperties has { key='app' and value='turtle-drawing' } and trashed=false");
             const resp = await _api('https://www.googleapis.com/drive/v3/files?q=' + q
-              + '&orderBy=modifiedTime desc&pageSize=50&fields=files(id,name,modifiedTime,size)');
+              + '&orderBy=modifiedTime desc&pageSize=200&fields=files(id,name,modifiedTime,size,parents)');
             const { files } = await resp.json();
             if (!files || !files.length) { _say('Drive에 저장된 Turtle Drawing 문서가 없습니다.'); return; }
-            pick = await _pickModal(files);
+            const folderNames = await _resolveFolderNames(files);
+            pick = await _pickModal(files, folderNames);
             if (!pick) { _say('취소됨'); return; }
           }
         }
@@ -340,43 +344,111 @@
       + '(개발자: Google Cloud Console에서 OAuth Web Client ID를 만들어 ad/gdrive.js의 CLIENT_ID에 넣으세요.)';
   }
 
-  /* Minimal file-pick modal (name + modified time rows). */
-  function _pickModal(files) {
+  /* Resolve parent-folder display names for the listed files. With drive.file
+     we can read a folder's metadata only when the app was granted it (created
+     it, or saved into it via the folder picker); anything else (incl. My Drive
+     root) fails the get and falls back to a "내 드라이브" label. One parallel
+     batch of gets, failures tolerated. */
+  async function _resolveFolderNames(files) {
+    const ids = [...new Set(files.flatMap((f) => f.parents || []))];
+    const map = {};
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const r = await _api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(id) + '?fields=id,name');
+        map[id] = (await r.json()).name || null;
+      } catch (_) { map[id] = null; }
+    }));
+    return map;
+  }
+
+  /* File-pick modal — files grouped under their parent folder, with a live
+     search box. Folders whose names we couldn't read (root, or not granted)
+     collapse into a "내 드라이브" group. Resolves the picked file or null. */
+  function _pickModal(files, folderNames) {
+    folderNames = folderNames || {};
     return new Promise((resolve) => {
       const wrap = document.createElement('div');
       wrap.style.cssText =
-        'position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:100000;' +
+        'position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:100000;box-sizing:border-box;padding:12px;' +
         'display:flex;align-items:center;justify-content:center;font:13px -apple-system,sans-serif;';
       const box = document.createElement('div');
       box.style.cssText =
-        'background:#fff;border-radius:10px;width:min(520px,92vw);max-height:78vh;' +
+        'background:#fff;border-radius:10px;width:min(520px,94vw);max-height:82vh;' +
         'box-shadow:0 12px 40px rgba(0,0,0,0.3);display:flex;flex-direction:column;overflow:hidden;';
-      box.innerHTML = '<div style="padding:12px 16px;font-weight:600;border-bottom:0.5px solid rgba(0,0,0,0.1);">Google Drive — Turtle Drawing 문서</div>';
+      const head = document.createElement('div');
+      head.style.cssText = 'padding:12px 16px 8px;border-bottom:0.5px solid rgba(0,0,0,0.1);';
+      head.innerHTML = '<div style="font-weight:600;margin-bottom:8px;">Google Drive — Turtle Drawing 문서</div>';
+      const search = document.createElement('input');
+      search.type = 'search';
+      search.placeholder = '파일 검색…';
+      search.style.cssText = 'width:100%;box-sizing:border-box;padding:9px 11px;border:0.5px solid rgba(0,0,0,0.2);' +
+        'border-radius:8px;font:13px -apple-system,sans-serif;outline:none;';
+      head.appendChild(search);
       const list = document.createElement('div');
-      list.style.cssText = 'overflow-y:auto;padding:6px;';
+      list.style.cssText = 'overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px;flex:1;';
+
+      // Group by parent folder, preserving the (modifiedTime desc) input order.
+      const groups = new Map();
       for (const f of files) {
-        const row = document.createElement('div');
-        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 12px;border-radius:6px;cursor:pointer;';
-        const when = f.modifiedTime ? new Date(f.modifiedTime).toLocaleString() : '';
-        row.innerHTML = '<span style="font-weight:500;">' + f.name.replace(/</g, '&lt;') + '</span>'
-          + '<span style="color:#888;font-size:11px;">' + when + '</span>';
-        row.onmouseenter = () => row.style.background = 'rgba(10,132,255,0.1)';
-        row.onmouseleave = () => row.style.background = '';
-        row.onclick = () => { cleanup(); resolve(f); };
-        list.appendChild(row);
+        const pid = (f.parents && f.parents[0]) || '';
+        const label = folderNames[pid] || '내 드라이브';
+        if (!groups.has(label)) groups.set(label, []);
+        groups.get(label).push(f);
       }
+      const render = () => {
+        list.innerHTML = '';
+        const term = search.value.trim().toLowerCase();
+        let shown = 0;
+        for (const [label, fs] of groups) {
+          const matched = term ? fs.filter((f) => (f.name || '').toLowerCase().includes(term)) : fs;
+          if (!matched.length) continue;
+          const hdr = document.createElement('div');
+          hdr.style.cssText = 'display:flex;align-items:center;gap:6px;padding:9px 10px 4px;color:#888;font-size:11px;font-weight:600;';
+          hdr.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="#c9a23f" style="flex:none;"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>'
+            + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label.replace(/</g, '&lt;') + '</span>';
+          list.appendChild(hdr);
+          for (const f of matched) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:14px;padding:12px 12px;border-radius:6px;cursor:pointer;';
+            const when = f.modifiedTime ? new Date(f.modifiedTime).toLocaleString() : '';
+            row.innerHTML = '<span style="font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + (f.name || '').replace(/</g, '&lt;') + '</span>'
+              + '<span style="color:#888;font-size:11px;flex:none;">' + when + '</span>';
+            row.onmouseenter = () => row.style.background = 'rgba(153,255,153,0.3)';
+            row.onmouseleave = () => row.style.background = '';
+            row.onclick = () => { cleanup(); resolve(f); };
+            list.appendChild(row);
+            shown++;
+          }
+        }
+        if (!shown) {
+          const empty = document.createElement('div');
+          empty.style.cssText = 'padding:22px;text-align:center;color:#aaa;';
+          empty.textContent = '검색 결과 없음';
+          list.appendChild(empty);
+        }
+      };
+      search.addEventListener('input', render);
+      render();
+
       const foot = document.createElement('div');
       foot.style.cssText = 'padding:10px 16px;border-top:0.5px solid rgba(0,0,0,0.1);text-align:right;';
       const cancel = document.createElement('button');
       cancel.textContent = '취소';
-      cancel.style.cssText = 'padding:5px 14px;border:0.5px solid rgba(0,0,0,0.2);border-radius:6px;background:#f5f5f7;cursor:pointer;';
+      cancel.style.cssText = 'padding:8px 16px;border:0.5px solid rgba(0,0,0,0.2);border-radius:6px;background:#f5f5f7;cursor:pointer;font:13px -apple-system,sans-serif;';
       cancel.onclick = () => { cleanup(); resolve(null); };
       foot.appendChild(cancel);
-      box.appendChild(list); box.appendChild(foot);
+      box.appendChild(head); box.appendChild(list); box.appendChild(foot);
       wrap.appendChild(box);
       const cleanup = () => wrap.remove();
       wrap.addEventListener('click', (e) => { if (e.target === wrap) { cleanup(); resolve(null); } });
       document.body.appendChild(wrap);
+      // Autofocus the search on pointer (mouse) devices only — on touch it would
+      // pop the keyboard over the list.
+      try {
+        if (!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)) {
+          setTimeout(() => { try { search.focus(); } catch (_) {} }, 50);
+        }
+      } catch (_) {}
     });
   }
 })();
