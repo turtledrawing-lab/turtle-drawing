@@ -468,8 +468,8 @@
         '-webkit-app-region:no-drag;' +
         'backdrop-filter:blur(20px) saturate(180%);' +
         '-webkit-backdrop-filter:blur(20px) saturate(180%);' +
-        'background:' + (active ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.18)') + ';' +
-        'color:' + (active ? '#0a84ff' : '#444') + ';' +
+        'background:' + (active ? '#99ff99' : 'rgba(255,255,255,0.18)') + ';' +
+        'color:' + (active ? '#0f3d18' : '#444') + ';' +
         'font-weight:' + (active ? '600' : '400') + ';';
       const name = document.createElement('span');
       name.textContent = t.name;

@@ -763,13 +763,13 @@ html.td-web #toolbarLogo {
   border-bottom: none !important;
 }
 .theme-apple .layer-row.active {
-  background: #007aff !important;
-  color: #ffffff !important;
+  background: #99ff99 !important;
+  color: #0f3d18 !important;
   box-shadow: none !important;
 }
 .theme-apple .layer-row.active .eye,
 .theme-apple .layer-row.active .lock {
-  color: #ffffff !important;
+  color: #0f3d18 !important;
   opacity: 0.85 !important;
 }
 .theme-apple .layer-row:hover:not(.active) {
@@ -1371,7 +1371,7 @@ html.td-web #toolbarLogo {
         </label>
         <div style="display:flex; gap:4px;">
           <button id="wallLayerAddBtn" style="flex:1; padding:4px 6px; font-size:11px; border:0.5px solid rgba(0,0,0,0.18); border-radius:5px; background:#fff; cursor:pointer;">+ Layer</button>
-          <button id="wallLayerApplyBtn" style="flex:1; padding:4px 6px; font-size:11px; border:0.5px solid #0a84ff; border-radius:5px; background:#0a84ff; color:#fff; cursor:pointer;">Generate</button>
+          <button id="wallLayerApplyBtn" style="flex:1; padding:4px 6px; font-size:11px; border:0.5px solid #0f3d18; border-radius:5px; background:#99ff99; color:#0f3d18; cursor:pointer;">Generate</button>
         </div>
         <div id="wlDirRow" style="display:flex; gap:6px; margin-top:6px; font-size:10px; align-items:center;">
           <span style="color:#aaa;" title="구조체 모드가 꺼졌을 때만 적용 (참조면 기준 방향)">Ref dir:</span>
@@ -2760,8 +2760,8 @@ function initDimStylePanel() {
     document.querySelectorAll('#snapToggleBar .sn-tg').forEach(btn => {
       const k = btn.dataset.snap;
       btn.style.opacity = SnapPrefs[k] ? '1' : '0.35';
-      btn.style.background = SnapPrefs[k] ? '#0a84ff' : 'transparent';
-      btn.style.color = SnapPrefs[k] ? '#fff' : '#666';
+      btn.style.background = SnapPrefs[k] ? '#99ff99' : 'transparent';
+      btn.style.color = SnapPrefs[k] ? '#0f3d18' : '#666';
     });
   };
   document.querySelectorAll('#snapToggleBar .sn-tg').forEach(btn => {
@@ -2860,7 +2860,7 @@ function initBuildUpLibraryPanel() {
     for (const p of lib) {
       const row = document.createElement('button');
       const isActive = (kind === 'wall' ? ActiveBuildUp.wall : ActiveBuildUp.slab) === p;
-      row.style.cssText = `display:flex;align-items:center;justify-content:space-between;gap:6px;padding:5px 8px;font-size:11px;border:0.5px solid ${isActive ? '#0a84ff' : 'rgba(0,0,0,0.12)'};background:${isActive ? '#e7f1ff' : '#fafafa'};border-radius:5px;cursor:pointer;text-align:left;color:#1d1d1f;`;
+      row.style.cssText = `display:flex;align-items:center;justify-content:space-between;gap:6px;padding:5px 8px;font-size:11px;border:0.5px solid ${isActive ? '#0f3d18' : 'rgba(0,0,0,0.12)'};background:${isActive ? '#99ff99' : '#fafafa'};border-radius:5px;cursor:pointer;text-align:left;color:#1d1d1f;`;
       const left = document.createElement('span');
       left.textContent = p.label;
       const right = document.createElement('span');
@@ -2897,7 +2897,7 @@ function renderHistoryList() {
   for (const it of items) {
     const row = document.createElement('div');
     if (it.kind === 'current') {
-      row.style.cssText = 'padding:3px 8px;font-size:10px;font-weight:600;color:#0a84ff;border-left:2px solid #0a84ff;';
+      row.style.cssText = 'padding:3px 8px;font-size:10px;font-weight:600;color:#0f3d18;border-left:2px solid #0f3d18;';
       row.textContent = it.label;
     } else {
       const isFuture = it.kind === 'future';
@@ -2949,7 +2949,7 @@ function renderComponentList() {
     count.style.cssText = 'color:#888;font-size:9px;';
     count.textContent = instCount + '×';
     const save = document.createElement('span');
-    save.style.cssText = 'color:#0a84ff;cursor:pointer;padding:0 4px;font-size:12px;';
+    save.style.cssText = 'color:#0f3d18;cursor:pointer;padding:0 4px;font-size:12px;';
     save.textContent = '⭐';
     save.title = 'Save to library';
     save.onclick = (e) => {
@@ -20858,7 +20858,7 @@ const WallLayer = {
       const dat = document.createElement('button');
       dat.textContent = '⌂';
       dat.title = L.datum ? '구조체(기준) 층 — 생성 안 함. 클릭해 해제' : '이 층을 구조체(기준)로 지정';
-      dat.style.cssText = 'font-size:11px; line-height:1; border:none; background:none; cursor:pointer; padding:0; color:' + (L.datum ? '#0a84ff' : '#ccc') + ';';
+      dat.style.cssText = 'font-size:11px; line-height:1; border:none; background:none; cursor:pointer; padding:0; color:' + (L.datum ? '#0f3d18' : '#ccc') + ';';
       dat.onclick = () => { const was = !!L.datum; this.layers.forEach(x => { delete x.datum; }); if (!was) L.datum = true; this.renderPanel(); };
       // Delete btn
       const del = document.createElement('button');
@@ -20881,8 +20881,8 @@ const WallLayer = {
     const applyBtn = document.getElementById('wallLayerApplyBtn');
     if (pickBtn) pickBtn.onclick = () => {
       ToolMgr.set('walllayer');
-      pickBtn.style.background = '#0a84ff';
-      pickBtn.style.color = '#fff';
+      pickBtn.style.background = '#99ff99';
+      pickBtn.style.color = '#0f3d18';
       pickBtn.textContent = '⊙ Picking…';
     };
     if (addBtn) addBtn.onclick = () => {
@@ -26430,7 +26430,7 @@ function renderPenStyles() {
     row.className = 'pen-row' + (Pen.style === key ? ' active' : '');
     row.dataset.pen = key;
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 8px;cursor:pointer;border-radius:4px;' +
-      (Pen.style === key ? 'background:#e8f1ff;border:1px solid #0a84ff;' : 'border:1px solid transparent;');
+      (Pen.style === key ? 'background:#99ff99;border:1px solid #0f3d18;' : 'border:1px solid transparent;');
     // Tiny preview SVG — wobbled line matching this pen's amount/segments
     const w = 100, h = 14;
     const segs = cfg.segments;

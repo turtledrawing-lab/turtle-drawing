@@ -249,7 +249,7 @@
   function enterPaintMode(hatchId, cellEl) {
     paintHatchId = hatchId;
     document.querySelectorAll('#adHatchGrid > div').forEach(d => d.style.outline = 'none');
-    if (cellEl) cellEl.style.outline = '2px solid #0a84ff';
+    if (cellEl) cellEl.style.outline = '2px solid #0f3d18';
     installCursor();
     document.body.style.cursor = 'crosshair';
     if (typeof setStatus === 'function') {
@@ -383,7 +383,7 @@
         btn.style.cssText =
           'flex:1;font-size:10px;padding:3px 4px;' +
           'border:0.5px solid rgba(0,0,0,0.2);border-radius:4px;cursor:pointer;' +
-          (cat === activeCat ? 'background:#0a84ff;color:#fff;' : 'background:#f5f5f7;color:#333;');
+          (cat === activeCat ? 'background:#99ff99;color:#0f3d18;' : 'background:#f5f5f7;color:#333;');
         btn.onclick = () => { activeCat = cat; renderTabs(); renderGrid(); };
         tabsEl.appendChild(btn);
       }
@@ -530,7 +530,7 @@
                    border-radius:4px;background:#f5f5f7;cursor:pointer;">Cancel</button>
           <button id="_entOK"
             style="padding:4px 12px;border:none;border-radius:4px;
-                   background:#0a84ff;color:#fff;cursor:pointer;">Add</button>
+                   background:#99ff99;color:#0f3d18;cursor:pointer;">Add</button>
         </div>
       </div>`;
     document.body.appendChild(wrap);
@@ -551,7 +551,7 @@
   function enterPlaceMode(item, cellEl) {
     placeItem = item;
     document.querySelectorAll('#adEntGrid > div').forEach(d => d.style.outline = 'none');
-    if (cellEl) cellEl.style.outline = '2px solid #0a84ff';
+    if (cellEl) cellEl.style.outline = '2px solid #0f3d18';
     installPlaceCursor();
     document.body.style.cursor = 'crosshair';
     if (typeof setStatus === 'function') {
