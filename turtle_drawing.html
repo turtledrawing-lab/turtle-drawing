@@ -1927,17 +1927,43 @@ renderer.shadowMap.needsUpdate = true;
 // rendered through MeshLambertMaterial (linear pipeline darkens sRGB
 // textures). Applies gamma 1/1.6 ≈ +50% midtone brightness, then mild
 // desaturation. Mutates the texture's image to a canvas.
+// Longest-edge cap for imported textures. A full-res (e.g. 4K) texture decodes
+// AND uploads to ~w*h*4 bytes of RGBA EACH (a 4096² map ≈ 67MB), which blows the
+// per-tab memory ceiling on phones/iPad (Safari/WebKit) — the tab is killed and
+// the page silently reloads. Cap hard on mobile; keep a generous cap on desktop
+// (most GPUs clamp at 4096 anyway). Display-only: the stored textureDataURL is
+// untouched, so saving preserves the original resolution.
+function _texSizeCap() {
+  try {
+    const ua = navigator.userAgent || '';
+    const iOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
+    const coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    const smallSide = Math.min(screen.width || 9999, screen.height || 9999);
+    if (iOS || (coarse && smallSide <= 900)) return 1024;
+  } catch (_) {}
+  return 4096;
+}
 function _brightenTextureInPlace(tex) {
   if (!tex || !tex.image) return;
   const im = tex.image;
   const w = im.width || im.naturalWidth, h = im.height || im.naturalHeight;
   if (!w || !h) return;
   if (tex.userData && tex.userData._brightened) return;
+  // Downscale the longest edge to the device cap (proportional) while we're
+  // already redrawing to a canvas for the brighten pass — one combined step.
+  const MAX = _texSizeCap();
+  let dw = w, dh = h;
+  if (Math.max(w, h) > MAX) {
+    const s = MAX / Math.max(w, h);
+    dw = Math.max(1, Math.round(w * s));
+    dh = Math.max(1, Math.round(h * s));
+    try { console.log('[tex] downscaled', w + 'x' + h, '->', dw + 'x' + dh, '(cap ' + MAX + ')'); } catch (_) {}
+  }
   const cv = document.createElement('canvas');
-  cv.width = w; cv.height = h;
+  cv.width = dw; cv.height = dh;
   const ctx = cv.getContext('2d');
-  ctx.drawImage(im, 0, 0, w, h);
-  const id = ctx.getImageData(0, 0, w, h);
+  ctx.drawImage(im, 0, 0, dw, dh);
+  const id = ctx.getImageData(0, 0, dw, dh);
   const d = id.data;
   // LUT for gamma 0.625 (≈ brighten midtones)
   const gamma = 0.42;
