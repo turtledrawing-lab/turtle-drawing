@@ -1965,16 +1965,25 @@ function _brightenTextureInPlace(tex) {
   ctx.drawImage(im, 0, 0, dw, dh);
   const id = ctx.getImageData(0, 0, dw, dh);
   const d = id.data;
-  // LUT for gamma 0.625 (≈ brighten midtones)
-  const gamma = 0.42;
-  const lut = new Uint8Array(256);
-  for (let i = 0; i < 256; i++) lut[i] = Math.min(255, Math.round(Math.pow(i / 255, gamma) * 255));
-  for (let i = 0; i < d.length; i += 4) {
-    d[i]   = lut[d[i]];
-    d[i+1] = lut[d[i+1]];
-    d[i+2] = lut[d[i+2]];
+  // Only brighten textures that are actually DARK. Brightening an already-light
+  // texture — or re-brightening the same one across load / clone / save cycles —
+  // compounds toward flat white and destroys the detail (this is why imported
+  // textures were showing as a plain colour). Measure mean luminance; skip the
+  // brighten pass when the texture is already light (still keep the downscale).
+  let _sum = 0; const _px = d.length >> 2;
+  for (let i = 0; i < d.length; i += 4) _sum += d[i] + d[i + 1] + d[i + 2];
+  const _mean = _sum / (_px * 3);
+  if (_mean < 150) {
+    const gamma = 0.42;   // brighten midtones of genuinely dark imported textures
+    const lut = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) lut[i] = Math.min(255, Math.round(Math.pow(i / 255, gamma) * 255));
+    for (let i = 0; i < d.length; i += 4) {
+      d[i]   = lut[d[i]];
+      d[i+1] = lut[d[i+1]];
+      d[i+2] = lut[d[i+2]];
+    }
+    ctx.putImageData(id, 0, 0);
   }
-  ctx.putImageData(id, 0, 0);
   tex.image = cv;
   tex.userData = tex.userData || {};
   tex.userData._brightened = true;
