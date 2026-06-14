@@ -23822,7 +23822,7 @@ function sceneToDoc() {
 }
 
 /* Replace the current scene with one loaded from a .tt document. */
-function loadDocIntoScene(doc) {
+async function loadDocIntoScene(doc) {
   if (!doc || doc.format !== 'turtle-drawing') {
     throw new Error('Not a Turtle Drawing (.tt) file.');
   }
@@ -23864,6 +23864,9 @@ function loadDocIntoScene(doc) {
 
   // Restore objects
   const scale = doc.unit === 'mm' ? 0.001 : 1;  // file mm → internal m
+  const _objTotal = (doc.objects || []).length;
+  const _bigLoad = _objTotal > 120;   // chunk big files so the build never freezes
+  let _loadIdx = 0;
   for (const od of (doc.objects || [])) {
     const em = new EditableMesh();
     if (od.smoothShade) em._smoothShade = true;
@@ -24000,6 +24003,15 @@ function loadDocIntoScene(doc) {
         if (typeof setObjectFaceCamera === 'function') setObjectFaceCamera(obj, true);
         else obj.faceCamera = true;
       } catch (_) {}
+    }
+    // Yield to the event loop every ~25 objects on big files. A long synchronous
+    // build (≈10s for ~1000 objects on desktop, far worse on phones) freezes the
+    // main thread; mobile (iOS) then kills + reloads the tab on the memory peak /
+    // unresponsiveness. Yielding keeps it alive, shows progress, and lets GC
+    // reclaim per-object transients between chunks so peak memory stays lower.
+    if (_bigLoad && (++_loadIdx % 25 === 0)) {
+      try { setStatus('msg', '여는 중… ' + _loadIdx + ' / ' + _objTotal); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 0));
     }
   }
   // Create section planes now that every object is loaded — the bbox-
@@ -24292,7 +24304,7 @@ function saveTT(name, opts) {
 
 /* Parse a .tt file text and load it. */
 window.openTT = openTT;
-function openTT(text, filename) {
+async function openTT(text, filename) {
   let doc;
   try { doc = JSON.parse(text); }
   catch (e) { showError('Invalid .tt file: ' + e.message); return; }
@@ -24307,7 +24319,7 @@ function openTT(text, filename) {
     const proceed = window.confirm('This file was created by a newer version of Turtle Drawing (file format v' + fileVer + '; this app supports v' + TT_VERSION + ').\n\nSome data may not load correctly. Open anyway?');
     if (!proceed) { setStatus('msg', 'Open cancelled — file is from a newer version.'); return; }
   }
-  try { loadDocIntoScene(doc); }
+  try { await loadDocIntoScene(doc); }
   catch (e) { showError('Failed to load: ' + e.message); return; }
   // A document arriving as TEXT (drag-drop, file input) has no known disk
   // path — clear any stale one so Cmd+S can't silently overwrite the

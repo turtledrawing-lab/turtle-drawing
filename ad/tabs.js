@@ -25,8 +25,12 @@
   }
   function loadDoc(doc) {
     if (!doc) return;
-    try { loadDocIntoScene(doc); }
-    catch (err) { console.warn('[tabs] loadDocIntoScene failed', err); }
+    // loadDocIntoScene is async (it chunks big files); catch both a sync throw
+    // and an async rejection so a bad load never becomes an unhandled rejection.
+    try {
+      const p = loadDocIntoScene(doc);
+      if (p && typeof p.catch === 'function') p.catch((err) => console.warn('[tabs] loadDocIntoScene failed', err));
+    } catch (err) { console.warn('[tabs] loadDocIntoScene failed', err); }
   }
 
   /* ---------- Crash recovery + autosave (P0-2) -----------------------
