@@ -82,6 +82,14 @@ html.td-web.theme-apple #rightpanel {
   background: rgba(240, 240, 245, 0.5) !important;
   -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
   backdrop-filter: blur(40px) saturate(180%) !important; }
+/* When collapsed, drop the backdrop-filter: it makes #rightpanel the containing
+   block for the position:fixed section popup AND clips it via overflow, so the
+   left popup never shows. Desktop avoids this the same way (see the .theme-apple
+   #rightpanel rule). The expanded panel keeps its frosted glass. */
+html.td-web #rightpanel.is-collapsed,
+html.td-web.theme-apple #rightpanel.is-collapsed {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important; }
 /* Left toolbar matched to ~50% on web (the .theme-apple base is 0.32). Higher
    specificity than .theme-apple #toolbar, so this wins among !important rules.
    Web-only — the desktop toolbar keeps its own translucency. */
