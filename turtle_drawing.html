@@ -894,6 +894,16 @@ input[type="range"]:hover { accent-color: #22a722; }
 @media (max-width: 700px) {
   #app { grid-template-columns: 64px minmax(0, 1fr) var(--right-w, 220px); }
 }
+/* Phone layout: hide the tool palette to give the 3D view the full width
+   (tools live in the Draw/Tools menus; orbit/zoom/select are touch gestures).
+   The right panel stays as a thin collapsed rail — tap an icon for its popup. */
+@media (max-width: 640px) {
+  html.td-web #toolbar { display: none !important; }
+  html.td-web #app { grid-template-columns: 0 minmax(0, 1fr) var(--right-w, 240px) !important; }
+  html.td-web #adTabBar { left: 6px !important; }
+  #menubar { padding: 0 4px; gap: 0; }
+  #menubar .menu-item { padding: 0 7px; }
+}
 
 /* Cursors per tool */
 .cursor-select  #viewport { cursor: default; }
