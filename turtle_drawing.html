@@ -1954,6 +1954,15 @@ function _brightenTextureInPlace(tex) {
   const w = im.width || im.naturalWidth, h = im.height || im.naturalHeight;
   if (!w || !h) return;
   if (tex.userData && tex.userData._brightened) return;
+  // Safety net: stash the ORIGINAL source before we swap in the downscaled/
+  // brightened canvas, so the save path exports the original (covers any texture
+  // path that didn't set material._origDataURL at creation).
+  try {
+    if (im.src && typeof im.src === 'string' && im.src.lastIndexOf('data:', 0) === 0) {
+      tex.userData = tex.userData || {};
+      if (!tex.userData._origDataURL) tex.userData._origDataURL = im.src;
+    }
+  } catch (_) {}
   // Downscale the longest edge to the device cap (proportional) while we're
   // already redrawing to a canvas for the brighten pass — one combined step.
   const MAX = _texSizeCap();
@@ -23794,7 +23803,17 @@ function sceneToDoc() {
         textureFile: m._textureFile || null,
       };
       try {
-        if (m._texture && m._texture.image) {
+        // PREFER the ORIGINAL source data URL. The display texture (m._texture.
+        // image) is the downscaled + brightened canvas; serializing THAT baked a
+        // washed-out, lower-res copy permanently into the file (and compounded on
+        // every save/reload). _origDataURL is captured at import/load and in
+        // _brightenTextureInPlace before the display canvas is swapped in.
+        const _orig = m._origDataURL
+          || (m._texture && m._texture.userData && m._texture.userData._origDataURL)
+          || null;
+        if (_orig) {
+          out.textureDataURL = _orig;
+        } else if (m._texture && m._texture.image) {
           const img = m._texture.image;
           // CACHE the encoded data URL on the material. sceneToDoc runs on
           // EVERY pushHistory (tab-doc sync) and every autosave — re-encoding
@@ -24153,6 +24172,9 @@ async function loadDocIntoScene(doc) {
         _imported: true,
         _texture: null,
         _textureFile: m.textureFile || null,
+        // Keep the source data URL verbatim so re-saving re-exports the original,
+        // never the downscaled/brightened display canvas.
+        _origDataURL: m.textureDataURL || null,
       };
       if (m.textureDataURL) {
         const img = new Image();
@@ -25629,6 +25651,9 @@ function _placementConfirm(e) {
             _imported: true,
             _texture: imgDataURL ? _makeImportedTexture(imgDataURL) : null,
             _textureFile: md && md.textureFile ? md.textureFile : null,
+            // Original (un-brightened, full-res) source — saved verbatim so the
+            // file never bakes the display canvas.
+            _origDataURL: imgDataURL || null,
           };
           ImportedMaterials.push(importedMat);
         }
