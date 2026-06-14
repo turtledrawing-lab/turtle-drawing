@@ -36,7 +36,7 @@
       const btn = document.createElement('button');
       btn.textContent = actionLabel;
       btn.style.cssText =
-        'background:#0a84ff;color:#fff;border:none;border-radius:6px;padding:5px 12px;' +
+        'background:#99ff99;color:#0f3d18;border:none;border-radius:6px;padding:5px 12px;' +
         'font-size:12px;font-weight:600;cursor:pointer;';
       btn.onclick = () => { try { onAction(); } catch (_) {} };
       el.appendChild(btn);
