@@ -1939,7 +1939,12 @@ function _texSizeCap() {
     const iOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
     const coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
     const smallSide = Math.min(screen.width || 9999, screen.height || 9999);
-    if (iOS || (coarse && smallSide <= 900)) return 1024;
+    // 2048 (not 1024): chunked loading — not this cap — is what keeps heavy files
+    // from crashing mobile, so we can keep textures sharp here. 2048 still bounds
+    // a single texture to ~16MB RGBA, well within budget, and matches desktop
+    // quality for typical (≤2048) maps. Bigger maps (e.g. a 2835² photo) downscale
+    // only modestly instead of the heavy 1024 blur the user noticed.
+    if (iOS || (coarse && smallSide <= 900)) return 2048;
   } catch (_) {}
   return 4096;
 }
