@@ -898,12 +898,24 @@ input[type="range"]:hover { accent-color: #22a722; }
    (tools live in the Draw/Tools menus; orbit/zoom/select are touch gestures).
    The right panel stays as a thin collapsed rail — tap an icon for its popup. */
 @media (max-width: 640px) {
-  html.td-web #toolbar { display: none !important; }
-  html.td-web #app { grid-template-columns: 0 minmax(0, 1fr) var(--right-w, 240px) !important; }
+  html.td-web #toolbar, html.td-web #rightpanel { display: none !important; }
+  html.td-web #app { grid-template-columns: 0 minmax(0, 1fr) 0 !important; }
   html.td-web #adTabBar { left: 6px !important; }
   #menubar { padding: 0 4px; gap: 0; }
   #menubar .menu-item { padding: 0 7px; }
+  html.td-web #mobileToolbar { display: flex; }
 }
+/* Floating bottom tool bar — phones only (full-screen viewer + quick tools). */
+#mobileToolbar { display: none; gap: 5px; position: fixed; left: 50%; bottom: 30px;
+  transform: translateX(-50%); z-index: 5000; padding: 6px;
+  background: rgba(246, 246, 246, 0.86); border: 0.5px solid rgba(0,0,0,0.1);
+  border-radius: 16px; box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+  -webkit-backdrop-filter: saturate(1.8) blur(20px); backdrop-filter: saturate(1.8) blur(20px); }
+#mobileToolbar button { width: 44px; height: 44px; border: none; background: transparent;
+  border-radius: 11px; cursor: pointer; color: #1d1d1f;
+  display: flex; align-items: center; justify-content: center; padding: 0; }
+#mobileToolbar button:active { transform: scale(0.92); }
+#mobileToolbar button.active { background: #99ff99; color: #0f3d18; }
 
 /* Cursors per tool */
 .cursor-select  #viewport { cursor: default; }
@@ -1699,6 +1711,15 @@ input[type="range"]:hover { accent-color: #22a722; }
 <div id="loading">Loading…</div>
 <div id="errorBox"><h3>Error</h3><p id="errorMsg"></p><button onclick="document.getElementById('errorBox').style.display='none'">Close</button></div>
 <div id="contextMenu"></div>
+<!-- Phone-only floating tool bar (full-screen viewer; tools + undo). -->
+<div id="mobileToolbar" role="toolbar" aria-label="도구">
+  <button data-mt="tool-select" aria-label="선택" title="선택"><svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M5 3 L5 16 L8.2 12.8 L10.7 18 L12.7 17.1 L10.2 12 L15 12 Z"/></svg></button>
+  <button data-mt="tool-move" aria-label="이동" title="이동"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3v14M3 10h14M10 3 8 5M10 3l2 2M10 17l-2-2M10 17l2-2M3 10l2-2M3 10l2 2M17 10l-2-2M17 10l-2 2"/></svg></button>
+  <button data-mt="tool-line" aria-label="선" title="선"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 16 L16 4"/><circle cx="4" cy="16" r="1.3" fill="currentColor" stroke="none"/><circle cx="16" cy="4" r="1.3" fill="currentColor" stroke="none"/></svg></button>
+  <button data-mt="tool-rect" aria-label="직사각형" title="직사각형"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3.5" y="5.5" width="13" height="9" rx="1"/></svg></button>
+  <button data-mt="tool-erase" aria-label="지우개" title="지우개"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M4 13 L10 7 L15 12 L11 16 L7 16 Z"/><path d="M7 16 H16"/></svg></button>
+  <button data-mt="undo" aria-label="실행취소" title="실행취소"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7 H3.5 V3.5"/><path d="M3.5 7 C 7 3 14 3 16.5 9"/></svg></button>
+</div>
 <input type="file" id="fileInput" accept=".tt,.dxf,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg,.jpeg,.bmp,.gif,.tga" style="display:none;" />
 <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none;" />
 <input type="file" id="objFileInput" accept=".obj,.mtl,.png,.jpg,.jpeg,.bmp,.gif,.tga" multiple style="display:none;" />
@@ -3867,10 +3888,12 @@ const controls = new OrbitController(camera, CAN);
 (function initTouchControls() {
   const dom = CAN;
   const tp = new Map();                 // pointerId → {x, y}
-  let mode = 'none';                    // none | down1 | orbit | pinch
+  let mode = 'none';                    // none | down1 | orbit | pinch | lockout
   let startDist = 0, startRadius = 0, lastCx = 0, lastCy = 0;
+  let startCx = 0, startCy = 0, pinchStartT = 0, pinchMoved = false;
   let downX = 0, downY = 0, downT = 0, moved = false;
-  const TAP_MOVE = 9, TAP_MS = 500;
+  const TAP_MOVE = 9, TAP_MS = 500, PINCH_DEAD = 12;
+  const doUndo = () => { try { if (typeof undo === 'function') undo(); else if (typeof handleAction === 'function') handleAction('undo'); } catch (_) {} };
   const V = (typeof THREE !== 'undefined') ? THREE.Vector3 : null;
   const pts = () => [...tp.values()];
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -3899,11 +3922,12 @@ const controls = new OrbitController(camera, CAN);
       mode = 'down1'; moved = false;
       downX = lastCx = e.clientX; downY = lastCy = e.clientY; downT = performance.now();
     } else if (tp.size === 2) {
-      const p = pts();
+      const p = pts(), c = mid(p);
       mode = 'pinch';
       startDist = dist(p[0], p[1]) || 1;
       startRadius = controls.spherical.radius;
-      const c = mid(p); lastCx = c.x; lastCy = c.y;
+      startCx = lastCx = c.x; startCy = lastCy = c.y;
+      pinchStartT = performance.now(); pinchMoved = false;
       controls.state = 'pan';
     }
   }
@@ -3911,15 +3935,21 @@ const controls = new OrbitController(camera, CAN);
     if (e.pointerType !== 'touch' || !tp.has(e.pointerId)) return;
     e.preventDefault(); e.stopImmediatePropagation();
     tp.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === 'lockout') return;
     if (mode === 'pinch' && tp.size >= 2) {
       const p = pts();
       const d = dist(p[0], p[1]) || 1;
+      const c = mid(p);
+      if (!pinchMoved) {   // deadzone: a still 2-finger touch stays a "tap" (→ undo on release)
+        if (Math.abs(d - startDist) > PINCH_DEAD || Math.hypot(c.x - startCx, c.y - startCy) > PINCH_DEAD) {
+          pinchMoved = true; lastCx = c.x; lastCy = c.y;
+        } else return;
+      }
       controls.spherical.radius = Math.max(controls.minDistance,
         Math.min(controls.maxDistance, startRadius * (startDist / d)));
-      const c = mid(p);
       panBy(c.x - lastCx, c.y - lastCy);
       lastCx = c.x; lastCy = c.y;
-    } else if (tp.size === 1) {
+    } else if (tp.size === 1 && (mode === 'down1' || mode === 'orbit')) {
       const dx = e.clientX - lastCx, dy = e.clientY - lastCy;
       lastCx = e.clientX; lastCy = e.clientY;
       if (!moved && Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE) {
@@ -3931,6 +3961,14 @@ const controls = new OrbitController(camera, CAN);
   function onUp(e) {
     if (e.pointerType !== 'touch' || !tp.has(e.pointerId)) return;
     e.preventDefault(); e.stopImmediatePropagation();
+    if (mode === 'pinch' || mode === 'lockout') {
+      if (mode === 'pinch' && !pinchMoved && (performance.now() - pinchStartT) < TAP_MS) doUndo();  // 2-finger tap → undo
+      tp.delete(e.pointerId);
+      try { dom.releasePointerCapture(e.pointerId); } catch (_) {}
+      mode = (tp.size === 0) ? 'none' : 'lockout';   // a leftover finger after a 2-finger gesture must not start orbiting
+      if (tp.size === 0) controls.state = 'none';
+      return;
+    }
     const wasTap = mode === 'down1' && !moved &&
       (performance.now() - downT) < TAP_MS &&
       Math.hypot(e.clientX - downX, e.clientY - downY) <= TAP_MOVE;
@@ -3948,11 +3986,6 @@ const controls = new OrbitController(camera, CAN);
       } catch (err) { console.error('[touch-tap]', err); }
     }
     if (tp.size === 0) { mode = 'none'; controls.state = 'none'; }
-    else if (tp.size === 1) {            // 2→1: keep orbiting with the remaining finger
-      const r = pts()[0]; lastCx = downX = r.x; lastCy = downY = r.y;
-      mode = 'orbit'; moved = true; downT = performance.now();
-      controls.state = 'orbit';
-    }
   }
   dom.addEventListener('pointerdown', onDown, { capture: true, passive: false });
   dom.addEventListener('pointermove', onMove, { capture: true, passive: false });
@@ -33805,6 +33838,31 @@ try {
   if (_q.has('perftest')) setTimeout(() => { try { _perfTest(); } catch (e) { try { console.log('[perf] harness error ' + (e && e.message)); } catch (_) {} } }, 900);
 } catch (e) { try { console.log('[selftest] harness init threw ' + (e && e.message)); } catch (_) {} }
 
+</script>
+<script>
+/* Wire the phone floating tool bar to the same actions the menus use, and
+   reflect the active tool. */
+(function initMobileToolbar() {
+  const bar = document.getElementById('mobileToolbar');
+  if (!bar) return;
+  const T = { 'tool-select': 'select', 'tool-move': 'move', 'tool-line': 'line', 'tool-rect': 'rect', 'tool-erase': 'erase' };
+  function sync() {
+    const cur = (typeof ToolMgr !== 'undefined' && ToolMgr.active) ? ToolMgr.active.name : null;
+    bar.querySelectorAll('button[data-mt]').forEach((b) => {
+      const t = T[b.dataset.mt];
+      b.classList.toggle('active', !!t && t === cur);
+    });
+  }
+  bar.querySelectorAll('button[data-mt]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      try { if (typeof handleAction === 'function') handleAction(b.dataset.mt); } catch (err) { console.error('[mobile-tool]', err); }
+      sync();
+    });
+  });
+  sync();
+  setInterval(sync, 700);   // reflect tool changes from menus / keyboard
+})();
 </script>
 </body>
 </html>
