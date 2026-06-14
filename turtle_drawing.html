@@ -429,7 +429,9 @@ input[type="range"]:hover { accent-color: #22a722; }
 #rightpanel.is-collapsed {
   padding: 44px 4px 8px !important;
   font-size: 0;
+  scrollbar-width: none;   /* a 15px scrollbar would clip the 32px icon rail */
 }
+#rightpanel.is-collapsed::-webkit-scrollbar { width: 0; height: 0; }
 #rightpanel.is-collapsed .panel-header {
   justify-content: center !important; align-items: center !important;
   padding: 0 !important;
@@ -883,10 +885,10 @@ input[type="range"]:hover { accent-color: #22a722; }
 }
 /* Compact layout for narrow windows — keep 3 columns but shrink right panel */
 @media (max-width: 900px) {
-  #app { grid-template-columns: 72px minmax(0, 1fr) 240px; }
+  #app { grid-template-columns: 72px minmax(0, 1fr) var(--right-w, 240px); }
 }
 @media (max-width: 700px) {
-  #app { grid-template-columns: 64px minmax(0, 1fr) 220px; }
+  #app { grid-template-columns: 64px minmax(0, 1fr) var(--right-w, 220px); }
 }
 
 /* Cursors per tool */
