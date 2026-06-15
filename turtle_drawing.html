@@ -25255,10 +25255,15 @@ async function importOBJ(text, filename, mtlText, imageMap) {
   // Bucket by (source OBJ group, material) so SketchUp groups survive import:
   // each `g`/`o` block stays separate (and is reassembled into one editable
   // group below) instead of being merged across the whole file by material.
-  // Memory safety: per-(group,material) bucketing can produce thousands of
-  // small objects, which OOMs the renderer. Past a hard cap, drop grouping and
-  // merge by material (few objects, like the legacy importer).
-  const GROUP_HARD_CAP = 2500;
+  // Memory + responsiveness safety: per-(group,material) bucketing can produce
+  // thousands of small objects. Each becomes its own SketchObject (mesh + edges
+  // + a draw call), and building them is a long SYNCHRONOUS loop — past ~1000 it
+  // freezes the app on import AND leaves the model with thousands of draw calls
+  // that lag every frame. Past this cap, drop grouping and merge by material
+  // (few objects — e.g. a 2200-group SketchUp export collapses to its ~36 unique
+  // materials): same geometry/look, just selected per-material instead of
+  // per-group. (Was 2500 — too high; a 2216-group export still froze.)
+  const GROUP_HARD_CAP = 1000;
   const _gk = new Set();
   for (const g of groups) if (g.faces.length) _gk.add((g.realGroup || 0) + '|' + (g.mtlName || '_nomtl_'));
   const preserveGroups = _gk.size <= GROUP_HARD_CAP;
