@@ -90,15 +90,15 @@ def convert(skp_path, glb_path):
     model = sketchup.Model.from_file(skp_path)
     mats = _build_materials(model)
 
-    # Accumulate triangles per (group, material), baked into world space. Each
-    # TOP-LEVEL SketchUp group/component instance becomes one Turtle Drawing
-    # group; nested groups flatten into their top-level parent. The group id is
-    # encoded into each output mesh name ("G<gid>#<material>") so the importer
-    # can re-group the objects. Loose top-level geometry stays ungrouped.
-    buckets = {}        # (gid|None, mat_name) -> {"v","f","uv"}
+    # Accumulate triangles per (group-PATH, material), baked into world space.
+    # EVERY SketchUp group/component instance — at ANY depth — opens a new node,
+    # so the full nesting is preserved. The path of unique group ids is encoded
+    # into each mesh name ("g1/g4/g7::<material>"; "::<material>" = ungrouped),
+    # and the importer rebuilds the nested group tree from it.
+    buckets = {}        # (path_tuple, mat_name) -> {"v","f","uv"}
     group_seq = [0]
 
-    def emit(face, xform, default_mat, gid):
+    def emit(face, xform, default_mat, path):
         try:
             vs, tris, uvs = face.tessfaces
         except Exception:
@@ -111,7 +111,7 @@ def convert(skp_path, glb_path):
                 mname = face.material.name
         except Exception:
             pass
-        b = buckets.setdefault((gid, mname), {"v": [], "f": [], "uv": []})
+        b = buckets.setdefault((path, mname), {"v": [], "f": [], "uv": []})
         base = len(b["v"])
         M = xform
         for (x, y, z) in vs:
@@ -124,17 +124,13 @@ def convert(skp_path, glb_path):
         for tri in tris:
             b["f"].append((tri[0] + base, tri[1] + base, tri[2] + base))
 
-    def _enter(parent_gid):
-        # Only the OUTERMOST group/component opens a new group; nested ones
-        # inherit it (one editable group per top-level SketchUp group).
-        if parent_gid is not None:
-            return parent_gid
+    def _child_path(path):
         group_seq[0] += 1
-        return group_seq[0]
+        return path + ("g%d" % group_seq[0],)
 
-    def walk(entities, xform, default_mat, gid):
+    def walk(entities, xform, default_mat, path):
         for f in entities.faces:
-            emit(f, xform, default_mat, gid)
+            emit(f, xform, default_mat, path)
         for g in getattr(entities, "groups", []) or []:
             gm = default_mat
             try:
@@ -142,7 +138,7 @@ def convert(skp_path, glb_path):
                     gm = g.material.name
             except Exception:
                 pass
-            walk(g.entities, xform @ _mat4(g.transform), gm, _enter(gid))
+            walk(g.entities, xform @ _mat4(g.transform), gm, _child_path(path))
         for inst in getattr(entities, "instances", []) or []:
             im = default_mat
             try:
@@ -155,14 +151,14 @@ def convert(skp_path, glb_path):
             except Exception:
                 ents = getattr(inst, "entities", None)
             if ents is not None:
-                walk(ents, xform @ _mat4(inst.transform), im, _enter(gid))
+                walk(ents, xform @ _mat4(inst.transform), im, _child_path(path))
 
     root = _AXIS if Z_UP_TO_Y_UP else np.eye(4)
-    walk(model.entities, root, "DefaultMaterial", None)
+    walk(model.entities, root, "DefaultMaterial", ())
 
     scene = trimesh.Scene()
     n_out = 0
-    for (gid, mname), b in buckets.items():
+    for (path, mname), b in buckets.items():
         if not b["f"]:
             continue
         verts = np.array(b["v"], dtype=float)
@@ -178,8 +174,8 @@ def convert(skp_path, glb_path):
                 material=trimesh.visual.material.PBRMaterial(baseColorFactor=rgba, name=mname))
         except Exception as e:
             sys.stderr.write("[convert] visual skip (%s): %s\n" % (mname, e))
-        # Encode the top-level group in the mesh name for the importer.
-        gname = ("G%d#%s" % (gid, mname)) if gid else (mname or "Mesh")
+        # "<g1>/<g2>/...::<material>" — full nested group path (empty = ungrouped).
+        gname = "/".join(path) + "::" + (mname or "Mesh")
         scene.add_geometry(mesh, geom_name=gname)
         n_out += 1
 
