@@ -56,11 +56,29 @@ def _build_materials(model):
             col = tuple(mat.color) if getattr(mat, "color", None) else (204, 204, 204, 255)
             if max(col) > 1.0:
                 col = tuple(c / 255.0 for c in col)
-            # Textures are intentionally NOT embedded for now: (1) the importer
-            # only applies the solid material colour today, and (2) glb-embedded
-            # images make GLTFLoader fetch them on parse, which fails under the
-            # desktop app's file:// origin ("GLB parse error: Failed to fetch").
-            # A textured material falls back to its representative colour.
+            # Textures are NOT embedded (the importer only applies a solid colour
+            # today, and glb-embedded images make GLTFLoader fetch them on parse,
+            # which fails under the desktop file:// origin). BUT a textured
+            # SketchUp material usually has a WHITE base colour, so instead of
+            # rendering it white we sample the texture's AVERAGE colour as a
+            # representative solid (brick→red, grass→green, …). Full textures
+            # come later with proper texture import.
+            tex = getattr(mat, "texture", None)
+            if tex and hasattr(tex, "write"):
+                try:
+                    p = os.path.join(tempfile.gettempdir(), "td_skptex.png")
+                    tex.write(p)
+                    im = Image.open(p).convert("RGB")
+                    im.thumbnail((24, 24))
+                    px = list(im.getdata())
+                    if px:
+                        n = len(px)
+                        col = (sum(q[0] for q in px) / n / 255.0,
+                               sum(q[1] for q in px) / n / 255.0,
+                               sum(q[2] for q in px) / n / 255.0,
+                               col[3] if len(col) > 3 else 1.0)
+                except Exception as e:        # average-colour is best-effort
+                    sys.stderr.write("[convert] texture avg skip (%s): %s\n" % (name, e))
             out[name] = {"color": col, "image": None}
         except Exception as e:
             sys.stderr.write("[convert] material skip: %s\n" % e)
