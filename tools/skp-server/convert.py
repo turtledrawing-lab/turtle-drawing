@@ -56,16 +56,12 @@ def _build_materials(model):
             col = tuple(mat.color) if getattr(mat, "color", None) else (204, 204, 204, 255)
             if max(col) > 1.0:
                 col = tuple(c / 255.0 for c in col)
-            img = None
-            tex = getattr(mat, "texture", None)
-            if tex and hasattr(tex, "write"):   # binding returns False (not None) when untextured
-                try:
-                    p = os.path.join(tempfile.gettempdir(), "td_skptex_%s.png" % abs(hash(name)))
-                    tex.write(p)
-                    img = Image.open(p).convert("RGBA")
-                except Exception as e:        # texture export is best-effort
-                    sys.stderr.write("[convert] texture skip (%s): %s\n" % (name, e))
-            out[name] = {"color": col, "image": img}
+            # Textures are intentionally NOT embedded for now: (1) the importer
+            # only applies the solid material colour today, and (2) glb-embedded
+            # images make GLTFLoader fetch them on parse, which fails under the
+            # desktop app's file:// origin ("GLB parse error: Failed to fetch").
+            # A textured material falls back to its representative colour.
+            out[name] = {"color": col, "image": None}
         except Exception as e:
             sys.stderr.write("[convert] material skip: %s\n" % e)
     return out
