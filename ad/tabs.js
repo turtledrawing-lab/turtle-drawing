@@ -170,16 +170,20 @@
     wrap.id = 'tdRecoveryModal';
     wrap.style.cssText = 'position:fixed;inset:0;z-index:100001;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;'
       + 'background:rgba(0,0,0,0.38);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);font:14px -apple-system,"SF Pro Text","Apple SD Gothic Neo",sans-serif;color:#1d1d1f;';
+    // Speech-bubble layout: the turtle "says" the message — avatar on the left,
+    // a rounded green bubble (with a left-pointing tail) to its right.
+    const BUB = '#eef9ee';
     wrap.innerHTML =
-      '<div style="background:#fff;border-radius:20px;width:min(540px,100%);box-shadow:0 18px 60px rgba(0,0,0,0.3);padding:22px 24px;display:flex;gap:18px;align-items:flex-start;">'
-      + '<img src="icons/icon-192.png" alt="" width="64" height="64" style="flex:none;margin-top:2px;" onerror="this.style.display=\'none\'">'
-      + '<div style="flex:1;min-width:0;">'
+      '<div style="background:#fff;border-radius:22px;width:min(560px,100%);box-shadow:0 18px 60px rgba(0,0,0,0.3);padding:22px 22px;display:flex;gap:6px;align-items:flex-start;">'
+      + '<img src="icons/icon-192.png" alt="" width="62" height="62" style="flex:none;margin-top:14px;" onerror="this.style.display=\'none\'">'
+      + '<div style="position:relative;flex:1;min-width:0;background:' + BUB + ';border-radius:16px;padding:16px 18px;margin-left:4px;">'
+      +   '<div style="position:absolute;left:-8px;top:22px;width:0;height:0;border-top:9px solid transparent;border-bottom:9px solid transparent;border-right:9px solid ' + BUB + ';"></div>'
       +   '<div style="font-weight:700;font-size:17px;line-height:1.4;">' + L('앗, 지난번엔 갑자기 닫혀버렸어요.', 'Oops — it closed unexpectedly last time.') + '</div>'
-      +   '<div style="color:#6e6e73;margin-top:8px;line-height:1.5;">' + docs + '</div>'
-      +   (when ? '<div style="color:#aaa;font-size:12px;margin-top:2px;">(' + when + L(' 작업', '') + ')</div>' : '')
+      +   '<div style="color:#5a6b5a;margin-top:8px;line-height:1.5;">' + docs + '</div>'
+      +   (when ? '<div style="color:#9bb0a0;font-size:12px;margin-top:2px;">(' + when + L(' 작업', '') + ')</div>' : '')
       +   '<div style="font-weight:700;font-size:15px;margin-top:14px;">' + L('다시 불러올까요?', 'Restore it?') + '</div>'
       +   '<div style="display:flex;justify-content:flex-end;align-items:center;gap:14px;margin-top:16px;">'
-      +     '<button id="tdRecDiscard" style="border:none;background:transparent;color:#8a8a8e;font-weight:600;font-size:14px;cursor:pointer;padding:8px 6px;">' + L('버리기', 'Discard') + '</button>'
+      +     '<button id="tdRecDiscard" style="border:none;background:transparent;color:#7e8e7e;font-weight:600;font-size:14px;cursor:pointer;padding:8px 6px;">' + L('버리기', 'Discard') + '</button>'
       +     '<button id="tdRecRestore" style="border:none;background:#99ff99;color:#0f3d18;font-weight:700;font-size:14px;cursor:pointer;padding:10px 20px;border-radius:11px;">' + L('복원하기', 'Restore') + '</button>'
       +   '</div>'
       + '</div>'
