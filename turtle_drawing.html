@@ -7592,21 +7592,32 @@ function _refreshGroupEditOutline() {
 }
 function enterGroup(gid) {
   if (gid == null) return;
-  Model.activeGroupId = gid;
+  if (!Model.groups.has(gid)) registerGroup(gid);     // legacy/un-registered safety
+  const path = Model.activeGroupPath;
+  const innermost = path.length ? path[path.length - 1] : null;
+  if (innermost === gid) return;                       // already editing this group
+  const parent = (Model.groups.get(gid) || {}).parentId ?? null;
+  if (parent === innermost) {
+    path.push(gid);                                    // drill ONE level into a direct child
+  } else {
+    // Jump to this group from the root (its full ancestor chain).
+    Model.activeGroupPath = [...groupAncestors(gid), gid];
+  }
   Model.outsideVisible = true;
   clearSelection();
   applyLayerVisibility();
   _refreshGroupEditOutline();
-  setStatus('msg', 'Entered group — press N to solo, Esc to exit.');
+  setStatus('msg', 'Entered group — press N to solo, Esc to go up one level.');
 }
 function exitGroup() {
-  if (Model.activeGroupId == null) return;
-  Model.activeGroupId = null;
+  if (!Model.activeGroupPath.length) return;
+  Model.activeGroupPath.pop();                         // up ONE level (to the parent)
   Model.outsideVisible = true;
   clearSelection();
   applyLayerVisibility();
-  _clearGroupEditOutline();
-  setStatus('msg', 'Exited group.');
+  if (Model.activeGroupPath.length) _refreshGroupEditOutline();
+  else _clearGroupEditOutline();
+  setStatus('msg', Model.activeGroupPath.length ? 'Up one level — Esc to go up.' : 'Exited group.');
 }
 function toggleGroupSolo() {
   if (Model.activeGroupId != null) {
@@ -13417,12 +13428,20 @@ Tools.select = {
         this.dragging = false;
         return;
       }
-      // Group-as-unit: if belongs to a group we're not editing
+      // Group-as-unit: the clicked object lives in a group we're not editing.
+      // Resolve the DIRECT-CHILD group of the current level that contains it, so
+      // a click selects that sub-group as a unit and a double-click drills ONE
+      // level toward it (SketchUp-style), rather than jumping straight to its
+      // deepest group.
       if (clickedObj.groupId && Model.activeGroupId !== clickedObj.groupId) {
+        const innermost = Model.activeGroupPath.length ? Model.activeGroupPath[Model.activeGroupPath.length - 1] : null;
+        const chain = [...groupAncestors(clickedObj.groupId), clickedObj.groupId];   // [root..its group]
+        const idx = (innermost == null) ? 0 : (chain.indexOf(innermost) + 1);
+        const next = (idx >= 0 && idx < chain.length) ? chain[idx] : clickedObj.groupId;
         if (this._clickCount >= 2) {
-          enterGroup(clickedObj.groupId);
+          enterGroup(next);
         } else {
-          selectGroup(clickedObj.groupId, shift);
+          selectGroup(next, shift);
         }
         this.dragging = false;
         return;
