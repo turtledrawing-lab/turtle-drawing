@@ -90,10 +90,15 @@ def convert(skp_path, glb_path):
     model = sketchup.Model.from_file(skp_path)
     mats = _build_materials(model)
 
-    # Accumulate triangles per material name (baked into world space).
-    buckets = {}   # mat_name -> {"v": [...], "f": [...], "uv": [...]}
+    # Accumulate triangles per (group, material), baked into world space. Each
+    # TOP-LEVEL SketchUp group/component instance becomes one Turtle Drawing
+    # group; nested groups flatten into their top-level parent. The group id is
+    # encoded into each output mesh name ("G<gid>#<material>") so the importer
+    # can re-group the objects. Loose top-level geometry stays ungrouped.
+    buckets = {}        # (gid|None, mat_name) -> {"v","f","uv"}
+    group_seq = [0]
 
-    def emit(face, xform, default_mat):
+    def emit(face, xform, default_mat, gid):
         try:
             vs, tris, uvs = face.tessfaces
         except Exception:
@@ -106,7 +111,7 @@ def convert(skp_path, glb_path):
                 mname = face.material.name
         except Exception:
             pass
-        b = buckets.setdefault(mname, {"v": [], "f": [], "uv": []})
+        b = buckets.setdefault((gid, mname), {"v": [], "f": [], "uv": []})
         base = len(b["v"])
         M = xform
         for (x, y, z) in vs:
@@ -119,9 +124,17 @@ def convert(skp_path, glb_path):
         for tri in tris:
             b["f"].append((tri[0] + base, tri[1] + base, tri[2] + base))
 
-    def walk(entities, xform, default_mat):
+    def _enter(parent_gid):
+        # Only the OUTERMOST group/component opens a new group; nested ones
+        # inherit it (one editable group per top-level SketchUp group).
+        if parent_gid is not None:
+            return parent_gid
+        group_seq[0] += 1
+        return group_seq[0]
+
+    def walk(entities, xform, default_mat, gid):
         for f in entities.faces:
-            emit(f, xform, default_mat)
+            emit(f, xform, default_mat, gid)
         for g in getattr(entities, "groups", []) or []:
             gm = default_mat
             try:
@@ -129,7 +142,7 @@ def convert(skp_path, glb_path):
                     gm = g.material.name
             except Exception:
                 pass
-            walk(g.entities, xform @ _mat4(g.transform), gm)
+            walk(g.entities, xform @ _mat4(g.transform), gm, _enter(gid))
         for inst in getattr(entities, "instances", []) or []:
             im = default_mat
             try:
@@ -142,43 +155,39 @@ def convert(skp_path, glb_path):
             except Exception:
                 ents = getattr(inst, "entities", None)
             if ents is not None:
-                walk(ents, xform @ _mat4(inst.transform), im)
+                walk(ents, xform @ _mat4(inst.transform), im, _enter(gid))
 
     root = _AXIS if Z_UP_TO_Y_UP else np.eye(4)
-    walk(model.entities, root, "DefaultMaterial")
+    walk(model.entities, root, "DefaultMaterial", None)
 
-    geoms = []
-    for mname, b in buckets.items():
+    scene = trimesh.Scene()
+    n_out = 0
+    for (gid, mname), b in buckets.items():
         if not b["f"]:
             continue
         verts = np.array(b["v"], dtype=float)
         faces = np.array(b["f"], dtype=np.int64)
         mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-        info = mats.get(mname, {"color": (0.8, 0.8, 0.8, 1.0), "image": None})
+        info = mats.get(mname, {"color": (0.8, 0.8, 0.8, 1.0)})
         try:
-            uv = np.array(b["uv"], dtype=float)
-            if info["image"] is not None:
-                mesh.visual = trimesh.visual.TextureVisuals(
-                    uv=uv, image=info["image"])
-            else:
-                rgba = [int(round(c * 255)) for c in info["color"]]
-                if len(rgba) == 3:
-                    rgba.append(255)
-                mesh.visual = trimesh.visual.TextureVisuals(
-                    uv=uv,
-                    material=trimesh.visual.material.PBRMaterial(
-                        baseColorFactor=rgba, name=mname))
+            rgba = [int(round(c * 255)) for c in info["color"]]
+            if len(rgba) == 3:
+                rgba.append(255)
+            mesh.visual = trimesh.visual.TextureVisuals(
+                uv=np.array(b["uv"], dtype=float),
+                material=trimesh.visual.material.PBRMaterial(baseColorFactor=rgba, name=mname))
         except Exception as e:
             sys.stderr.write("[convert] visual skip (%s): %s\n" % (mname, e))
-        geoms.append(mesh)
+        # Encode the top-level group in the mesh name for the importer.
+        gname = ("G%d#%s" % (gid, mname)) if gid else (mname or "Mesh")
+        scene.add_geometry(mesh, geom_name=gname)
+        n_out += 1
 
-    if not geoms:
+    if not n_out:
         raise RuntimeError("no geometry extracted from %s" % skp_path)
 
-    scene = trimesh.Scene(geoms)
     scene.export(glb_path)
-    sys.stderr.write("[convert] %s -> %s  (%d material groups)\n"
-                     % (skp_path, glb_path, len(geoms)))
+    sys.stderr.write("[convert] %s -> %s  (%d meshes)\n" % (skp_path, glb_path, n_out))
 
 
 if __name__ == "__main__":

@@ -23558,6 +23558,10 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
   const placeMode = !!(opts && opts.placeMode);
   const placeObjs = [];
   const meshes = [];
+  // Maps a source group key (encoded in mesh names as "G<key>#…", e.g. from the
+  // SketchUp converter) to a Turtle Drawing groupId, so meshes from the same
+  // source group are re-grouped into one editable group.
+  const _srcGroups = new Map();
   rootObj.updateMatrixWorld(true);
   rootObj.traverse((n) => {
     if (n.isMesh && n.geometry) meshes.push(n);
@@ -23620,10 +23624,14 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
       // triangles back into editable n-gon faces (with holes) so a flat surface
       // is ONE selectable/editable face — not a shatter of triangles. Edges are
       // rebuilt from the merged face boundaries (the real model edges).
-      try { em.weldVertices(); } catch (_) {}
+      // Weld at 1mm (looser than the 0.1mm default): glb stores float32, which
+      // at metre scale quantises coincident verts ~0.1mm apart and left flat
+      // faces partly un-merged. 1mm is safe for architecture.
+      try { em.weldVertices(1e-3); } catch (_) {}
       const before = em.faces.length;
       try {
-        const merged = (typeof _mergeCoplanarFacesEM === 'function') ? _mergeCoplanarFacesEM(em) : null;
+        // Slightly looser coplanarity (2.5° / 1cm) catches near-planar faces.
+        const merged = (typeof _mergeCoplanarFacesEM === 'function') ? _mergeCoplanarFacesEM(em, 0.01, 0.999) : null;
         if (merged && merged.length && merged.length < before) {
           em.faces = merged;
           em._smoothShade = (merged.length >= before * 0.6);   // mostly-flat → crisp flat shading
@@ -23636,7 +23644,17 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
         for (let k = 0; k < f.verts.length; k++) _addE(f.verts[k], f.verts[(k+1) % f.verts.length]);
         if (f.holes) for (const h of f.holes) for (let k = 0; k < h.length; k++) _addE(h[k], h[(k+1) % h.length]);
       }
-      made.push(new SketchObject(em, (m.name || 'Mesh') + ' (' + (filename || 'imported') + ')'));
+      // Group: mesh name "G<key>#<material>" → one Turtle Drawing group per
+      // source (SketchUp) group; "<material>" alone stays ungrouped.
+      let _disp = m.name || 'Mesh';
+      const _gm = /^G(\d+)#(.*)$/.exec(m.name || '');
+      const _so = new SketchObject(em, ((_gm ? _gm[2] : _disp) || 'Mesh') + ' (' + (filename || 'imported') + ')');
+      if (_gm) {
+        let _tid = _srcGroups.get(_gm[1]);
+        if (!_tid) { _tid = _newGroupId(); _srcGroups.set(_gm[1], _tid); }
+        _so.groupId = _tid;
+      }
+      made.push(_so);
     } else if (featureEdgesOnly) {
       // Weld coincident verts so adjacent triangles share edges — required for
       // both feature-edge detection (drop flat-face triangulation) and
