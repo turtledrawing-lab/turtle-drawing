@@ -202,8 +202,11 @@ def convert(skp_path, glb_path):
                 material=trimesh.visual.material.PBRMaterial(baseColorFactor=rgba, name=mname))
         except Exception as e:
             sys.stderr.write("[convert] visual skip (%s): %s\n" % (mname, e))
-        # "<g1>/<g2>/...::<material>" — full nested group path (empty = ungrouped).
-        gname = "/".join(path) + "::" + (mname or "Mesh")
+        # Encode the nested group path in the mesh name using '-' (GLTFLoader
+        # STRIPS '/', ':', '.' from names but keeps '-'). Group ids are "g<n>",
+        # so "g1-g4-g7" is unambiguous; ungrouped geometry → "loose". The
+        # material name is NOT in the name (its colour rides on the PBR material).
+        gname = "-".join(path) if path else "loose"
         scene.add_geometry(mesh, geom_name=gname)
         n_out += 1
 

@@ -23755,18 +23755,20 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
         for (let k = 0; k < f.verts.length; k++) _addE(f.verts[k], f.verts[(k+1) % f.verts.length]);
         if (f.holes) for (const h of f.holes) for (let k = 0; k < h.length; k++) _addE(h[k], h[(k+1) % h.length]);
       }
-      // Group path: mesh name "<g1>/<g2>/…::<material>" rebuilds the NESTED
-      // group tree (each segment → a Turtle Drawing group, parent = previous
-      // segment); the object joins the LEAF group. "::<material>" (empty path)
-      // stays ungrouped.
+      // Group path: mesh name "g1-g4-g7" rebuilds the NESTED group tree (each
+      // segment → a Turtle Drawing group, parent = previous segment); the object
+      // joins the LEAF group. (GLTFLoader strips '/', ':' from names, so the
+      // path uses '-' between "g<n>" ids.) Anything else (e.g. "loose") stays
+      // ungrouped. Display name comes from the material (the path isn't shown).
+      // GLTFLoader dedupes identical mesh names with a trailing "_<n>"
+      // (multiple materials in one group share a path), so tolerate + strip it.
       const _nm = m.name || '';
-      const _ci = _nm.indexOf('::');
-      const _pathStr = _ci >= 0 ? _nm.slice(0, _ci) : '';
-      const _disp = _ci >= 0 ? _nm.slice(_ci + 2) : _nm;
-      const _so = new SketchObject(em, (_disp || 'Mesh') + ' (' + (filename || 'imported') + ')');
-      if (_pathStr) {
+      const _isPath = /^g\d+(?:-g\d+)*(?:_\d+)?$/.test(_nm);
+      const _dispMat = (m.material && !Array.isArray(m.material) && m.material.name) ? m.material.name : 'Mesh';
+      const _so = new SketchObject(em, _dispMat + ' (' + (filename || 'imported') + ')');
+      if (_isPath) {
         let _parentTid = null, _leafTid = null;
-        for (const _seg of _pathStr.split('/')) {
+        for (const _seg of _nm.replace(/_\d+$/, '').split('-')) {
           if (!_seg) continue;
           let _tid = _srcGroups.get(_seg);
           if (!_tid) { _tid = _newGroupId(); _srcGroups.set(_seg, _tid); registerGroup(_tid, _parentTid); }
@@ -30150,9 +30152,23 @@ function makeGroup() {
   // we're inside, or null at top). Enables nesting: grouping inside a group.
   registerGroup(gid, Model.activeGroupId);
   const members = [];
+  const _curLevel = Model.activeGroupId;   // null at top level
+  const _reparented = new Set();           // sub-groups already nested under gid
   for (const [obj, plan] of plans) {
     if (plan.mode === 'whole') {
-      obj.groupId = gid;
+      const _og = obj.groupId;
+      if (_og != null && _og !== _curLevel) {
+        // obj already lives in a SUB-GROUP → nest that whole sub-group under the
+        // new group (preserving it) instead of dissolving it; keep obj.groupId.
+        if (!_reparented.has(_og)) {
+          _reparented.add(_og);
+          if (!Model.groups.has(_og)) registerGroup(_og);
+          const _g = Model.groups.get(_og);
+          if (_g) _g.parentId = gid;
+        }
+      } else {
+        obj.groupId = gid;   // loose object at the current level joins directly
+      }
       members.push(obj);
     } else {
       const sourceLayer = obj.layerId;
