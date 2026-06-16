@@ -23694,6 +23694,22 @@ function importSTL(arrayBuffer, filename) {
    localStorage('td_skp_endpoint'); see tools/skp-server/. (Desktop could spawn
    a local converter instead — not wired yet.) */
 async function importSKP(arrayBuffer, filename) {
+  // Desktop (macOS): convert locally via the bundled SketchUp binding — no
+  // server, fully offline. Falls through to the web path if unavailable.
+  if (typeof window.electronConvertSKP === 'function') {
+    setStatus('msg', 'Converting ' + (filename || 'model.skp') + ' …');
+    let res;
+    try { res = await window.electronConvertSKP(new Uint8Array(arrayBuffer), filename || 'model.skp'); }
+    catch (e) { showError('SKP 변환 실패 / conversion failed: ' + (e && e.message || e)); return; }
+    if (res === null) { /* not supported on this platform → fall through to web */ }
+    else if (res && res.error) { showError('SKP 변환 실패 / conversion failed: ' + res.error); return; }
+    else {
+      const u8 = res;   // Uint8Array (the glb)
+      const glb = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+      importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'));
+      return;
+    }
+  }
   const KEY = 'td_skp_endpoint';
   let endpoint = '';
   try { endpoint = localStorage.getItem(KEY) || ''; } catch (_) {}

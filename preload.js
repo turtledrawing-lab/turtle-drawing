@@ -49,6 +49,12 @@ window.electronReadVendor = async (name) => {
 window.electronErrorLog = async (lines) => {
   try { return await ipcRenderer.invoke('error-journal-append', lines); } catch (_) { return false; }
 };
+// SketchUp .skp → glb, offline (macOS). bytes = Uint8Array; returns a Uint8Array
+// (the glb) on success, or {error} / null. Renderer falls back to the web
+// conversion server when this is absent or returns null.
+window.electronConvertSKP = async (bytes, filename) => {
+  try { return await ipcRenderer.invoke('convert-skp', { bytes, filename }); } catch (e) { return { error: String((e && e.message) || e) }; }
+};
 // Google Drive desktop OAuth (installed-app flow lives in main; GIS can't run
 // on file://). Silent first, interactive on demand. Returns {access_token,…}.
 window.electronGDriveSilent  = async () => { try { return await ipcRenderer.invoke('gdrive-token-silent'); } catch (_) { return null; } };

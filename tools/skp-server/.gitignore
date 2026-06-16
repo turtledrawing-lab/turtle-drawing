@@ -10,3 +10,6 @@ SketchUpCommonPreferences.*
 *.skp
 *.glb
 __pycache__/
+
+# Mac conversion runtime (Trimble framework + binding — proprietary, do not commit)
+runtime-macos/

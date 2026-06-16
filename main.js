@@ -309,6 +309,45 @@ ipcMain.handle('read-vendor-file', async (_e, name) => {
   } catch (_) { return null; }
 });
 
+/* SketchUp .skp → glb, offline (macOS only). Spawns the Python converter
+   (convert.py) that uses the bundled SketchUp binding (sketchup.so +
+   SketchUpAPI.framework). The binding is macOS arm64 only, so on other
+   platforms this returns null and the renderer falls back to the web
+   conversion endpoint. The runtime (binding + framework) is NOT in the repo
+   (Trimble proprietary) — in dev it lives at tools/skp-server/runtime-macos/;
+   packaged it would ship under resources/skp-runtime/. */
+ipcMain.handle('convert-skp', async (_e, payload) => {
+  try {
+    if (process.platform !== 'darwin') return null;
+    const bytes = payload && payload.bytes;
+    if (!bytes) return { error: 'no data' };
+    const isDev = !!process.defaultApp;   // app.isPackaged is unreliable in dev (renamed binary)
+    const runtimeDir = process.env.TD_SKP_RUNTIME
+      || (isDev ? path.join(__dirname, 'tools', 'skp-server', 'runtime-macos')
+                : path.join(process.resourcesPath || '', 'skp-runtime'));
+    const py = process.env.TD_SKP_PYTHON || '/opt/homebrew/opt/python@3.10/bin/python3.10';
+    if (!fs.existsSync(path.join(runtimeDir, 'convert.py')) ||
+        !fs.existsSync(path.join(runtimeDir, 'sketchup.so'))) {
+      return { error: 'SKP converter not installed (runtime missing)' };
+    }
+    const os = require('os');
+    const { execFile } = require('child_process');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tdskp-'));
+    const inP = path.join(tmp, 'in.skp'), outP = path.join(tmp, 'out.glb');
+    fs.writeFileSync(inP, Buffer.from(bytes));
+    try {
+      await new Promise((resolve, reject) => {
+        execFile(py, ['convert.py', inP, outP],
+          { cwd: runtimeDir, maxBuffer: 64 * 1024 * 1024, timeout: 180000 },
+          (err, _so, se) => err ? reject(new Error(String(se || err.message).slice(-400))) : resolve());
+      });
+      return fs.readFileSync(outP);   // Buffer → reaches the renderer as a Uint8Array
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+    }
+  } catch (e) { return { error: String((e && e.message) || e) }; }
+});
+
 /* Always-on error journal: the renderer batches uncaught errors, rejection
    reasons, and geometry-guard verdicts; we append them to a rotating log so
    production failures are diagnosable from a beta report. */
