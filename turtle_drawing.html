@@ -23585,6 +23585,12 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
     const mirrored = m.matrixWorld.determinant() < 0;
     const pos = geo.attributes.position;
     const idx = geo.index;
+    // Carry the source mesh's material colour onto the faces (glTF/Collada
+    // PBR baseColor → THREE material.color). Without this, every imported face
+    // was hardcoded white, so materials looked completely lost.
+    const _srcMat = Array.isArray(m.material) ? m.material[0] : m.material;
+    const _matCol = (_srcMat && _srcMat.color && typeof _srcMat.color.getHex === 'function')
+      ? _srcMat.color.getHex() : 0xffffff;
     const em = new EditableMesh();
     em._smoothShade = true;
     // Vertices
@@ -23599,7 +23605,7 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
     for (let t = 0; t < idx.count; t += 3) {
       const a = idx.getX(t), b = idx.getX(t+1), c = idx.getX(t+2);
       if (a === b || b === c || a === c) continue;
-      em.addFace(mirrored ? [a, c, b] : [a, b, c], 0xffffff, Model.activeLayerId || 'Layer0');
+      em.addFace(mirrored ? [a, c, b] : [a, b, c], _matCol, Model.activeLayerId || 'Layer0');
     }
     // Edges. Legacy default mirrors every triangle edge. For heavily
     // tessellated geometry (e.g. 3D text) that's a wall of internal lines, so
@@ -23706,7 +23712,7 @@ async function importSKP(arrayBuffer, filename) {
     else {
       const u8 = res;   // Uint8Array (the glb)
       const glb = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-      importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'));
+      importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'), { featureEdgesOnly: true });
       return;
     }
   }
@@ -23776,18 +23782,18 @@ function _gateSkpImport() {
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _gateSkpImport);
 else _gateSkpImport();
 
-function importGLB(arrayBuffer, filename) {
+function importGLB(arrayBuffer, filename, opts) {
   if (typeof THREE.GLTFLoader !== 'function') {
     // Lazy vendor: fetch the loader on first use, then re-enter.
     _ensureVendor('vendor/GLTFLoader.js')
-      .then(() => importGLB(arrayBuffer, filename))
+      .then(() => importGLB(arrayBuffer, filename, opts))
       .catch((e) => showError('GLTFLoader could not be loaded: ' + e.message));
     return;
   }
   const loader = new THREE.GLTFLoader();
   loader.parse(arrayBuffer, '', (gltf) => {
     try {
-      _importMeshTreeIntoScene(gltf.scene, filename, 1);
+      _importMeshTreeIntoScene(gltf.scene, filename, 1, opts || {});
     } catch (err) {
       showError('GLB processing failed: ' + err.message);
     }
