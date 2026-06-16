@@ -21,17 +21,19 @@ cd "$(dirname "$0")/.."
 
 VERSION="$(node -p "require('./package.json').version")"
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+BUILD_DATE="$(date +%Y-%m-%d)"   # surfaced as "last updated" in the About dialog
 OUT="dist-web"
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-TD_VER="$VERSION" TD_SHA="$SHA" node -e '
+TD_VER="$VERSION" TD_SHA="$SHA" TD_DATE="$BUILD_DATE" node -e '
 const fs = require("fs");
 let s = fs.readFileSync("turtle_drawing.html", "utf8");
 const stamp = process.env.TD_VER + "+" + process.env.TD_SHA;
-// Version stamp — surfaced in bug reports / error logs.
+// Version stamp — surfaced in bug reports / error logs + the About dialog.
 s = s.replace("</title>", "</title>\n<meta name=\"td-version\" content=\"" + stamp + "\">"
+  + "\n<meta name=\"td-build-date\" content=\"" + process.env.TD_DATE + "\">"
   + "\n<link rel=\"manifest\" href=\"manifest.webmanifest\">"
   + "\n<meta name=\"theme-color\" content=\"#f6f6f6\">");
 // Cache-bust the boot scripts/styles per deploy (runtime-fetched assets like

@@ -26949,6 +26949,79 @@ window.addEventListener('resize', () => {
   window._eiSpaceT = setTimeout(adjustEntityInfoForSpace, 80);
 });
 
+// Current UI language for in-app dialogs (matches ad/i18n.js's td_menu_lang).
+// Falls back to the browser locale so a first-time Korean visitor sees Korean.
+function _tdLang() {
+  try { const v = localStorage.getItem('td_menu_lang'); if (v === 'ko' || v === 'en') return v; } catch (_) {}
+  try { return (navigator.language || '').toLowerCase().startsWith('ko') ? 'ko' : 'en'; } catch (_) { return 'en'; }
+}
+
+/* Help ▸ About — styled info card (replaces the old plain alert). */
+function showAboutDialog() {
+  const ko = _tdLang() === 'ko';
+  const L = (k, e) => (ko ? k : e);
+  document.getElementById('tdAboutModal')?.remove();
+  // Version + last-updated come from the build stamps (web.sh); friendly fallbacks on desktop.
+  let ver = 'Beta 1.0.0';
+  try {
+    const m = document.querySelector('meta[name="td-version"]');
+    if (m && m.content) {
+      const base = m.content.split('+')[0];            // e.g. 1.0.0-beta.15
+      const mm = base.match(/^(\d+\.\d+\.\d+)(?:-([a-z]+))?/i);
+      if (mm) ver = (mm[2] ? mm[2].charAt(0).toUpperCase() + mm[2].slice(1) + ' ' : '') + mm[1];
+    }
+  } catch (_) {}
+  let dateStr = '';
+  try {
+    const d = document.querySelector('meta[name="td-build-date"]');
+    if (d && d.content) dateStr = new Date(d.content + 'T00:00:00').toLocaleDateString(ko ? 'ko-KR' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  } catch (_) {}
+
+  const wrap = document.createElement('div');
+  wrap.id = 'tdAboutModal';
+  wrap.style.cssText = 'position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;'
+    + 'background:rgba(0,0,0,0.38);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);font:14px -apple-system,"SF Pro Text","Apple SD Gothic Neo",sans-serif;color:#1d1d1f;';
+  const row = (label, val) => '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:11px 0;border-top:0.5px solid rgba(0,0,0,0.08);">'
+    + '<span style="color:#8a8a8e;">' + label + '</span><span style="font-weight:700;font-size:15px;">' + val + '</span></div>';
+  wrap.innerHTML =
+    '<div style="background:#fff;border-radius:18px;width:min(440px,100%);max-height:90vh;overflow-y:auto;-webkit-overflow-scrolling:touch;box-shadow:0 18px 60px rgba(0,0,0,0.3);">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px 8px;">'
+    +   '<div style="font-weight:700;font-size:16px;">' + L('Turtle Drawing 정보', 'About Turtle Drawing') + '</div>'
+    +   '<button id="tdAboutX" aria-label="' + L('닫기', 'Close') + '" style="border:none;background:transparent;font-size:20px;line-height:1;color:#8a8a8e;cursor:pointer;padding:2px 4px;">&times;</button>'
+    + '</div>'
+    + '<div style="padding:4px 24px 22px;">'
+    +   '<img src="icons/icon-192.png" alt="" width="118" height="118" style="display:block;margin:6px auto 2px;" onerror="this.style.display=\'none\'">'
+    +   '<div style="text-align:center;font-weight:800;font-size:27px;letter-spacing:-0.5px;">Turtle Drawing</div>'
+    +   '<div style="text-align:center;margin-top:2px;"><a href="https://tdw.kr" target="_blank" rel="noopener" style="color:#22a722;font-weight:700;text-decoration:none;">tdw.kr</a></div>'
+    +   '<div style="margin-top:18px;">'
+    +     row(L('버전', 'Version'), ver)
+    +     (dateStr ? row(L('최근 업데이트', 'Last updated'), dateStr) : '')
+    +   '</div>'
+    +   '<p style="margin:16px 0 0;line-height:1.6;color:#3c3c43;border-top:0.5px solid rgba(0,0,0,0.08);padding-top:16px;">'
+    +     L('Turtle Drawing은 웹 브라우저에서 바로 실행되는 3D 모델링 도구입니다. 설치나 다운로드 없이 데스크탑·태블릿·모바일 어디서나 동일하게 동작하며, 건축과 디자인을 위한 가볍고 직관적인 모델링 환경을 지향합니다. 클라우드에 저장하면 어떤 기기에서든 작업을 이어갈 수 있습니다.',
+    +       'Turtle Drawing is a 3D modeling tool that runs right in your web browser. With no install or download, it works the same on desktop, tablet, and mobile — a light, intuitive modeling space for architecture and design. Save to the cloud and pick your work back up on any device.')
+    +   '</p>'
+    +   '<div style="margin-top:16px;background:rgba(153,255,153,0.16);border:0.5px solid rgba(34,167,34,0.25);border-radius:12px;padding:13px 15px;">'
+    +     '<div style="color:#0f7a2e;font-weight:700;margin-bottom:5px;">' + L('라이선스', 'License') + '</div>'
+    +     '<div style="line-height:1.55;color:#3c3c43;">'
+    +       L('누구나 무료로 사용할 수 있습니다. 개인·교육·상업 목적의 사용에 제한이 없으며, 설치나 결제가 필요하지 않습니다.',
+    +         'Free for everyone. No restrictions on personal, educational, or commercial use — and no install or payment required.')
+    +     '</div>'
+    +   '</div>'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;">'
+    +     '<span style="color:#aaa;font-size:12px;">&copy; 2026 tdw.kr</span>'
+    +     '<a href="https://tdw.kr" target="_blank" rel="noopener" style="color:#22a722;font-weight:700;text-decoration:none;">' + L('tdw.kr 바로가기', 'Open tdw.kr →') + '</a>'
+    +   '</div>'
+    + '</div>'
+    + '</div>';
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  wrap.querySelector('#tdAboutX').addEventListener('click', close);
+  const onKey = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
+}
+
 // Dedupe: the native menu fires via BOTH IPC (preload) and executeJavaScript
 // so every click calls handleAction twice. Swallow the duplicate within 80 ms.
 const _handleActionLast = { act: null, at: 0 };
@@ -27190,24 +27263,7 @@ function _handleActionImpl(act) {
       Promise.resolve().then(() => AD.Export.saveDXF()).catch(e => { console.error(e); showError('DXF export failed: ' + e.message); });
       break;
     case 'about':
-      alert(
-        'Turtle Drawing\n' +
-        '────────────────────\n' +
-        'A single-file 3D modeler inspired by the modeler, built with Three.js.\n\n' +
-        'File formats:\n' +
-        '  • .tt   Native Turtle Drawing file (JSON, unit: mm)\n' +
-        '  • .dxf  AutoCAD DXF (import only)\n' +
-        '  • .obj  Wavefront OBJ (for the modeler interop)\n\n' +
-        'the modeler (.skp) interop:\n' +
-        '  The .skp format is proprietary and requires Trimble\u2019s SDK,\n' +
-        '  so direct .skp read/write is not possible in a browser app.\n' +
-        '  Use OBJ as the exchange format:\n' +
-        '    • Turtle → the modeler: File → Export OBJ, then in the modeler\n' +
-        '      File → Import... → choose the .obj file.\n' +
-        '    • the modeler → Turtle: In the modeler, File → Export → 3D Model →\n' +
-        '      OBJ, then in Turtle File → Import OBJ...\n\n' +
-        'See Help menu for keyboard shortcuts.'
-      );
+      try { showAboutDialog(); } catch (e) { console.error('[about]', e); }
       break;
     case 'undo': undo(); break;
     case 'redo': redo(); break;

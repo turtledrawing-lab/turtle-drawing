@@ -139,19 +139,54 @@
     const n = snap.tabs.length;
     _rlog('unexpected previous exit — offering to restore ' + n + ' doc(s) (rawLen=' + rawLen + ')');
     if (window.__TD_RECOVERY_TEST) { _rlog('TEST mode: would prompt; not prompting/restoring'); onDone('declined'); return; }
-    let when = ''; try { if (snap.ts) when = new Date(snap.ts).toLocaleString(); } catch (_) {}
-    const msg = 'Turtle Drawing didn’t close normally last time.\n\nRestore ' + n + ' unsaved document' + (n > 1 ? 's' : '') + (when ? '\n(from ' + when + ')' : '') + '?';
-    let ok = false; try { ok = window.confirm(msg); } catch (_) {}
-    _rlog('prompt result ok=' + ok);
-    if (!ok) { onDone('declined'); return; }
-    let restored = false;
-    try { restored = !!Tabs.restoreSession(snap); }
-    catch (e) { _rlog('restore failed: ' + (e && e.message)); }
-    if (restored) { _rlog('restored ' + n + ' doc(s)'); onDone('restored'); }
-    else {
-      try { window.alert('복구에 실패했습니다. 스냅샷은 보존되어 다음 실행 때 다시 시도할 수 있습니다.'); } catch (_) {}
-      onDone('failed');
-    }
+    let when = ''; try { if (snap.ts) when = new Date(snap.ts).toLocaleTimeString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (_) {}
+    const doRestore = () => {
+      let restored = false;
+      try { restored = !!Tabs.restoreSession(snap); }
+      catch (e) { _rlog('restore failed: ' + (e && e.message)); }
+      if (restored) { _rlog('restored ' + n + ' doc(s)'); onDone('restored'); }
+      else {
+        const ko = _recLang() === 'ko';
+        try { window.alert(ko ? '복구에 실패했습니다. 스냅샷은 보존되어 다음 실행 때 다시 시도할 수 있습니다.' : 'Restore failed. The snapshot is kept so you can try again next launch.'); } catch (_) {}
+        onDone('failed');
+      }
+    };
+    _showRecoveryModal(n, when, doRestore, () => { _rlog('prompt result ok=false'); onDone('declined'); });
+  }
+  // Current UI language for the recovery prompt (mirrors ad/i18n.js td_menu_lang).
+  function _recLang() {
+    try { const v = localStorage.getItem('td_menu_lang'); if (v === 'ko' || v === 'en') return v; } catch (_) {}
+    try { return (navigator.language || '').toLowerCase().startsWith('ko') ? 'ko' : 'en'; } catch (_) { return 'en'; }
+  }
+  /* Friendly "restore unsaved work?" card shown on a refresh/relaunch after an
+     unexpected close (replaces the plain window.confirm). */
+  function _showRecoveryModal(n, when, onRestore, onDiscard) {
+    const ko = _recLang() === 'ko';
+    const L = (k, e) => (ko ? k : e);
+    let done = false;
+    const finish = (fn) => { if (done) return; done = true; try { wrap.remove(); } catch (_) {} try { fn(); } catch (_) {} };
+    const docs = ko ? ('저장 못 한 문서 ' + n + '개를 가지고 있어요.') : ("I'm holding " + n + ' unsaved document' + (n > 1 ? 's' : '') + '.');
+    const wrap = document.createElement('div');
+    wrap.id = 'tdRecoveryModal';
+    wrap.style.cssText = 'position:fixed;inset:0;z-index:100001;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;'
+      + 'background:rgba(0,0,0,0.38);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);font:14px -apple-system,"SF Pro Text","Apple SD Gothic Neo",sans-serif;color:#1d1d1f;';
+    wrap.innerHTML =
+      '<div style="background:#fff;border-radius:20px;width:min(540px,100%);box-shadow:0 18px 60px rgba(0,0,0,0.3);padding:22px 24px;display:flex;gap:18px;align-items:flex-start;">'
+      + '<img src="icons/icon-192.png" alt="" width="64" height="64" style="flex:none;margin-top:2px;" onerror="this.style.display=\'none\'">'
+      + '<div style="flex:1;min-width:0;">'
+      +   '<div style="font-weight:700;font-size:17px;line-height:1.4;">' + L('앗, 지난번엔 갑자기 닫혀버렸어요.', 'Oops — it closed unexpectedly last time.') + '</div>'
+      +   '<div style="color:#6e6e73;margin-top:8px;line-height:1.5;">' + docs + '</div>'
+      +   (when ? '<div style="color:#aaa;font-size:12px;margin-top:2px;">(' + when + L(' 작업', '') + ')</div>' : '')
+      +   '<div style="font-weight:700;font-size:15px;margin-top:14px;">' + L('다시 불러올까요?', 'Restore it?') + '</div>'
+      +   '<div style="display:flex;justify-content:flex-end;align-items:center;gap:14px;margin-top:16px;">'
+      +     '<button id="tdRecDiscard" style="border:none;background:transparent;color:#8a8a8e;font-weight:600;font-size:14px;cursor:pointer;padding:8px 6px;">' + L('버리기', 'Discard') + '</button>'
+      +     '<button id="tdRecRestore" style="border:none;background:#99ff99;color:#0f3d18;font-weight:700;font-size:14px;cursor:pointer;padding:10px 20px;border-radius:11px;">' + L('복원하기', 'Restore') + '</button>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
+    wrap.querySelector('#tdRecRestore').addEventListener('click', () => finish(onRestore));
+    wrap.querySelector('#tdRecDiscard').addEventListener('click', () => finish(onDiscard));
+    document.body.appendChild(wrap);
   }
   function _maybeRecover() {
     let clean = null;
