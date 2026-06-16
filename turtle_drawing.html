@@ -1046,6 +1046,7 @@ input[type="range"]:hover { accent-color: #22a722; }
             <div data-act="import-stl">STL...</div>
             <div data-act="import-obj">OBJ (file)...</div>
             <div data-act="import-obj-folder">OBJ (folder)...</div>
+            <div data-act="import-skp">SketchUp (.skp)...</div>
           </div>
         </div>
         <div class="submenu">Export <span>▸</span>
@@ -1769,7 +1770,7 @@ input[type="range"]:hover { accent-color: #22a722; }
 </div>
 <!-- Phone-only full-screen toggle (Fullscreen API; icon swaps via JS). -->
 <button id="mobileFsBtn" type="button" aria-label="전체화면" title="전체화면"></button>
-<input type="file" id="fileInput" accept=".tt,.dxf,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg,.jpeg,.bmp,.gif,.tga" style="display:none;" />
+<input type="file" id="fileInput" accept=".tt,.dxf,.obj,.mtl,.glb,.gltf,.stl,.skp,.png,.jpg,.jpeg,.bmp,.gif,.tga" style="display:none;" />
 <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none;" />
 <input type="file" id="objFileInput" accept=".obj,.mtl,.png,.jpg,.jpeg,.bmp,.gif,.tga" multiple style="display:none;" />
 
@@ -23687,6 +23688,53 @@ function importSTL(arrayBuffer, filename) {
 }
 
 /* Import a glTF/GLB file from an ArrayBuffer. */
+/* SketchUp .skp import (web). The browser can't read .skp (the SketchUp SDK is
+   native Win/Mac only — no WASM), so we POST the file to a conversion server
+   that returns glb, then load it via importGLB. Server URL is remembered in
+   localStorage('td_skp_endpoint'); see tools/skp-server/. (Desktop could spawn
+   a local converter instead — not wired yet.) */
+async function importSKP(arrayBuffer, filename) {
+  const KEY = 'td_skp_endpoint';
+  let endpoint = '';
+  try { endpoint = localStorage.getItem(KEY) || ''; } catch (_) {}
+  if (!endpoint && (location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    endpoint = 'http://localhost:8787/convert';   // local dev default
+  }
+  if (!endpoint) {
+    const v = prompt('SketchUp(.skp) 변환 서버 주소를 입력하세요 / Enter the .skp conversion server URL\n(예: https://convert.example.com/convert)', '');
+    if (!v) return;
+    endpoint = v.trim();
+    try { localStorage.setItem(KEY, endpoint); } catch (_) {}
+  }
+  try {
+    if (localStorage.getItem('td_skp_privacy_ok') !== '1') {
+      const ok = confirm('.skp 변환을 위해 파일이 변환 서버로 전송됩니다.\nThe .skp file will be uploaded to your conversion server. Continue?');
+      if (!ok) return;
+      localStorage.setItem('td_skp_privacy_ok', '1');
+    }
+  } catch (_) {}
+  setStatus('msg', 'Converting ' + (filename || 'model.skp') + ' …');
+  let res;
+  try {
+    res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': filename || 'model.skp' },
+      body: arrayBuffer,
+    });
+  } catch (e) {
+    showError('SKP 변환 서버에 연결할 수 없습니다 (' + endpoint + ').\nCould not reach the .skp conversion server — check that it is running and the URL is correct.');
+    return;
+  }
+  if (!res.ok) {
+    let detail = res.status;
+    try { const j = await res.json(); if (j && j.error) detail = j.error; } catch (_) {}
+    showError('SKP 변환 실패 / conversion failed: ' + detail);
+    return;
+  }
+  const glb = await res.arrayBuffer();
+  importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'));
+}
+
 function importGLB(arrayBuffer, filename) {
   if (typeof THREE.GLTFLoader !== 'function') {
     // Lazy vendor: fetch the loader on first use, then re-enter.
@@ -27648,6 +27696,9 @@ function _handleActionImpl(act) {
     case 'toggle-turntable':
       if (typeof Turntable !== 'undefined' && Turntable.toggle) Turntable.toggle();
       break;
+    case 'import-skp':
+      openFileDialog('.skp');
+      break;
     case 'import-3dm':
       if (typeof window.electronPickFile === 'function') {
         (async () => {
@@ -30493,13 +30544,14 @@ document.getElementById('fileInput').addEventListener('change', e => {
     // Single file (tt, dxf, glb, stl, 3dm, dae, etc.)
     const file = files[0];
     const name = file.name.toLowerCase();
-    if (name.endsWith('.glb') || name.endsWith('.gltf') || name.endsWith('.stl') || name.endsWith('.3dm') || name.endsWith('.dwg')) {
+    if (name.endsWith('.glb') || name.endsWith('.gltf') || name.endsWith('.stl') || name.endsWith('.3dm') || name.endsWith('.dwg') || name.endsWith('.skp')) {
       const reader = new FileReader();
       reader.onload = ev => {
         try {
           if (name.endsWith('.stl')) importSTL(ev.target.result, file.name);
           else if (name.endsWith('.3dm')) importRhino3dm(new Uint8Array(ev.target.result), file.name).catch(err => { console.error(err); showError('3DM import failed: ' + (err && err.message || err)); });
           else if (name.endsWith('.dwg')) importDWG(ev.target.result, file.name);
+          else if (name.endsWith('.skp')) importSKP(ev.target.result, file.name);
           else                       importGLB(ev.target.result, file.name);
         } catch (err) { console.error(err); showError('Import error: ' + err.message); }
       };
@@ -30635,6 +30687,7 @@ document.getElementById('objFileInput').addEventListener('change', e => {
           if (ext === '3dm')  { f.arrayBuffer().then(ab => importRhino3dm(new Uint8Array(ab), f.name)); return; }
           if (ext === 'dxf')  { f.text().then(t => importDXF(t, f.name)); return; }
           if (ext === 'dwg')  { f.arrayBuffer().then(ab => importDWG(ab, f.name)); return; }
+          if (ext === 'skp')  { f.arrayBuffer().then(ab => importSKP(ab, f.name)); return; }
           if (ext === 'dae')  { f.text().then(t => importDAE(t, f.name)); return; }
         } catch (err) { console.error('[drop]', err); }
       }

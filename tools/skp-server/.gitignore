@@ -1,0 +1,12 @@
+# NEVER commit Trimble's SketchUp SDK binaries or the RedHalo binding — they are
+# proprietary (SketchUp SDK EULA), not ours to redistribute. They live on the
+# Windows host only, dropped in next to convert.py at deploy time.
+sketchup_importer/
+sketchup*.pyd
+sketchup*.so
+sketchup*.dylib
+SketchUpAPI.*
+SketchUpCommonPreferences.*
+*.skp
+*.glb
+__pycache__/

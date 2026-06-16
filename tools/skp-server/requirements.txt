@@ -1,0 +1,6 @@
+# Conversion deps (install on the Windows host with Python 3.11):
+#   py -3.11 -m pip install -r requirements.txt
+# The `sketchup` binding + SketchUpAPI.dll are NOT pip-installable — see README.
+trimesh>=4.0
+numpy>=1.24
+pillow>=10.0
