@@ -1540,6 +1540,7 @@ function createWindow(pendingDocJson) {
             { label: 'STL...',                  click: send('import-stl') },
             { label: 'OBJ (file)...',           click: send('import-obj') },
             { label: 'OBJ (folder)...',         click: send('import-obj-folder') },
+            { label: 'SketchUp (.skp)...',      click: send('import-skp') },
           ],
         },
         {

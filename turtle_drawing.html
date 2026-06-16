@@ -27738,7 +27738,19 @@ function _handleActionImpl(act) {
       if (typeof Turntable !== 'undefined' && Turntable.toggle) Turntable.toggle();
       break;
     case 'import-skp':
-      openFileDialog('.skp');
+      // Desktop: native file picker (HTML input.click() is unreliable from the
+      // native menu via IPC) → importSKP → local converter. Web: file dialog.
+      if (typeof window.electronPickFile === 'function') {
+        (async () => {
+          const r = await window.electronPickFile({ filters: [{ name: 'SketchUp', extensions: ['skp'] }] });
+          if (r && r.bytes) {
+            const ab = r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength);
+            importSKP(ab, r.name);
+          }
+        })();
+      } else {
+        openFileDialog('.skp');
+      }
       break;
     case 'import-3dm':
       if (typeof window.electronPickFile === 'function') {
