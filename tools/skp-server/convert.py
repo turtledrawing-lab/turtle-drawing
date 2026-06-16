@@ -26,7 +26,7 @@ import sys
 import numpy as np
 import trimesh
 
-UNIT_SCALE = 0.0254          # inches -> metres
+UNIT_SCALE = 1.0             # the pyslapi binding already returns metres (calibrated on Mac)
 Z_UP_TO_Y_UP = True
 TRANSPOSE_XFORM = False
 
@@ -58,7 +58,7 @@ def _build_materials(model):
                 col = tuple(c / 255.0 for c in col)
             img = None
             tex = getattr(mat, "texture", None)
-            if tex is not None:
+            if tex and hasattr(tex, "write"):   # binding returns False (not None) when untextured
                 try:
                     p = os.path.join(tempfile.gettempdir(), "td_skptex_%s.png" % abs(hash(name)))
                     tex.write(p)
