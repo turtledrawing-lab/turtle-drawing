@@ -7546,6 +7546,24 @@ function isInActiveSubtree(o) {
   if (o.groupId == null) return false;
   return o.groupId === a || isAncestorGroup(a, o.groupId);
 }
+/* Given an object's immediate group, return the group that represents the
+   "unit" to select/move at the CURRENT edit level: the ancestor that is a
+   direct child of the active level (top-level group at top, the next sub-group
+   when inside one). This is what double-click drills into and what selecting/
+   moving treats as one entity. */
+function contextUnitGroup(gid) {
+  if (gid == null) return null;
+  const active = Model.activeGroupId;
+  const chain = [...groupAncestors(gid), gid];     // [root..gid]
+  const idx = (active == null) ? 0 : (chain.indexOf(active) + 1);
+  return (idx >= 0 && idx < chain.length) ? chain[idx] : gid;
+}
+/* All objects that move/select together as the unit for a clicked object's
+   group — the context-level group's whole subtree. */
+function groupUnitObjects(gid) {
+  if (gid == null) return [];
+  return getGroupDescendantObjects(contextUnitGroup(gid));
+}
 /* Dashed bounding box drawn around the active group while editing it. */
 let _groupEditOutline = null;
 function _clearGroupEditOutline() {
@@ -7559,7 +7577,7 @@ function _clearGroupEditOutline() {
 function _refreshGroupEditOutline() {
   _clearGroupEditOutline();
   if (Model.activeGroupId == null) return;
-  const members = getGroupMembers(Model.activeGroupId);
+  const members = getGroupDescendantObjects(Model.activeGroupId);
   if (!members.length) return;
   const bb = new THREE.Box3();
   for (const m of members) {
@@ -7670,8 +7688,12 @@ function toggleGroupSolo() {
 let _layerPanelFocus = false;
 function selectGroup(gid, add=false) {
   if (!add) clearSelection();
-  for (const o of Model.objects) {
-    if (o.groupId !== gid) continue;
+  // Select the WHOLE subtree (direct members + every descendant group's
+  // objects) so a nested group selects/moves as one unit.
+  const objs = (typeof getGroupDescendantObjects === 'function')
+    ? getGroupDescendantObjects(gid)
+    : Model.objects.filter(o => o.groupId === gid);
+  for (const o of objs) {
     Selection.objects.add(o);
     const s = Selection.faces.get(o) || new Set();
     for (let i = 0; i < o.em.faces.length; i++) s.add(i);
@@ -13151,7 +13173,7 @@ Tools.select = {
      connectivity — mirrors "triple-click selects the whole thing" for a normal
      object, but the "whole thing" here is the entire group's contents. */
   _selectActiveGroupAll(gid, mode = 'replace') {
-    const members = getGroupMembers(gid).filter(o => o.visible && !o.hidden);
+    const members = getGroupDescendantObjects(gid).filter(o => o.visible && !o.hidden);
     if (mode === 'replace') { Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear(); }
     const ek = (a, b) => _edgeKey(a, b);
     for (const o of members) {
@@ -14295,7 +14317,7 @@ Tools.move = {
         // Expand groups
         for (const o of [...moveObjs]) {
           if (o.groupId && isOuterGroup(o)) {
-            for (const m of getGroupMembers(o.groupId)) moveObjs.add(m);
+            for (const m of groupUnitObjects(o.groupId)) moveObjs.add(m);
           }
         }
         this.objs = [...moveObjs];
@@ -14433,8 +14455,8 @@ Tools.move = {
       if (!obj) return;
       const pickPoint = hits.length ? hits[0].point : snap.point;
       if (isOuterGroup(obj)) {
-        const members = getGroupMembers(obj.groupId);
-        selectGroup(obj.groupId);
+        const members = groupUnitObjects(obj.groupId);
+        selectGroup(contextUnitGroup(obj.groupId));
         this.obj  = obj;
         this.objs = members;
         this.origVertsByObj = new Map(members.map(m => [m, m.em.vertices.map(v => v.clone())]));
@@ -15159,7 +15181,7 @@ Tools.scale = {
     for (const [o] of Selection.edges) set.add(o);
     for (const o of [...set]) {
       if (o.groupId && typeof isOuterGroup === 'function' && isOuterGroup(o))
-        for (const m of getGroupMembers(o.groupId)) set.add(m);
+        for (const m of groupUnitObjects(o.groupId)) set.add(m);
     }
     this.objs = [...set];
     this.origVertsByObj = new Map(this.objs.map(m => [m, m.em.vertices.map(v => v.clone())]));
@@ -15705,7 +15727,7 @@ Tools.rotate = {
         const hits = raycastObjects(e);
         if (!hits.length) return;
         const obj = hits[0].object.userData.sketchObject;
-        if (isOuterGroup(obj)) { selectGroup(obj.groupId); }
+        if (isOuterGroup(obj)) { selectGroup(contextUnitGroup(obj.groupId)); }
         else { selectObject(obj, false); }
       }
 
@@ -15716,7 +15738,7 @@ Tools.rotate = {
       for (const [o] of Selection.edges) moveObjs.add(o);
       for (const o of [...moveObjs]) {
         if (o.groupId && isOuterGroup(o)) {
-          for (const m of getGroupMembers(o.groupId)) moveObjs.add(m);
+          for (const m of groupUnitObjects(o.groupId)) moveObjs.add(m);
         }
       }
       this.objs = [...moveObjs];
@@ -21857,7 +21879,7 @@ Tools.erase = {
     if (hits.length) {
       const hitObj = hits[0].object.userData.sketchObject;
       if (isOuterGroup(hitObj)) {
-        const members = getGroupMembers(hitObj.groupId);
+        const members = groupUnitObjects(hitObj.groupId);
         for (const m of members) removeObject(m);
         pushHistory('Erase Group');
         refreshSelectionVisuals();
@@ -21866,7 +21888,7 @@ Tools.erase = {
       }
     }
     if (edgePick && isOuterGroup(edgePick.obj)) {
-      const members = getGroupMembers(edgePick.obj.groupId);
+      const members = groupUnitObjects(edgePick.obj.groupId);
       for (const m of members) removeObject(m);
       pushHistory('Erase Group');
       refreshSelectionVisuals();
@@ -22003,7 +22025,7 @@ Tools.erase = {
     }
     if (!obj) return;
     if (isOuterGroup(obj)) {
-      const members = getGroupMembers(obj.groupId);
+      const members = groupUnitObjects(obj.groupId);
       for (const m of members) removeObject(m);
       pushHistory('Erase Group');
     } else {
