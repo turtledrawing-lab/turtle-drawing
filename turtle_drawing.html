@@ -12081,21 +12081,9 @@ function computeSnap(e, opts = {}) {
   else if (SnapPrefs.extIntersect && bestIntersect) best = bestIntersect;
   else if (SnapPrefs.onEdge       && bestEdge)      best = bestEdge;
   else if (SnapPrefs.axis         && bestAxis)      best = bestAxis;
-  // VERTEX MAGNETISM: if best is 'On Edge' but one of the edge's endpoints
-  // is within the endpoint snap radius of the cursor, promote to that
-  // endpoint. Guarantees pencil-tip-near-corner always snaps to corner.
-  if (best && best.type === 'On Edge' && SnapPrefs.endpoint &&
-      best.edgeA && best.edgeB) {
-    const sA = worldToScreen(best.edgeA);
-    const sB = worldToScreen(best.edgeB);
-    const dA = Math.hypot(sA.x - mx, sA.y - my);
-    const dB = Math.hypot(sB.x - mx, sB.y - my);
-    if (dA < SNAP_PX_END && dA <= dB) {
-      best = { point: best.edgeA.clone(), type: 'Endpoint', obj: best.obj };
-    } else if (dB < SNAP_PX_END) {
-      best = { point: best.edgeB.clone(), type: 'Endpoint', obj: best.obj };
-    }
-  }
+  // VERTEX MAGNETISM is applied below, AFTER force-on-visible-face, so it can
+  // only ever promote a corner that sits on the visible surface (never a
+  // hidden back-face vertex).
   if (!best && !opts.endpointOnly) {
     if      (SnapPrefs.onFace   && faceHit) best = faceHit;
     else if (SnapPrefs.onGround) {
@@ -12131,6 +12119,31 @@ function computeSnap(e, opts = {}) {
     const v0 = faceHit.obj.em.vertices[f.verts[0]];
     const planeDist = Math.abs(best.point.clone().sub(v0).dot(f.normal));
     if (planeDist > 0.01) best = faceHit;
+  }
+
+  // VERTEX MAGNETISM (generalized): a real vertex within a widened endpoint
+  // magnet radius beats On Edge / On Face / On Ground / Axis snaps, so
+  // connecting to an existing corner grabs the corner — not the edge running
+  // through it (the reported "엣지가 우선 잡히는" bug). Runs AFTER
+  // force-on-visible-face so it can only promote a corner on the VISIBLE
+  // surface, and leaves deliberate Extension snaps alone. Candidate sources:
+  // (1) the winning edge's own endpoints — covers verts the depth-filter
+  //     dropped from snapCandidates (the path that let edges beat corners);
+  // (2) any live Endpoint candidate near the cursor.
+  if (best && SnapPrefs.endpoint &&
+      best.type !== 'Endpoint' && best.type !== 'Midpoint' &&
+      !/Extension/i.test(best.type || '')) {
+    const MAG = SNAP_PX_END + 4;          // ~18px corner-magnet radius (> edge accept 15.4px)
+    let magBest = null, magBestD = MAG;
+    const consider = (pt, o) => {
+      const s = worldToScreen(pt);
+      if (s.z > 1) return;
+      const dd = Math.hypot(s.x - mx, s.y - my);
+      if (dd < magBestD) { magBestD = dd; magBest = { point: pt.clone(), type: 'Endpoint', obj: o }; }
+    };
+    if (best.edgeA && best.edgeB) { consider(best.edgeA, best.obj); consider(best.edgeB, best.obj); }
+    for (const c of snapCandidates) { if (c.type === 'Endpoint') consider(c.point, c.obj); }
+    if (magBest) best = magBest;
   }
 
   // Attach face context to snaps that don't have it but coincide with a face
@@ -18290,10 +18303,26 @@ Tools.line = {
     }
     if (axis) {
       p2 = this._closestOnAxis(this.firstPoint, axis.vec, ray);
-    } else if (this.firstFace && this.firstFace.normal) {
-      const n = this.firstFace.normal;
-      const d = p2.clone().sub(this.firstPoint).dot(n);
-      p2.addScaledVector(n, -d);
+    } else {
+      // Constrain the point to the active HOST PLANE — but only for weak
+      // surface snaps. A deliberate precise snap (Endpoint / Midpoint /
+      // Intersection / Extension) keeps its true 3D position so the line can
+      // reach up or out to existing geometry instead of being flattened.
+      const precise = /Endpoint|Midpoint|Intersect/i.test(snap.type || '');
+      if (!precise) {
+        if (this.firstFace && this.firstFace.normal) {
+          // Stay coplanar with the face the chain started on.
+          const n = this.firstFace.normal;
+          const d = p2.clone().sub(this.firstPoint).dot(n);
+          p2.addScaledVector(n, -d);
+        } else if (Math.abs(this.firstPoint.y) < 1e-4) {
+          // GROUND CHAIN: the anchor sits on the y=0 ground plane with no host
+          // face. Pin the point to the ground so it can't drift up/down when
+          // the cursor grazes a wall face or other off-ground geometry — the
+          // reported "바닥 스냅이 안 걸리고 위아래로 점이 찍히는" bug.
+          p2.y = 0;
+        }
+      }
     }
     return { snap, p2, axis };
   },
@@ -26963,10 +26992,13 @@ function showAboutDialog() {
   document.getElementById('tdAboutModal')?.remove();
   // Version + last-updated come from the build stamps (web.sh); friendly fallbacks on desktop.
   let ver = 'Beta 1.0.0';
+  let sha = '';                                        // per-deploy git short SHA (web.sh stamp)
   try {
     const m = document.querySelector('meta[name="td-version"]');
     if (m && m.content) {
-      const base = m.content.split('+')[0];            // e.g. 1.0.0-beta.15
+      const parts = m.content.split('+');
+      const base = parts[0];                           // e.g. 1.0.0-beta.15
+      if (parts[1] && parts[1] !== 'dev') sha = parts[1];   // e.g. 837b719
       const mm = base.match(/^(\d+\.\d+\.\d+)(?:-([a-z]+))?/i);
       if (mm) ver = (mm[2] ? mm[2].charAt(0).toUpperCase() + mm[2].slice(1) + ' ' : '') + mm[1];
     }
@@ -26996,6 +27028,7 @@ function showAboutDialog() {
     +   '<div style="margin-top:18px;">'
     +     row(L('버전', 'Version'), ver)
     +     (dateStr ? row(L('최근 업데이트', 'Last updated'), dateStr) : '')
+    +     (sha ? row(L('배포 빌드', 'Build'), '<span style="font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;">' + sha + '</span>') : '')
     +   '</div>'
     +   '<p style="margin:16px 0 0;line-height:1.6;color:#3c3c43;border-top:0.5px solid rgba(0,0,0,0.08);padding-top:16px;">'
     +     L('Turtle Drawing은 웹 브라우저에서 바로 실행되는 3D 모델링 도구입니다. 설치나 다운로드 없이 데스크탑·태블릿·모바일 어디서나 동일하게 동작하며, 건축과 디자인을 위한 가볍고 직관적인 모델링 환경을 지향합니다. 클라우드에 저장하면 어떤 기기에서든 작업을 이어갈 수 있습니다.',
