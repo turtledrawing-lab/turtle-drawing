@@ -18436,6 +18436,23 @@ Tools.line = {
       const segMinY = Math.min(p1.y,p2.y), segMaxY = Math.max(p1.y,p2.y);
       const segMinZ = Math.min(p1.z,p2.z), segMaxZ = Math.max(p1.z,p2.z);
       const M = 0.01;
+      // True if point P lies on the INTERIOR of any edge of em (within tol) —
+      // catches a T-junction where the new line's endpoint landed on another
+      // line but the snap didn't capture that object (so it isn't obj1/obj2).
+      const _ptOnEdgeOf = (em, P, tol) => {
+        const t2 = tol * tol;
+        for (const ed of em.edges) {
+          const A = em.vertices[ed.a], B = em.vertices[ed.b];
+          const ABx = B.x-A.x, ABy = B.y-A.y, ABz = B.z-A.z;
+          const L2 = ABx*ABx + ABy*ABy + ABz*ABz;
+          if (L2 < 1e-12) continue;
+          let t = ((P.x-A.x)*ABx + (P.y-A.y)*ABy + (P.z-A.z)*ABz) / L2;
+          if (t <= 0.001 || t >= 0.999) continue;                 // at/near an endpoint, not interior
+          const dx = A.x+ABx*t-P.x, dy = A.y+ABy*t-P.y, dz = A.z+ABz*t-P.z;
+          if (dx*dx + dy*dy + dz*dz <= t2) return true;
+        }
+        return false;
+      };
       for (const other of Model.objects) {
         if (other === obj1 || other === obj2) continue;
         if (!other.group.visible || other.locked) continue;
@@ -18448,10 +18465,14 @@ Tools.line = {
               bb.max.x < segMinX - M || bb.min.x > segMaxX + M ||
               bb.max.y < segMinY - M || bb.min.y > segMaxY + M ||
               bb.max.z < segMinZ - M || bb.min.z > segMaxZ + M)) continue;
-        // Require a TRUE intersection (~2mm), not findEdgeCrossings' default
-        // 10mm "lines nearly meet" tolerance — else lines passing close but not
-        // touching (e.g. at slightly different heights) would wrongly fuse.
-        if (findEdgeCrossings(other.em, p1, p2, 0.0004).length) crossObjs.push(other);
+        // Fuse this line if the new segment TRULY crosses it (~2mm, not
+        // findEdgeCrossings' default 10mm "nearly meet" — else near-misses at
+        // different heights would fuse), OR an endpoint lands on its interior
+        // (a T-junction the snap didn't attribute to an object).
+        if (findEdgeCrossings(other.em, p1, p2, 0.0004).length ||
+            _ptOnEdgeOf(other.em, p1, 0.0015) || _ptOnEdgeOf(other.em, p2, 0.0015)) {
+          crossObjs.push(other);
+        }
       }
     }
     if (!target) {
@@ -18474,6 +18495,16 @@ Tools.line = {
     const ia = findOrAddVertexAt(target.em, p1);
     const ib = findOrAddVertexAt(target.em, p2);
     if (ia === ib) return { obj: target, ib };
+
+    // T-JUNCTION SPLIT: if an endpoint of the new segment lands on the INTERIOR
+    // of an existing edge (the user dropped a point in the middle of a line),
+    // split that edge there so the touched line divides at the point — not only
+    // at true crossings. Safe: split*AtPoint only act on edges the vertex
+    // actually lies inside (endpoints are skipped).
+    splitEdgesAtPoint(target.em, ia);
+    splitStandaloneEdgesAtPoint(target.em, ia);
+    splitEdgesAtPoint(target.em, ib);
+    splitStandaloneEdgesAtPoint(target.em, ib);
 
     // Detect intersections of the new segment [p1, p2] with existing edges
     // in the target mesh. At each crossing, insert a new vertex and split
