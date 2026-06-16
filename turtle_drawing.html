@@ -6788,10 +6788,16 @@ const Model = {
   components: [],         // [{ id, name, vertices:[Vec3], faces:[{verts,color,layerId,holes}], edges:[{a,b}], pivot:Vec3 }]
   activeComponentId: null, // when set, instances of this component allow face/edge editing (double-click to enter, Esc to exit)
   activeComponentSource: null, // the specific instance double-clicked to enter edit mode (used as the propagation source)
-  // Group editing context. When non-null, only objects with this groupId are
-  // fully interactive; other objects are dimmed (or hidden when outsideVisible
-  // is false). Entered via double-click on a grouped object, exited via Esc.
-  activeGroupId: null,
+  // Group editing context. NESTED groups: `groups` is the registry that holds
+  // the group TREE (gid → {id,name,parentId}); each object keeps a single
+  // `groupId` = its IMMEDIATE parent group. The edit context is a PATH
+  // (root→innermost); `activeGroupId` is a backward-compat shim over the path
+  // so every existing call site keeps working. (Phase 1 keeps the path length
+  // ≤ 1, so behavior is identical to the old flat model.)
+  groups: new Map(),       // gid → { id, name, parentId }  (parentId null = top level)
+  activeGroupPath: [],     // gids root→innermost; [] = top level
+  get activeGroupId() { return this.activeGroupPath.length ? this.activeGroupPath[this.activeGroupPath.length - 1] : null; },
+  set activeGroupId(v) { this.activeGroupPath = (v == null) ? [] : [v]; },
   outsideVisible: true,
   isolatedObjects: null,   // Set of isolated objects (N key solo mode)
   scenes: [],              // [{id,name,camPos,camTarget,camUp,fov}]
@@ -7453,6 +7459,83 @@ function applyLayerVisibility() {
 function getGroupMembers(gid) {
   if (gid == null) return [];
   return Model.objects.filter(o => o.groupId === gid);
+}
+/* ---- Nested-group registry (Phase 1: registry + tree queries). The scope
+   checks (visibility/selection/raycast/snap) are routed through these in later
+   phases; in P1 the path length stays ≤ 1 so behavior is unchanged. ---- */
+function registerGroup(gid, parentId = null, name = null) {
+  if (gid == null) return;
+  const ex = Model.groups.get(gid);
+  if (ex) {
+    if (parentId != null) ex.parentId = parentId;
+    if (name) ex.name = name;
+    return;
+  }
+  Model.groups.set(gid, { id: gid, name: name || null, parentId: parentId == null ? null : parentId });
+}
+/* Rebuild the registry from object groupIds — used when loading a legacy/flat
+   doc that carries no group tree: every distinct groupId becomes a top-level
+   group. Preserves any parentId already known. */
+function rebuildGroupRegistryFromObjects() {
+  for (const o of Model.objects) {
+    if (o.groupId != null && !Model.groups.has(o.groupId)) {
+      Model.groups.set(o.groupId, { id: o.groupId, name: null, parentId: null });
+    }
+  }
+}
+/* Ancestor chain [root..parent] of a group (cycle-guarded, depth-capped). */
+function groupAncestors(gid) {
+  const out = [];
+  const seen = new Set();
+  let cur = gid, guard = 0;
+  while (cur != null && guard++ < 256) {
+    const g = Model.groups.get(cur);
+    const p = g ? g.parentId : null;
+    if (p == null || seen.has(p)) break;
+    seen.add(p); out.push(p); cur = p;
+  }
+  return out.reverse();
+}
+/* True if `maybeAncestor` is an ancestor group of `gid`. */
+function isAncestorGroup(maybeAncestor, gid) {
+  if (maybeAncestor == null || gid == null) return false;
+  let cur = gid, guard = 0;
+  while (cur != null && guard++ < 256) {
+    const g = Model.groups.get(cur);
+    cur = g ? g.parentId : null;
+    if (cur === maybeAncestor) return true;
+  }
+  return false;
+}
+/* All objects in `gid` AND every descendant group (recursive). Used by
+   move/transform/explode/delete/select-as-unit. */
+function getGroupDescendantObjects(gid) {
+  if (gid == null) return [];
+  const childOf = new Map();
+  for (const g of Model.groups.values()) {
+    if (g.parentId != null) {
+      let s = childOf.get(g.parentId);
+      if (!s) { s = []; childOf.set(g.parentId, s); }
+      s.push(g.id);
+    }
+  }
+  const want = new Set([gid]);
+  const stack = [gid];
+  let guard = 0;
+  while (stack.length && guard++ < 100000) {
+    const cur = stack.pop();
+    const kids = childOf.get(cur);
+    if (kids) for (const k of kids) if (!want.has(k)) { want.add(k); stack.push(k); }
+  }
+  return Model.objects.filter(o => o.groupId != null && want.has(o.groupId));
+}
+/* The SINGLE funnel for "is this object live in the current edit context?".
+   Wired into all scope checks in Phase 3. In P1 it equals the legacy flat
+   check (path length ≤ 1). */
+function isInActiveContext(o) {
+  const path = Model.activeGroupPath;
+  if (!path.length) return (o.groupId ?? null) == null;
+  return o.groupId === path[path.length - 1];
 }
 /* Dashed bounding box drawn around the active group while editing it. */
 let _groupEditOutline = null;
@@ -24485,6 +24568,17 @@ async function loadDocIntoScene(doc) {
   } finally {
     window._bulkRestore = false;
   }
+  // Rebuild the nested-group registry: prefer the doc's group tree (v3+), else
+  // synthesize a flat one-level tree from object groupIds (legacy/flat docs).
+  try {
+    Model.groups = new Map();
+    if (Array.isArray(doc.groups)) {
+      for (const g of doc.groups) if (g && g.id != null) registerGroup(g.id, g.parentId, g.name);
+    }
+    rebuildGroupRegistryFromObjects();
+    Model.activeGroupPath = Array.isArray(doc.activeGroupPath)
+      ? doc.activeGroupPath.filter(id => Model.groups.has(id)) : [];
+  } catch (_) {}
   try { renderOutliner(); } catch (_) {}
   try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {}
   drawOverlay();
@@ -30014,6 +30108,9 @@ function makeGroup() {
     return;
   }
   const gid = _newGroupId();
+  // Register in the group tree under the current edit level (parent = the group
+  // we're inside, or null at top). Enables nesting: grouping inside a group.
+  registerGroup(gid, Model.activeGroupId);
   const members = [];
   for (const [obj, plan] of plans) {
     if (plan.mode === 'whole') {
