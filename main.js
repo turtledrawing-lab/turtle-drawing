@@ -75,7 +75,7 @@ ipcMain.handle('pick-import-file', async (event, opts) => {
     const buf = fs.readFileSync(abs);
     // Return raw bytes through Electron's structured-clone IPC. Base64 was
     // truncating / corrupting large binary payloads (e.g. 70+ MB .3dm files).
-    return { name: path.basename(abs), bytes: new Uint8Array(buf), size: buf.length };
+    return { name: path.basename(abs), bytes: new Uint8Array(buf), size: buf.length, path: abs };
   } catch (e) {
     return null;
   }
@@ -320,7 +320,8 @@ ipcMain.handle('convert-skp', async (_e, payload) => {
   try {
     if (process.platform !== 'darwin') return null;
     const bytes = payload && payload.bytes;
-    if (!bytes) return { error: 'no data' };
+    const srcPath = payload && payload.path;   // original .skp on disk → avoids a temp copy
+    if (!bytes && !srcPath) return { error: 'no data' };
     const isDev = !!process.defaultApp;   // app.isPackaged is unreliable in dev (renamed binary)
     const runtimeDir = process.env.TD_SKP_RUNTIME
       || (isDev ? path.join(__dirname, 'tools', 'skp-server', 'runtime-macos')
@@ -333,8 +334,17 @@ ipcMain.handle('convert-skp', async (_e, payload) => {
     const os = require('os');
     const { execFile } = require('child_process');
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tdskp-'));
-    const inP = path.join(tmp, 'in.skp'), outP = path.join(tmp, 'out.glb');
-    fs.writeFileSync(inP, Buffer.from(bytes));
+    const outP = path.join(tmp, 'out.glb');
+    // Read the .skp from its ORIGINAL location when we have the path — avoids
+    // writing a full second copy to temp (the duplicate that exhausted a
+    // nearly-full disk: ENOSPC). Fall back to the uploaded bytes (web).
+    let inP;
+    if (srcPath && fs.existsSync(srcPath)) {
+      inP = srcPath;
+    } else {
+      inP = path.join(tmp, 'in.skp');
+      fs.writeFileSync(inP, Buffer.from(bytes));
+    }
     try {
       await new Promise((resolve, reject) => {
         execFile(py, ['convert.py', inP, outP],

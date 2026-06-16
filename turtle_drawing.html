@@ -23721,13 +23721,19 @@ function importSTL(arrayBuffer, filename) {
    that returns glb, then load it via importGLB. Server URL is remembered in
    localStorage('td_skp_endpoint'); see tools/skp-server/. (Desktop could spawn
    a local converter instead — not wired yet.) */
-async function importSKP(arrayBuffer, filename) {
+async function importSKP(arrayBuffer, filename, srcPath) {
   // Desktop (macOS): convert locally via the bundled SketchUp binding — no
   // server, fully offline. Falls through to the web path if unavailable.
   if (typeof window.electronConvertSKP === 'function') {
     setStatus('msg', 'Converting ' + (filename || 'model.skp') + ' …');
     let res;
-    try { res = await window.electronConvertSKP(new Uint8Array(arrayBuffer), filename || 'model.skp'); }
+    try {
+      // Prefer the original file path — the converter reads it in place, so a
+      // huge .skp isn't duplicated to temp (which exhausted a nearly-full disk).
+      res = srcPath
+        ? await window.electronConvertSKP(null, filename || 'model.skp', srcPath)
+        : await window.electronConvertSKP(new Uint8Array(arrayBuffer), filename || 'model.skp');
+    }
     catch (e) { showError('SKP 변환 실패 / conversion failed: ' + (e && e.message || e)); return; }
     if (res === null) { /* not supported on this platform → fall through to web */ }
     else if (res && res.error) { showError('SKP 변환 실패 / conversion failed: ' + res.error); return; }
@@ -27771,9 +27777,11 @@ function _handleActionImpl(act) {
       if (typeof window.electronPickFile === 'function') {
         (async () => {
           const r = await window.electronPickFile({ filters: [{ name: 'SketchUp', extensions: ['skp'] }] });
-          if (r && r.bytes) {
-            const ab = r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength);
-            importSKP(ab, r.name);
+          if (r && (r.path || r.bytes)) {
+            // With the path we skip re-sending the bytes (and the temp copy);
+            // bytes only as a fallback when no path is available.
+            const ab = r.path ? null : (r.bytes ? r.bytes.buffer.slice(r.bytes.byteOffset, r.bytes.byteOffset + r.bytes.byteLength) : null);
+            importSKP(ab, r.name, r.path);
           }
         })();
       } else {
