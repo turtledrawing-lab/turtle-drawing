@@ -18418,16 +18418,58 @@ Tools.line = {
     // 2) Otherwise, merge into an existing object (or create a new one) and
     //    add a freestanding edge. Check for closed loops after adding.
     let target = obj1 || obj2 || null;
+    // Find OTHER pure line-drawing objects whose standalone edges this new
+    // segment actually crosses in 3D. They must merge into the target so the
+    // crossing splits BOTH lines into separate edges (SketchUp-style sticky
+    // edges). Without this, two freestanding lines that visually cross stay
+    // whole, so the eraser removes the entire line instead of one segment.
+    // Scoped to pure line drawings (no faces) to avoid pulling a solid/face
+    // object into the sketch — faces are handled by the coplanar split above.
+    const crossObjs = [];
+    // Only fuse UNGROUPED, top-level sketches: never reach across a group
+    // boundary (it would corrupt group membership). The reported case is plain
+    // ground lines, which are ungrouped. Skipped entirely while editing a group.
+    if (Model.activeGroupId == null) {
+      // Cheap AABB pre-cull (+1cm margin) keeps a heavy scene fast — the
+      // per-edge crossing test then runs only on objects near the new segment.
+      const segMinX = Math.min(p1.x,p2.x), segMaxX = Math.max(p1.x,p2.x);
+      const segMinY = Math.min(p1.y,p2.y), segMaxY = Math.max(p1.y,p2.y);
+      const segMinZ = Math.min(p1.z,p2.z), segMaxZ = Math.max(p1.z,p2.z);
+      const M = 0.01;
+      for (const other of Model.objects) {
+        if (other === obj1 || other === obj2) continue;
+        if (!other.group.visible || other.locked) continue;
+        if (other.isUnderlay || other.bim || other.componentId) continue;
+        if ((other.groupId != null)) continue;                      // ungrouped only
+        if (other.em.faces && other.em.faces.length) continue;      // pure line drawings only
+        if (!other.em.edges || !other.em.edges.length) continue;
+        const bb = other.computeBBox && other.computeBBox();
+        if (bb && isFinite(bb.min.x) && (
+              bb.max.x < segMinX - M || bb.min.x > segMaxX + M ||
+              bb.max.y < segMinY - M || bb.min.y > segMaxY + M ||
+              bb.max.z < segMinZ - M || bb.min.z > segMaxZ + M)) continue;
+        // Require a TRUE intersection (~2mm), not findEdgeCrossings' default
+        // 10mm "lines nearly meet" tolerance — else lines passing close but not
+        // touching (e.g. at slightly different heights) would wrongly fuse.
+        if (findEdgeCrossings(other.em, p1, p2, 0.0004).length) crossObjs.push(other);
+      }
+    }
     if (!target) {
-      const em = new EditableMesh();
-      target = new SketchObject(em, 'Drawing');
-      addObject(target);
+      if (crossObjs.length) {
+        target = crossObjs.shift();              // adopt a crossed line as the host
+      } else {
+        const em = new EditableMesh();
+        target = new SketchObject(em, 'Drawing');
+        addObject(target);
+      }
     }
     // If both endpoints are on different objects, merge the second into the first
     if (obj1 && obj2 && obj1 !== obj2) {
       // target should be obj1 (the one we started from)
       mergeObjectInto(target, obj2);
     }
+    // Merge every crossed line drawing in so the split below sees their edges.
+    for (const o of crossObjs) { if (o !== target) mergeObjectInto(target, o); }
     // Add vertices (welding handles reuse)
     const ia = findOrAddVertexAt(target.em, p1);
     const ib = findOrAddVertexAt(target.em, p2);
@@ -18464,8 +18506,32 @@ Tools.line = {
     let cycle = findShortestCycle(target.em, ia, ib);
     let facedCreated = false;
     const excludeVerts = new Set();
+    // Newell's area for a vertex-index loop — used to reject degenerate
+    // (collinear / zero-area) cycles. A straight line crossing other lines
+    // makes the cycle-finder return the path as a zero-area "triangle"; turning
+    // that into a face would swallow the crossing line's edges.
+    const _cycleArea = (em, loop) => {
+      let nx = 0, ny = 0, nz = 0;
+      for (let i = 0; i < loop.length; i++) {
+        const a = em.vertices[loop[i]], b = em.vertices[loop[(i + 1) % loop.length]];
+        nx += (a.y - b.y) * (a.z + b.z);
+        ny += (a.z - b.z) * (a.x + b.x);
+        nz += (a.x - b.x) * (a.y + b.y);
+      }
+      return 0.5 * Math.hypot(nx, ny, nz);
+    };
+    // A real closed loop must use geometry OTHER than the new segment's own
+    // chain. A straight line crossing existing lines makes the cycle-finder
+    // return the segment's own two halves (ia→cross→ib) as a "triangle" — a
+    // fold-through, not an enclosed region. Reject any cycle whose vertices all
+    // lie on the new chain (catches the near-coplanar sliver the area test can
+    // miss). Genuine polygon-closing cycles include a vertex off the new line.
+    const _chainSet = new Set(chain);
     for (let attempt = 0; attempt < 6 && cycle && cycle.length >= 3; attempt++) {
-      const face = createFaceFromCycle(target.em, cycle, 0xffffff, Model.activeLayerId);
+      const foldOnly = cycle.every(v => _chainSet.has(v));
+      const face = (!foldOnly && _cycleArea(target.em, cycle) >= 1e-7)
+        ? createFaceFromCycle(target.em, cycle, 0xffffff, Model.activeLayerId)
+        : null;   // skip degenerate / fold-through cycle; fall through to retry
       if (face) {
         facedCreated = true;
         // Remove standalone edges that are now part of the face boundary
