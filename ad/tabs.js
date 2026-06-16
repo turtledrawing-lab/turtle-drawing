@@ -174,10 +174,10 @@
     // a rounded green bubble (with a left-pointing tail) to its right.
     const BUB = '#eef9ee';
     wrap.innerHTML =
-      '<div style="background:#fff;border-radius:22px;width:min(560px,100%);box-shadow:0 18px 60px rgba(0,0,0,0.3);padding:22px 22px;display:flex;gap:6px;align-items:flex-start;">'
-      + '<img src="icons/icon-192.png" alt="" width="62" height="62" style="flex:none;margin-top:14px;" onerror="this.style.display=\'none\'">'
-      + '<div style="position:relative;flex:1;min-width:0;background:' + BUB + ';border-radius:16px;padding:16px 18px;margin-left:4px;">'
-      +   '<div style="position:absolute;left:-8px;top:22px;width:0;height:0;border-top:9px solid transparent;border-bottom:9px solid transparent;border-right:9px solid ' + BUB + ';"></div>'
+      '<div style="background:#fff;border-radius:22px;width:min(500px,100%);box-shadow:0 18px 60px rgba(0,0,0,0.3);padding:20px;display:flex;gap:10px;align-items:flex-start;">'
+      + '<img src="icons/icon-192.png" alt="" width="104" height="104" style="flex:none;margin-top:6px;" onerror="this.style.display=\'none\'">'
+      + '<div style="position:relative;flex:1;min-width:0;background:' + BUB + ';border-radius:16px;padding:14px 16px;margin-left:4px;">'
+      +   '<div style="position:absolute;left:-8px;top:40px;width:0;height:0;border-top:9px solid transparent;border-bottom:9px solid transparent;border-right:9px solid ' + BUB + ';"></div>'
       +   '<div style="font-weight:700;font-size:17px;line-height:1.4;">' + L('앗, 지난번엔 갑자기 닫혀버렸어요.', 'Oops — it closed unexpectedly last time.') + '</div>'
       +   '<div style="color:#5a6b5a;margin-top:8px;line-height:1.5;">' + docs + '</div>'
       +   (when ? '<div style="color:#9bb0a0;font-size:12px;margin-top:2px;">(' + when + L(' 작업', '') + ')</div>' : '')
