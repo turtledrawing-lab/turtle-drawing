@@ -156,6 +156,34 @@ def convert(skp_path, glb_path):
     root = _AXIS if Z_UP_TO_Y_UP else np.eye(4)
     walk(model.entities, root, "DefaultMaterial", ())
 
+    # OBJECT-COUNT CAP: full nesting can explode (a component used N times bakes
+    # its inner groups N times → tens of thousands of objects → the app freezes).
+    # If there are too many buckets, repeatedly merge the DEEPEST nesting level
+    # into its parent (truncate paths by one) until under the cap. Normal models
+    # keep full depth; huge models get as much nesting as the budget allows.
+    GROUP_CAP = 1000
+    def _merge_one_level(bk):
+        maxd = max((len(p) for (p, _m) in bk.keys()), default=0)
+        if maxd <= 1:
+            return bk, maxd
+        out = {}
+        for (path, mat), b in bk.items():
+            tp = path[:maxd - 1] if len(path) >= maxd else path
+            nb = out.setdefault((tp, mat), {"v": [], "f": [], "uv": []})
+            base = len(nb["v"])
+            nb["v"].extend(b["v"]); nb["uv"].extend(b["uv"])
+            for (a, b2, c) in b["f"]:
+                nb["f"].append((a + base, b2 + base, c + base))
+        return out, maxd - 1
+    _coarsened = 0
+    while len(buckets) > GROUP_CAP:
+        buckets, md = _merge_one_level(buckets)
+        if md <= 1:
+            break
+        _coarsened += 1
+    if _coarsened:
+        sys.stderr.write("[convert] coarsened %d nesting level(s) to cap objects at ~%d (was deeper)\n" % (_coarsened, GROUP_CAP))
+
     scene = trimesh.Scene()
     n_out = 0
     for (path, mname), b in buckets.items():

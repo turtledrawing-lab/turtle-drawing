@@ -7537,6 +7537,15 @@ function isInActiveContext(o) {
   if (!path.length) return (o.groupId ?? null) == null;
   return o.groupId === path[path.length - 1];
 }
+/* True if `o` is inside the active group's SUBTREE (a direct member OR in any
+   descendant group). Used for raycast/snap so you can click a sub-group's
+   geometry to drill one level deeper. At top level everything qualifies. */
+function isInActiveSubtree(o) {
+  const a = Model.activeGroupId;
+  if (a == null) return true;
+  if (o.groupId == null) return false;
+  return o.groupId === a || isAncestorGroup(a, o.groupId);
+}
 /* Dashed bounding box drawn around the active group while editing it. */
 let _groupEditOutline = null;
 function _clearGroupEditOutline() {
@@ -8433,7 +8442,7 @@ function raycastObjects(e, opts = {}) {
   const meshes = Model.objects.filter(o => {
     if (!o.group.visible || o.locked) return false;
     if (o.isUnderlay && !Model.pickUnderlay) return false; // don't intercept clicks on background
-    if (editing && o.groupId !== Model.activeGroupId) return false;
+    if (editing && !isInActiveSubtree(o)) return false;   // pick the active group's whole subtree (so you can drill into sub-groups)
     if (skipGroups && isOuterGroup(o)) return false;
     return true;
   }).map(o => o.mesh);
@@ -11124,7 +11133,7 @@ function computeSnap(e, opts = {}) {
   const _snapObjects = Model.objects.filter(o =>
     o.group.visible && !o.locked && (_snapUnderlayOK || !o.isUnderlay) &&
     !(_snapExclude && _snapExclude.has(o)) &&
-    (!_snapEditing || o.groupId === Model.activeGroupId)
+    (!_snapEditing || isInActiveSubtree(o))
   );
 
   // Screen-space proximity filter: many inference/extension scans should skip
@@ -11155,7 +11164,7 @@ function computeSnap(e, opts = {}) {
   _occRayMain.params.Line = { threshold: 0 };
   const _occMeshesAll = Model.objects
     .filter(o => o.group.visible && !o.locked &&
-                 (!_snapEditing || o.groupId === Model.activeGroupId))
+                 (!_snapEditing || isInActiveSubtree(o)))
     .map(o => o.mesh);
   const _camPosMain = camera.position;
   const _occDir = new THREE.Vector3();
