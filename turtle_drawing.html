@@ -23751,6 +23751,31 @@ async function importSKP(arrayBuffer, filename) {
   importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'));
 }
 
+/* Gate the .skp import affordance: on the public web build it needs a
+   conversion server, so hide the menu item unless a conversion path exists —
+   the desktop offline converter, a configured server endpoint, or localhost
+   dev. Owners enable it by setting localStorage 'td_skp_endpoint'. */
+function _gateSkpImport() {
+  try {
+    // Owner can enable/disable on any device without devtools:
+    //   tdw.kr/?skp=https://my-server/convert   (sets endpoint, reveals menu)
+    //   tdw.kr/?skp=off                          (clears it, hides menu)
+    const q = new URLSearchParams(location.search).get('skp');
+    if (q != null) {
+      if (q === '' || q === 'off' || q === 'clear') localStorage.removeItem('td_skp_endpoint');
+      else localStorage.setItem('td_skp_endpoint', q);
+    }
+  } catch (_) {}
+  try {
+    let ok = (typeof window.electronConvertSKP === 'function');
+    try { ok = ok || !!localStorage.getItem('td_skp_endpoint'); } catch (_) {}
+    ok = ok || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (!ok) document.querySelectorAll('[data-act="import-skp"]').forEach(el => { el.style.display = 'none'; });
+  } catch (_) {}
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _gateSkpImport);
+else _gateSkpImport();
+
 function importGLB(arrayBuffer, filename) {
   if (typeof THREE.GLTFLoader !== 'function') {
     // Lazy vendor: fetch the loader on first use, then re-enter.
