@@ -10,14 +10,34 @@
 (function () {
   const AD = window.AD || (window.AD = {});
 
-  const Clip = { objects: [] };
+  const Clip = { objects: [], groups: [] };
   AD.Clipboard = Clip;
+
+  /* Walk each object's group chain to the root, collecting {id,parentId,name}
+     records so a copied NESTED group can be re-created (with fresh ids) on
+     paste. Reads the live Model.groups registry at copy time. */
+  function collectGroups(objs) {
+    const out = [];
+    const seen = new Set();
+    if (typeof Model === 'undefined' || !Model.groups) return out;
+    for (const o of objs) {
+      let g = o.groupId, guard = 0;
+      while (g != null && !seen.has(g) && guard++ < 256) {
+        seen.add(g);
+        const e = Model.groups.get(g);
+        out.push({ id: g, parentId: e ? e.parentId : null, name: e ? e.name : null });
+        g = e ? e.parentId : null;
+      }
+    }
+    return out;
+  }
 
   function snapshotObject(o) {
     const em = o.em;
     return {
       name: o.name,
       layerId: o.layerId,
+      groupId: o.groupId || null,
       visible: o.visible,
       locked: o.locked,
       smoothShade: !!em._smoothShade,
@@ -47,7 +67,7 @@
     };
   }
 
-  function reconstructObject(data, shift) {
+  function reconstructObject(data, shift, groupMap) {
     const em = new EditableMesh();
     if (data.smoothShade) em._smoothShade = true;
     const s = shift || { x: 0, y: 0, z: 0 };
@@ -173,6 +193,15 @@
     addObject(obj);
     // Restore layer after addObject (which would otherwise reassign).
     obj.layerId = data.layerId || 'Layer0';
+    // Restore group membership: map the source groupId to its freshly-minted
+    // copy group (built once per paste in Clip.paste), so a copied group stays
+    // grouped (and nested) instead of dissolving into loose objects.
+    if (typeof mappedCopyGroupId === 'function') {
+      const _boundary = (typeof Model !== 'undefined' && Model) ? Model.activeGroupId : null;
+      obj.groupId = mappedCopyGroupId(data.groupId || null, groupMap, _boundary);
+    } else if (data.groupId && groupMap && groupMap.get) {
+      obj.groupId = groupMap.get(data.groupId) || null;
+    }
 
     if (data.faceCamera) {
       try {
@@ -186,9 +215,9 @@
   // Persist last clipboard payload across file switches / app reloads via
   // localStorage. Also try the system clipboard (navigator.clipboard) so
   // copy/paste between separate Turtle Drawing windows works.
-  function persist(objs) {
+  function persist(objs, groups) {
     try {
-      const blob = JSON.stringify({ kind: 'turtle-clip', v: 1, objects: objs });
+      const blob = JSON.stringify({ kind: 'turtle-clip', v: 1, objects: objs, groups: groups || [] });
       localStorage.setItem('turtle_clipboard', blob);
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(blob).catch(() => {});
@@ -203,6 +232,7 @@
       const j = JSON.parse(blob);
       if (j && j.kind === 'turtle-clip' && Array.isArray(j.objects)) {
         Clip.objects = j.objects;
+        Clip.groups = Array.isArray(j.groups) ? j.groups : [];
       }
     } catch (_) {}
   }
@@ -257,7 +287,8 @@
       return;
     }
     Clip.objects = snaps;
-    persist(Clip.objects);
+    Clip.groups = wholeSel.length ? collectGroups(wholeSel) : [];
+    persist(Clip.objects, Clip.groups);
     if (typeof setStatus === 'function') {
       setStatus('msg', `Copied ${snaps.length} item(s) to clipboard.`);
     }
@@ -267,7 +298,8 @@
     const sel = typeof Selection !== 'undefined' ? Array.from(Selection.objects) : [];
     if (!sel.length) return;
     Clip.objects = sel.map(snapshotObject);
-    persist(Clip.objects);
+    Clip.groups = collectGroups(sel);
+    persist(Clip.objects, Clip.groups);
     for (const o of sel) removeObject(o);
     clearSelection();
     if (typeof pushHistory === 'function') { try { pushHistory('Cut'); } catch (_) {} }
@@ -291,6 +323,7 @@
           const j = JSON.parse(text);
           if (j && j.kind === 'turtle-clip' && Array.isArray(j.objects)) {
             Clip.objects = j.objects;
+            Clip.groups = Array.isArray(j.groups) ? j.groups : [];
           }
         }
       } catch (_) {}
@@ -300,11 +333,22 @@
       return;
     }
     clearSelection();
+    // Re-create the copied group subtree once with FRESH ids (parentId chain
+    // remapped, roots attached to the current edit context) so all pasted
+    // objects of the same source group land in the same NEW group and keep
+    // their nesting. Falls back to no-op if the registry helpers are absent.
+    let groupMap = null;
+    try {
+      if (typeof instantiateGroupCopies === 'function' && Clip.groups && Clip.groups.length) {
+        const _boundary = (typeof Model !== 'undefined' && Model) ? Model.activeGroupId : null;
+        groupMap = instantiateGroupCopies(Clip.groups, _boundary);
+      }
+    } catch (_) {}
     const placed = [];
     const bb = new THREE.Box3();
     bb.makeEmpty();
     for (const data of Clip.objects) {
-      const obj = reconstructObject(data, { x: 0, y: 0, z: 0 });
+      const obj = reconstructObject(data, { x: 0, y: 0, z: 0 }, groupMap);
       if (!obj) continue;
       placed.push(obj);
       Selection.objects.add(obj);
@@ -325,6 +369,7 @@
       origVerts: placed.map(o => o.em.vertices.map(v => v.clone())),
       anchor: anchor,
       lastShift: new THREE.Vector3(),
+      copyGroupIds: groupMap ? Array.from(groupMap.values()) : [],
     };
     _enterPasteMode(state);
   };
@@ -419,6 +464,8 @@
     const count = _pasteState.objs.length;
     _pasteState = null;
     _teardownPasteListeners();
+    if (typeof renderOutliner === 'function') { try { renderOutliner(); } catch (_) {} }
+    if (typeof applyLayerVisibility === 'function') { try { applyLayerVisibility(); } catch (_) {} }
     if (typeof pushHistory === 'function') { try { pushHistory('Paste'); } catch (_) {} }
     if (typeof setStatus === 'function') {
       setStatus('msg', `Pasted ${count} object(s).`);
@@ -429,6 +476,13 @@
     for (const obj of _pasteState.objs) {
       try { removeObject(obj); } catch (_) {}
     }
+    // Drop the copy groups we registered up-front so a cancelled paste leaves
+    // no orphaned (empty) group entries in the registry.
+    try {
+      if (typeof Model !== 'undefined' && Model.groups && _pasteState.copyGroupIds) {
+        for (const gid of _pasteState.copyGroupIds) Model.groups.delete(gid);
+      }
+    } catch (_) {}
     _pasteState = null;
     _teardownPasteListeners();
     clearSelection();

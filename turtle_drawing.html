@@ -7393,7 +7393,10 @@ function applyLayerVisibility() {
   for (const o of Model.objects) {
     const L = getLayer(o.layerId);
     const baseVisible = o.visible && !o.hidden && (L ? L.visible : true);
-    const isMember  = !editing || o.groupId === Model.activeGroupId;
+    // Subtree-aware: the active group's WHOLE descendant subtree stays bright
+    // (only truly-outside objects dim), so editing deeper than one level isn't
+    // progressively dimmed into invisibility. Matches raycast/snap scope.
+    const isMember  = !editing || (typeof isInActiveSubtree === 'function' ? isInActiveSubtree(o) : o.groupId === Model.activeGroupId);
     const isIsolated = Model.isolatedObjects ? Model.isolatedObjects.has(o) : true;
     const hideOuter = editing && !isMember && !Model.outsideVisible;
     const hideByIsolate = !isIsolated && !editing;
@@ -7563,6 +7566,57 @@ function contextUnitGroup(gid) {
 function groupUnitObjects(gid) {
   if (gid == null) return [];
   return getGroupDescendantObjects(contextUnitGroup(gid));
+}
+/* ---- Group-subtree COPY helpers (used by clipboard paste + move/rotate/scale
+   copy). When objects are duplicated their groups must be re-created with FRESH
+   ids so the copies form their OWN group(s) — sharing the source groupId would
+   merge copy and original. Nested groups need the WHOLE subtree cloned with a
+   remapped parentId chain, else a copied nested group collapses to one flat
+   level. `boundaryGid` = the edit context the copies live in (Model.activeGroupId):
+   groups at/above it are SHARED (not cloned); groups strictly below are cloned. */
+function collectGroupSubtreeRecords(gids, boundaryGid) {
+  const out = [];
+  const seen = new Set();
+  for (const start of gids) {
+    let g = start, guard = 0;
+    while (g != null && g !== boundaryGid && !seen.has(g) && guard++ < 256) {
+      seen.add(g);
+      const e = Model.groups.get(g);
+      out.push({ id: g, parentId: e ? e.parentId : null, name: e ? e.name : null });
+      g = e ? e.parentId : null;
+    }
+  }
+  return out;
+}
+/* Instantiate cloned groups from records (from collectGroupSubtreeRecords or a
+   clipboard payload). Mints a new id per record and registers it with parentId
+   remapped through the minted map; records whose parent is outside the cloned
+   set attach under `boundaryGid`. Returns Map<oldId,newId>. */
+function instantiateGroupCopies(records, boundaryGid) {
+  const map = new Map();
+  for (const r of (records || [])) if (r && r.id != null && !map.has(r.id)) map.set(r.id, _newGroupId());
+  for (const r of (records || [])) {
+    if (!r || r.id == null) continue;
+    const np = (r.parentId != null && map.has(r.parentId)) ? map.get(r.parentId) : (boundaryGid == null ? null : boundaryGid);
+    registerGroup(map.get(r.id), np, r.name || null);
+  }
+  return map;
+}
+/* IN-SESSION copy convenience: clone the group subtree of `srcObjs` and return
+   the old→new groupId map. Use mappedCopyGroupId() to assign each clone. */
+function cloneGroupsForCopy(srcObjs, boundaryGid) {
+  const gids = new Set();
+  for (const o of srcObjs) if (o.groupId != null) gids.add(o.groupId);
+  if (!gids.size) return new Map();
+  return instantiateGroupCopies(collectGroupSubtreeRecords(gids, boundaryGid), boundaryGid);
+}
+/* Map a source object's groupId to its clone's groupId via a clone map.
+   Ungrouped stays ungrouped; a source group at/above the boundary keeps the
+   boundary context. */
+function mappedCopyGroupId(srcGid, map, boundaryGid) {
+  if (srcGid == null) return null;
+  if (map && map.has(srcGid)) return map.get(srcGid);
+  return (boundaryGid == null ? null : boundaryGid);
 }
 /* Dashed bounding box drawn around the active group while editing it. */
 let _groupEditOutline = null;
@@ -13885,8 +13939,12 @@ Tools.select = {
       if (!o.group.visible || o.locked) continue;
       // Objects inside a group we're NOT currently editing are handled as a
       // single unit by the group pass below. Skip per-face/edge picking here so
-      // a marquee can never make a partial selection of a grouped DXF.
-      if (isOuterGroup(o)) continue;
+      // a marquee can never make a partial selection of a grouped DXF. While
+      // editing a group, allow per-face marquee on its whole subtree (deeper
+      // levels included) — consistent with raycast/single-click scope.
+      if (Model.activeGroupId != null
+            ? (typeof isInActiveSubtree === 'function' && !isInActiveSubtree(o))
+            : isOuterGroup(o)) continue;
       // Fast path for imported smooth-shaded meshes: project the bbox corners
       // and treat the object as a whole unit — avoids iterating tens of
       // thousands of faces per mouse move.
@@ -14180,11 +14238,12 @@ Tools.move = {
       if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
       o.rebuild();
     }
-    // Create clones. Map old groupId → new groupId so members of the same
-    // group in the source set stay grouped together in the copy, but a NEW
-    // group is created — selecting one copy does not select the original.
+    // Create clones. Clone each source group's WHOLE subtree with FRESH ids so
+    // copies form their own group(s) (and keep their internal nesting) — sharing
+    // the source groupId would merge copy and original.
     this.copyObjs = [];
-    const groupIdMap = new Map();
+    const _boundary = Model.activeGroupId;
+    const groupIdMap = cloneGroupsForCopy(this.objs, _boundary);
     // Helper: when only a partial selection (edges/faces) is being copied,
     // extract just that geometry into a fresh EditableMesh so the copy is a
     // standalone object — not a deformed clone of the whole source.
@@ -14231,14 +14290,7 @@ Tools.move = {
       // vert indexing).
       this._cloneOrigVerts.set(cloneObj, cloneEm.vertices.map(v => v.clone()));
       cloneObj.layerId = o.layerId;
-      if (o.groupId != null) {
-        if (!groupIdMap.has(o.groupId)) {
-          groupIdMap.set(o.groupId, 'g' + Math.random().toString(36).slice(2, 9));
-        }
-        cloneObj.groupId = groupIdMap.get(o.groupId);
-      } else {
-        cloneObj.groupId = null;
-      }
+      cloneObj.groupId = mappedCopyGroupId(o.groupId, groupIdMap, _boundary);
       // Preserve component linkage so copies stay live instances of the
       // same definition — editing one propagates to all.
       if (o.componentId) {
@@ -14994,21 +15046,15 @@ Tools.move = {
       // n=2 means add one more copy at 2× delta, etc.
       // We already have copy #1 at 1× delta.  Create copies #2..n.
       for (let k = 2; k <= n; k++) {
-        // Per-iteration groupId remap: each *N copy slot becomes its own
-        // group (or set of groups), independent of the source's group.
-        const groupIdMap = new Map();
+        // Per-iteration group clone: each *N copy slot becomes its own
+        // group subtree (fresh ids, internal nesting preserved).
+        const _boundary = Model.activeGroupId;
+        const groupIdMap = cloneGroupsForCopy(srcObjs, _boundary);
         for (const src of srcObjs) {
           const cloneEm = src.em.clone();
           const cloneObj = new SketchObject(cloneEm, src.name + ' (copy)');
           cloneObj.layerId = src.layerId;
-          if (src.groupId != null) {
-            if (!groupIdMap.has(src.groupId)) {
-              groupIdMap.set(src.groupId, 'g' + Math.random().toString(36).slice(2, 9));
-            }
-            cloneObj.groupId = groupIdMap.get(src.groupId);
-          } else {
-            cloneObj.groupId = null;
-          }
+          cloneObj.groupId = mappedCopyGroupId(src.groupId, groupIdMap, _boundary);
           if (src.componentId) {
             cloneObj.componentId = src.componentId;
             const o = src.componentOrigin || { x: 0, y: 0, z: 0 };
@@ -15319,10 +15365,13 @@ Tools.scale = {
       o.rebuild();
     }
     this.copyObjs = [];
+    const _boundary = Model.activeGroupId;
+    const _grpMap = cloneGroupsForCopy(this.objs, _boundary);
     for (const o of this.objs) {
       const cloneEm = o.em.clone();
       const cloneObj = new SketchObject(cloneEm, o.name + ' (copy)');
-      cloneObj.layerId = o.layerId; cloneObj.groupId = o.groupId;
+      cloneObj.layerId = o.layerId;
+      cloneObj.groupId = mappedCopyGroupId(o.groupId, _grpMap, _boundary);
       if (o.componentId) {
         cloneObj.componentId = o.componentId;
         cloneObj.componentOrigin = o.componentOrigin ? { ...o.componentOrigin } : null;
@@ -15632,10 +15681,13 @@ Tools.rotate = {
     }
     // Create clones
     this.copyObjs = [];
+    const _boundary = Model.activeGroupId;
+    const _grpMap = cloneGroupsForCopy(this.objs, _boundary);
     for (const o of this.objs) {
       const cloneEm = o.em.clone();
       const cloneObj = new SketchObject(cloneEm, o.name + ' (copy)');
-      cloneObj.layerId = o.layerId; cloneObj.groupId = o.groupId;
+      cloneObj.layerId = o.layerId;
+      cloneObj.groupId = mappedCopyGroupId(o.groupId, _grpMap, _boundary);
       addObject(cloneObj);
       this.copyObjs.push(cloneObj);
     }
@@ -16023,10 +16075,13 @@ Tools.rotate = {
       const srcObjs = this._lastCopySourceObjs;
       for (let k = 2; k <= n; k++) {
         const ang = baseAngle * k;
+        const _boundary = Model.activeGroupId;
+        const _grpMap = cloneGroupsForCopy(srcObjs, _boundary);
         for (const src of srcObjs) {
           const cloneEm = src.em.clone();
           const cloneObj = new SketchObject(cloneEm, src.name + ' (copy)');
-          cloneObj.layerId = src.layerId; cloneObj.groupId = src.groupId;
+          cloneObj.layerId = src.layerId;
+          cloneObj.groupId = mappedCopyGroupId(src.groupId, _grpMap, _boundary);
           for (let i = 0; i < cloneObj.em.vertices.length; i++) {
             const v = cloneObj.em.vertices[i].clone().sub(center);
             v.applyAxisAngle(axis, ang);
@@ -30175,19 +30230,22 @@ function makeGroup() {
   registerGroup(gid, Model.activeGroupId);
   const members = [];
   const _curLevel = Model.activeGroupId;   // null at top level
-  const _reparented = new Set();           // sub-groups already nested under gid
+  const _unitsToReparent = new Set();      // sub-group UNITs to nest under gid
   for (const [obj, plan] of plans) {
     if (plan.mode === 'whole') {
       const _og = obj.groupId;
       if (_og != null && _og !== _curLevel) {
-        // obj already lives in a SUB-GROUP → nest that whole sub-group under the
-        // new group (preserving it) instead of dissolving it; keep obj.groupId.
-        if (!_reparented.has(_og)) {
-          _reparented.add(_og);
-          if (!Model.groups.has(_og)) registerGroup(_og);
-          const _g = Model.groups.get(_og);
-          if (_g) _g.parentId = gid;
-        }
+        // obj already lives in a SUB-GROUP. We want to nest the whole sub-group
+        // UNIT at the current edit level under the new group (preserving its
+        // internal nesting); keep obj.groupId. obj.groupId is the object's
+        // DEEPEST group, so re-parent contextUnitGroup(_og) (the ancestor that
+        // is a direct child of the current level), NOT _og. CRUCIAL: only
+        // COLLECT units here — re-parent them AFTER the loop. Re-parenting mid-
+        // loop would change the ancestor chain that contextUnitGroup() reads for
+        // the next object in the same source group, producing self-loops and
+        // capping nesting at 2 levels.
+        const _unit = (typeof contextUnitGroup === 'function') ? contextUnitGroup(_og) : _og;
+        if (_unit != null && _unit !== _curLevel) _unitsToReparent.add(_unit);
       } else {
         obj.groupId = gid;   // loose object at the current level joins directly
       }
@@ -30205,6 +30263,13 @@ function makeGroup() {
       if (noFaces && noEdges) removeObject(obj);
       else obj.rebuild();
     }
+  }
+  // Re-parent the collected unit groups now (after every unit was computed from
+  // the UNMUTATED registry), so nesting forms correctly at any depth.
+  for (const _unit of _unitsToReparent) {
+    if (!Model.groups.has(_unit)) registerGroup(_unit);
+    const _g = Model.groups.get(_unit);
+    if (_g) _g.parentId = gid;
   }
   clearSelection();
   selectGroup(gid);
