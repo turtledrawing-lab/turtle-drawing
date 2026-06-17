@@ -6979,8 +6979,13 @@ function addObject(obj) {
   obj.layerId = Model.activeLayerId;
   Model.objects.push(obj);
   worldRoot.add(obj.group);
-  renderOutliner();
-  applyLayerVisibility();
+  // During a bulk import, renderOutliner()/applyLayerVisibility() are O(n) and
+  // run them per-object → O(n²) (1500 objects = thousands of full outliner DOM
+  // rebuilds). The bulk caller suppresses them here and runs each ONCE at the end.
+  if (!Model._suppressAddRefresh) {
+    renderOutliner();
+    applyLayerVisibility();
+  }
   try { if (typeof _reapplySketchIfActive === 'function') _reapplySketchIfActive(obj); } catch (_) {}
 }
 
@@ -23802,13 +23807,15 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
   const bbox = new THREE.Box3();
   console.log('[skp-import] meshes=' + meshes.length + ' mergeCoplanar=' + !!opts.mergeCoplanar);
   let _vtot = 0, _mi = 0;
+  const _prevSuppress = Model._suppressAddRefresh;
+  Model._suppressAddRefresh = true;   // batch outliner/visibility refresh (O(n²)→O(n))
   for (const m of meshes) {
     _mi++;
     // Yield to the event loop every few dozen objects so a big import doesn't
     // block the main thread (which froze the UI and tripped the unresponsive
-    // watchdog). Also surfaces progress.
+    // watchdog). Also surfaces progress so it doesn't look hung.
     if (_mi % 30 === 0) {
-      setStatus('msg', 'Importing ' + _mi + '/' + meshes.length + ' …');
+      setStatus('msg', '가져오는 중 / Importing… ' + Math.round(_mi / meshes.length * 100) + '%  (' + _mi + '/' + meshes.length + ')');
       await new Promise((r) => setTimeout(r, 0));
     }
     // Read the SOURCE geometry directly (no clone) and bake the node's world
@@ -23984,6 +23991,9 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
       } catch (_) {}
     }
   }
+  Model._suppressAddRefresh = _prevSuppress;
+  // Refresh outliner + layer visibility ONCE now (suppressed per-object above).
+  if (!_prevSuppress) { try { renderOutliner(); applyLayerVisibility(); } catch (_) {} }
   console.log('[skp-import] DONE building objects: added=' + added + ' totalVerts=' + _vtot);
   if (placeMode) {
     if (!placeObjs.length || bbox.isEmpty()) { setStatus('msg', 'Nothing to place.'); return 0; }
@@ -24141,7 +24151,7 @@ function importGLB(arrayBuffer, filename, opts) {
     console.log('[skp-import] GLTFLoader.parse OK');
     Promise.resolve(_importMeshTreeIntoScene(gltf.scene, filename, 1, opts || {}))
       .then(() => console.log('[skp-import] import fully complete'))
-      .catch((err) => showError('GLB processing failed: ' + (err && err.message || err)));
+      .catch((err) => { Model._suppressAddRefresh = false; showError('GLB processing failed: ' + (err && err.message || err)); });
   }, (err) => {
     showError('GLB parse error: ' + (err && err.message || err));
   });
