@@ -30279,25 +30279,57 @@ function makeGroup() {
   setStatus('msg', `Grouped ${members.length} object${members.length === 1 ? '' : 's'}. Double-click to edit inside.`);
 }
 function explodeGroup() {
-  // If we're inside a group, explode that one. Otherwise explode any
-  // selected groups (by sampling each selected object's groupId).
-  const gids = new Set();
+  // SketchUp-style ONE-LEVEL explode: dissolve the targeted group(s) and
+  // promote their DIRECT children — loose member objects AND immediate
+  // sub-groups — up to the parent context. Sub-groups stay intact (explode
+  // again to peel the next level). Recursive selectGroup() selects LEAF objects
+  // whose groupId is the DEEPEST group, so resolve each to its context-unit
+  // group first; nulling those leaves directly would dissolve every level at
+  // once (the reported bug).
+  const targets = new Set();
   if (Model.activeGroupId != null) {
-    gids.add(Model.activeGroupId);
+    targets.add(Model.activeGroupId);
     exitGroup();
   } else {
-    for (const o of Selection.objects) if (o.groupId) gids.add(o.groupId);
+    for (const o of Selection.objects) {
+      if (o.groupId == null) continue;
+      const u = (typeof contextUnitGroup === 'function') ? contextUnitGroup(o.groupId) : o.groupId;
+      if (u != null) targets.add(u);
+    }
   }
-  if (!gids.size) { setStatus('msg', 'No group selected to explode.'); return; }
-  let count = 0;
-  for (const o of Model.objects) {
-    if (gids.has(o.groupId)) { o.groupId = null; count++; }
+  if (!targets.size) { setStatus('msg', 'No group selected to explode.'); return; }
+  const promotedObjs = new Set();
+  const promotedGroups = new Set();
+  for (const g of targets) {
+    const parent = Model.groups.has(g) ? Model.groups.get(g).parentId : null;
+    const np = (parent == null) ? null : parent;     // level to promote into
+    for (const o of Model.objects) {                  // direct member objects
+      if (o.groupId === g) { o.groupId = np; promotedObjs.add(o); }
+    }
+    for (const e of Model.groups.values()) {          // direct sub-groups
+      if (e.parentId === g) { e.parentId = np; promotedGroups.add(e.id); }
+    }
+    Model.groups.delete(g);                           // drop the exploded group
   }
+  // Re-select the promoted contents: loose objects + the promoted sub-groups'
+  // whole subtrees, so they act as one selection at the new level.
   clearSelection();
+  const selObjs = new Set(promotedObjs);
+  for (const gg of promotedGroups) {
+    for (const o of getGroupDescendantObjects(gg)) selObjs.add(o);
+  }
+  for (const o of selObjs) {
+    Selection.objects.add(o);
+    const s = Selection.faces.get(o) || new Set();
+    for (let i = 0; i < o.em.faces.length; i++) s.add(i);
+    Selection.faces.set(o, s);
+  }
+  refreshSelectionVisuals();
   renderOutliner();
   applyLayerVisibility();
+  renderEntityInfo();
   pushHistory('Explode Group');
-  setStatus('msg', `Exploded ${count} objects.`);
+  setStatus('msg', `Exploded one level — ${promotedGroups.size} sub-group${promotedGroups.size === 1 ? '' : 's'}, ${promotedObjs.size} object${promotedObjs.size === 1 ? '' : 's'} promoted.`);
 }
 
 /* --- Procedural texture generators --- */
