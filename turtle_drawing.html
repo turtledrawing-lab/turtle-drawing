@@ -6648,6 +6648,14 @@ class SketchObject {
     // Group membership. Objects with the same non-null groupId are treated as
     // one entity by the Select tool. Null means ungrouped.
     this.groupId = null;
+    // Component instancing. An instance SHARES its definition's geometry and is
+    // placed by instanceMatrix on this.group (matrixAutoUpdate=false). A non-
+    // instance keeps its own world-baked em + identity group (unchanged path).
+    this.componentId = (opts && opts.componentId) || null;
+    this.isInstance = !!(opts && opts.instanceDef);
+    this.def = (opts && opts.instanceDef) || null;
+    this.instanceMatrix = (opts && opts.instanceMatrix) ? opts.instanceMatrix.clone() : null;
+    if (this.isInstance) { this.em = this.def.em; this.componentId = this.def.id; }
     this.mat = new THREE.MeshLambertMaterial({
       vertexColors: true, side: THREE.DoubleSide,
       polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
@@ -6676,6 +6684,25 @@ class SketchObject {
   rebuild() {
     // Geometry (possibly) changed — invalidate snapshot clone-sharing.
     this._editGen = (this._editGen || 0) + 1;
+    if (this.isInstance && this.def) {
+      // Shared-geometry instance: point mesh/edges at the definition's built
+      // geometry and place via the group transform. NEVER dispose the shared
+      // geometry (the def + sibling instances reference it).
+      if (!this.def.geometry && typeof rebuildComponentDef === 'function') { try { rebuildComponentDef(this.def); } catch (_) {} }
+      if (!this._sharedGeom) {          // dispose only the ctor's own empty geometry, once
+        try { if (this.mesh.geometry) this.mesh.geometry.dispose(); } catch (_) {}
+        try { if (this.edges.geometry) this.edges.geometry.dispose(); } catch (_) {}
+      }
+      if (this.def.geometry) this.mesh.geometry = this.def.geometry;
+      if (this.def.edgeGeometry) this.edges.geometry = this.def.edgeGeometry;
+      this._sharedGeom = true;
+      this.group.matrixAutoUpdate = false;
+      this.group.matrix.copy(this.instanceMatrix || _IDENTITY4);
+      this.group.matrixWorldNeedsUpdate = true;
+      this.group.updateMatrixWorld(true);
+      if (!window._bulkRestore && typeof rebuildSectionFills === 'function') rebuildSectionFills();
+      return;
+    }
     // Pre-pass: fuse adjacent holes and merge holes that have slid onto the
     // outer boundary (turns a hole-edge-on-boundary into a notched outline).
     try { this.em.mergeAdjacentHolesAllFaces(); } catch (_) {}
@@ -6760,7 +6787,14 @@ class SketchObject {
   }
   computeBBox() {
     const box = new THREE.Box3();
-    for (const v of this.em.vertices) box.expandByPoint(v);
+    if (this.isInstance && this.instanceMatrix) {
+      // em is definition-LOCAL; place by the group's world transform.
+      this.group.updateMatrixWorld(true);
+      const M = this.group.matrixWorld, _t = new THREE.Vector3();
+      for (const v of this.em.vertices) box.expandByPoint(_t.copy(v).applyMatrix4(M));
+    } else {
+      for (const v of this.em.vertices) box.expandByPoint(v);
+    }
     return box;
   }
 }
@@ -6848,6 +6882,76 @@ function getLayer(id) { return Model.layers.find(l => l.id === id); }
    ============================================================================ */
 function _newComponentId() {
   return 'comp_' + Math.random().toString(36).slice(2, 9);
+}
+
+/* ---- TRUE component instancing (shared geometry + per-instance transform) ----
+   A ComponentDef owns geometry ONCE in definition-LOCAL space: def.em (an
+   EditableMesh) + def.geometry / def.edgeGeometry (built once, shared by every
+   instance). An instance is a SketchObject with isInstance=true that points its
+   mesh at def.geometry and is placed by instanceMatrix on its group (see
+   SketchObject.rebuild). N instances → 1 geometry + N matrices. ---- */
+const _IDENTITY4 = new THREE.Matrix4();
+
+/* Build def.em (LOCAL space) from a definition's serialized vertex/face/edge
+   arrays. Keeps the arrays as the persistable form; em is the live source. */
+function _defBuildEM(def) {
+  const em = new EditableMesh();
+  for (const v of (def.vertices || [])) em.vertices.push(new THREE.Vector3(v.x, v.y, v.z));
+  for (const fd of (def.faces || [])) {
+    const f = em.addFace(fd.verts.slice(), fd.color, fd.layerId);
+    if (fd.holes && fd.holes.length) f.holes = fd.holes.map(h => h.slice());
+  }
+  for (const ed of (def.edges || [])) em.edges.push({ a: ed.a, b: ed.b });
+  def.em = em;
+  return em;
+}
+
+/* (Re)build a definition's SHARED geometry from def.em, then re-point every
+   live instance at the fresh geometry (cheap pointer swap — no per-instance
+   geometry copy). Call after creating or editing a definition. */
+function rebuildComponentDef(def) {
+  if (!def) return;
+  if (!def.em) _defBuildEM(def);
+  try { def.em.mergeAdjacentHolesAllFaces(); } catch (_) {}
+  try { def.em.mergeHolesWithOuter(); } catch (_) {}
+  if (def.geometry) {
+    try { if (def.geometry.boundsTree) def.geometry.disposeBoundsTree(); } catch (_) {}
+    try { def.geometry.dispose(); } catch (_) {}
+  }
+  def.geometry = def.em.toBufferGeometry();
+  try {
+    if (window.__TD_BVH && def.em.faces && def.em.faces.length > 5000) {
+      def.geometry.computeBoundsTree();
+      const _bidx = def.geometry.index;
+      const _old = def.geometry.userData && def.geometry.userData.faceIdxMap;
+      if (_bidx && _old) {
+        const _m = new Array(_bidx.count / 3);
+        for (let t = 0; t < _m.length; t++) _m[t] = _old[_bidx.getX(t * 3) / 3];
+        def.geometry.userData.faceIdxMap = _m;
+      }
+    }
+  } catch (_) {}
+  if (def.edgeGeometry) { try { def.edgeGeometry.dispose(); } catch (_) {} }
+  def.edgeGeometry = def.em.toEdgeGeometry();
+  def._editGen = (def._editGen || 0) + 1;
+  // Re-point existing instances at the new shared geometry.
+  if (typeof Model !== 'undefined' && Model.objects) {
+    for (const o of Model.objects) {
+      if (o.isInstance && o.def === def) { o.mesh.geometry = def.geometry; o.edges.geometry = def.edgeGeometry; o._sharedGeom = true; }
+    }
+  }
+  return def;
+}
+
+/* Create a SketchObject INSTANCE of `def` placed by `matrix` (a THREE.Matrix4,
+   defaults to identity). Shares def geometry; does NOT bake. */
+function createComponentInstance(def, matrix) {
+  if (!def) return null;
+  if (!def.geometry) rebuildComponentDef(def);
+  const so = new SketchObject(null, def.name, { instanceDef: def, instanceMatrix: matrix || _IDENTITY4 });
+  so.layerId = Model.activeLayerId || 'Layer0';
+  addObject(so);
+  return so;
 }
 
 /* Snapshot the EditableMesh of `obj` (in world coords relative to its bbox
