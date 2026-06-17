@@ -347,9 +347,19 @@ ipcMain.handle('convert-skp', async (_e, payload) => {
     }
     try {
       await new Promise((resolve, reject) => {
+        // Big SketchUp models (textures + thousands of objects) can take minutes
+        // to convert. Give a generous timeout, and on timeout SIGKILL python
+        // immediately so it can't keep running into the temp dir we clean up in
+        // `finally` (which produced a misleading trimesh "No such file" error).
         execFile(py, ['convert.py', inP, outP],
-          { cwd: runtimeDir, maxBuffer: 64 * 1024 * 1024, timeout: 180000 },
-          (err, _so, se) => err ? reject(new Error(String(se || err.message).slice(-400))) : resolve());
+          { cwd: runtimeDir, maxBuffer: 64 * 1024 * 1024, timeout: 600000, killSignal: 'SIGKILL' },
+          (err, _so, se) => {
+            if (!err) return resolve();
+            if (err.killed || err.signal === 'SIGKILL' || /ETIMEDOUT|timed out/i.test(String(err.message))) {
+              return reject(new Error('conversion timed out — the model is very large; try hiding unneeded surroundings/geometry in SketchUp (then save) before importing'));
+            }
+            reject(new Error(String(se || err.message).slice(-400)));
+          });
       });
       return fs.readFileSync(outP);   // Buffer → reaches the renderer as a Uint8Array
     } finally {
