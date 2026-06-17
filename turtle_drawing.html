@@ -7420,7 +7420,8 @@ function applyLayerVisibility() {
       // Material object — restore to its matDef's own opacity (so a
       // previously-dimmed glass goes back to 0.22 rather than staying at
       // 0.12 from a stale group-edit dim pass).
-      const matDef = MATERIALS.find(m => m.id === o.materialId);
+      let matDef = MATERIALS.find(m => m.id === o.materialId);
+      if (!matDef && typeof ImportedMaterials !== 'undefined') matDef = ImportedMaterials.find(m => m.id === o.materialId);
       if (matDef && matDef.transparent) {
         o.mat.transparent = true;
         o.mat.opacity = matDef.opacity;
@@ -23738,6 +23739,45 @@ function parseDXF(text, filename) {
    vertex coordinates so the resulting object can move/rotate independently.
    `unitToMeters` defaults to 1 (assume meters); STL/OBJ users sometimes need
    0.001 (mm → m). */
+/* For an imported GLB/SKP source material that is TRANSPARENT (glass) or
+   TEXTURED, register a shared ImportedMaterials entry and apply it so the
+   object renders with opacity / a texture map (and survives save/reload via
+   its materialId — sceneToDoc/loadDocIntoScene already persist ImportedMaterials).
+   Opaque solid-colour materials are left on the fast per-face vertex-colour
+   path (unchanged), so only glass/textured objects take this branch. */
+function _applyGlbSourceMaterial(so, srcMat) {
+  if (!so || !srcMat || typeof applyMaterialToObject !== 'function' || typeof ImportedMaterials === 'undefined') return;
+  const op = (typeof srcMat.opacity === 'number') ? srcMat.opacity : 1;
+  const isTransp = (srcMat.transparent === true) || op < 0.999;
+  const hasMap = !!(srcMat.map && srcMat.map.image);
+  if (!isTransp && !hasMap) return;            // opaque solid → keep vertex-colour path
+  const matName = (srcMat.name && String(srcMat.name).trim()) || 'Material';
+  const colHex = (srcMat.color && typeof srcMat.color.getHex === 'function') ? srcMat.color.getHex() : 0xffffff;
+  const id = 'glb:' + matName + (isTransp ? ':a' + op.toFixed(3) : '') + (hasMap ? ':t' : '');
+  let def = ImportedMaterials.find(x => x.id === id);
+  if (!def) {
+    def = { id: id, name: matName, color: colHex, opacity: op, transparent: isTransp,
+            _imported: true, _texture: null, _origDataURL: null, _textureFile: null };
+    if (hasMap) {
+      def._texture = srcMat.map;
+      try { def._texture.wrapS = def._texture.wrapT = THREE.RepeatWrapping; def._texture.needsUpdate = true; } catch (_) {}
+      // Capture a PNG data URL NOW for save/reload: GLTFLoader revokes the
+      // texture's blob: URL after decode, but the decoded <img> stays drawable.
+      try {
+        const img = srcMat.map.image;
+        const w = img.width || img.naturalWidth, h = img.height || img.naturalHeight;
+        if (w && h) {
+          const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0);
+          def._origDataURL = cv.toDataURL('image/png');
+          def._textureFile = matName + '.png';
+        }
+      } catch (e) { console.warn('[import] texture capture failed for', matName, e); }
+    }
+    ImportedMaterials.push(def);
+  }
+  applyMaterialToObject(so, def);
+}
 function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}) {
   const featureEdgesOnly = !!(opts && opts.featureEdgesOnly);
   // placeMode: instead of dropping objects at the camera target, build them and
@@ -23887,6 +23927,9 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
       so.layerId = (opts.layerOf && opts.layerOf(m)) || Model.activeLayerId || 'Layer0';
       if (placeMode) { so.rebuild(); placeObjs.push(so); }   // build for ghost; placed on click
       else { addObject(so); so.rebuild(); }
+      // Glass/transparency + textures from the source material (no-op for
+      // opaque solids — those keep the per-face vertex-colour path).
+      try { _applyGlbSourceMaterial(so, _srcMat); } catch (e) { console.warn('[import] material apply failed:', e); }
     }
     for (const v of em.vertices) bbox.expandByPoint(v);
     added += made.length;

@@ -36,6 +36,14 @@ TRANSPOSE_XFORM = False
 # filtering happens at the group/instance level — which is where hidden objects
 # live in practice. Set TD_SKP_INCLUDE_HIDDEN=1 to import everything anyway.
 INCLUDE_HIDDEN = bool(os.environ.get("TD_SKP_INCLUDE_HIDDEN"))
+# Embed real material textures (PNG via glTF bufferView) + per-material opacity.
+# Default ON. The desktop file:// texture-load path is handled by forcing
+# TextureLoader in the vendored GLTFLoader (ImageBitmapLoader's fetch() is
+# blocked under file://). Set TD_SKP_NO_TEXTURES=1 for the old color-only output.
+TEXTURES = not os.environ.get("TD_SKP_NO_TEXTURES")
+TEX_MAX = 1024   # cap embedded texture dimension. Textures are TILED (triplanar)
+                 # in the renderer, so 1024 looks great while keeping glb size +
+                 # GPU memory sane (2048 × dozens of textures = ~1GB VRAM).
 
 
 def _is_visible(el):
@@ -70,41 +78,62 @@ def _mat4(t):
 
 
 def _build_materials(model):
-    """name -> dict(color=(r,g,b,a) 0..1, image=PIL.Image|None)."""
-    import os
+    """name -> dict(color=(r,g,b,a) 0..1, opacity=0..1, image=PIL.Image|None)."""
     import tempfile
     from PIL import Image
     out = {}
-    for mat in model.materials:
+    for mi, mat in enumerate(model.materials):
         try:
             name = mat.name
             col = tuple(mat.color) if getattr(mat, "color", None) else (204, 204, 204, 255)
             if max(col) > 1.0:
                 col = tuple(c / 255.0 for c in col)
-            # Textures are NOT embedded (the importer only applies a solid colour
-            # today, and glb-embedded images make GLTFLoader fetch them on parse,
-            # which fails under the desktop file:// origin). BUT a textured
-            # SketchUp material usually has a WHITE base colour, so instead of
-            # rendering it white we sample the texture's AVERAGE colour as a
-            # representative solid (brick→red, grass→green, …). Full textures
-            # come later with proper texture import.
+            # Opacity: the binding exposes mat.opacity (float 0..1); fall back to
+            # the colour's alpha channel. <1 → glass/translucent.
+            try:
+                op = float(mat.opacity)
+            except Exception:
+                op = col[3] if len(col) > 3 else 1.0
+            if op > 1.0:
+                op = op / 255.0
+            op = max(0.0, min(1.0, op))
+
+            image = None
+            avg = None
             tex = getattr(mat, "texture", None)
             if tex and hasattr(tex, "write"):
                 try:
-                    p = os.path.join(tempfile.gettempdir(), "td_skptex.png")
+                    p = os.path.join(tempfile.gettempdir(), "td_skptex_%d.png" % mi)
                     tex.write(p)
-                    im = Image.open(p).convert("RGB")
-                    im.thumbnail((24, 24))
-                    px = list(im.getdata())
+                    full = Image.open(p)
+                    full.load()
+                    full = full.convert("RGB")
+                    if TEXTURES:
+                        # Embed the REAL texture (capped to TEX_MAX).
+                        if max(full.size) > TEX_MAX:
+                            full.thumbnail((TEX_MAX, TEX_MAX), Image.LANCZOS)
+                        image = full.copy()
+                    # Always compute an average colour as a fallback / for
+                    # color-only mode (brick→red, grass→green, …).
+                    thumb = full.copy()
+                    thumb.thumbnail((24, 24))
+                    px = list(thumb.getdata())
                     if px:
                         n = len(px)
-                        col = (sum(q[0] for q in px) / n / 255.0,
+                        avg = (sum(q[0] for q in px) / n / 255.0,
                                sum(q[1] for q in px) / n / 255.0,
-                               sum(q[2] for q in px) / n / 255.0,
-                               col[3] if len(col) > 3 else 1.0)
-                except Exception as e:        # average-colour is best-effort
-                    sys.stderr.write("[convert] texture avg skip (%s): %s\n" % (name, e))
-            out[name] = {"color": col, "image": None}
+                               sum(q[2] for q in px) / n / 255.0)
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+                except Exception as e:        # texture handling is best-effort
+                    sys.stderr.write("[convert] texture skip (%s): %s\n" % (name, e))
+            # Color-only path (or texture-load failed): use the average colour so
+            # a textured material isn't rendered flat white.
+            if image is None and avg is not None:
+                col = (avg[0], avg[1], avg[2], col[3] if len(col) > 3 else 1.0)
+            out[name] = {"color": col, "opacity": op, "image": image}
         except Exception as e:
             sys.stderr.write("[convert] material skip: %s\n" % e)
     return out
@@ -217,6 +246,37 @@ def convert(skp_path, glb_path):
     if _coarsened:
         sys.stderr.write("[convert] coarsened %d nesting level(s) to cap objects at ~%d (was deeper)\n" % (_coarsened, GROUP_CAP))
 
+    # One PBRMaterial per material name, REUSED across every bucket that uses it
+    # — so trimesh embeds each texture image ONCE in the glb (sharing the same
+    # material instance lets the exporter dedupe), not once per bucket.
+    _pbr_cache = {}
+    _n_transp = [0]
+    _n_tex = [0]
+
+    def _material_for(mname):
+        if mname in _pbr_cache:
+            return _pbr_cache[mname]
+        info = mats.get(mname, {"color": (0.8, 0.8, 0.8, 1.0), "opacity": 1.0, "image": None})
+        col = info["color"]
+        op = info.get("opacity", col[3] if len(col) > 3 else 1.0)
+        img = info.get("image")
+        # baseColorFactor as glTF FLOATS 0..1. A textured material is left WHITE
+        # so the texture isn't double-tinted; a solid material carries its rgb.
+        if img is not None:
+            base = [1.0, 1.0, 1.0, float(op)]
+        else:
+            base = [float(col[0]), float(col[1]), float(col[2]), float(op)]
+        kw = dict(name=mname, baseColorFactor=base)
+        if op < 0.999:
+            kw["alphaMode"] = "BLEND"      # → GLTFLoader sets material.transparent=true
+            _n_transp[0] += 1
+        if img is not None:
+            kw["baseColorTexture"] = img   # PIL.Image → trimesh embeds as a bufferView
+            _n_tex[0] += 1
+        mat = trimesh.visual.material.PBRMaterial(**kw)
+        _pbr_cache[mname] = mat
+        return mat
+
     scene = trimesh.Scene()
     n_out = 0
     for (path, mname), b in buckets.items():
@@ -225,14 +285,10 @@ def convert(skp_path, glb_path):
         verts = np.array(b["v"], dtype=float)
         faces = np.array(b["f"], dtype=np.int64)
         mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-        info = mats.get(mname, {"color": (0.8, 0.8, 0.8, 1.0)})
         try:
-            rgba = [int(round(c * 255)) for c in info["color"]]
-            if len(rgba) == 3:
-                rgba.append(255)
             mesh.visual = trimesh.visual.TextureVisuals(
                 uv=np.array(b["uv"], dtype=float),
-                material=trimesh.visual.material.PBRMaterial(baseColorFactor=rgba, name=mname))
+                material=_material_for(mname))
         except Exception as e:
             sys.stderr.write("[convert] visual skip (%s): %s\n" % (mname, e))
         # Encode the nested group path in the mesh name using '-' (GLTFLoader
@@ -247,8 +303,8 @@ def convert(skp_path, glb_path):
         raise RuntimeError("no geometry extracted from %s" % skp_path)
 
     scene.export(glb_path)
-    sys.stderr.write("[convert] %s -> %s  (%d meshes, %d hidden group/instance(s) skipped)\n"
-                     % (skp_path, glb_path, n_out, skipped[0]))
+    sys.stderr.write("[convert] %s -> %s  (%d meshes, %d hidden skipped, %d transparent mat, %d textured mat)\n"
+                     % (skp_path, glb_path, n_out, skipped[0], _n_transp[0], _n_tex[0]))
 
 
 if __name__ == "__main__":

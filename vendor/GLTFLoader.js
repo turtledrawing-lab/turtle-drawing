@@ -1740,7 +1740,15 @@
 			this.nodeNamesUsed = {}; // Use an THREE.ImageBitmapLoader if imageBitmaps are supported. Moves much of the
 			// expensive work of uploading a texture to the GPU off the main thread.
 
-			if ( typeof createImageBitmap !== 'undefined' && /Firefox/.test( navigator.userAgent ) === false ) {
+			// NOTE (Turtle Drawing): under the desktop file:// origin,
+			// ImageBitmapLoader.load() uses fetch(), which Chromium blocks on
+			// file:// even for blob:/data: URLs — so embedded GLB textures fail
+			// with "Failed to fetch". TextureLoader loads via <img>.src, which
+			// works for blob:/data:/file: under file://. So force TextureLoader
+			// when running from file:// (desktop); keep the faster
+			// ImageBitmapLoader on http(s) (web build).
+			var _td_fileOrigin = ( typeof location !== 'undefined' && location.protocol === 'file:' );
+			if ( typeof createImageBitmap !== 'undefined' && /Firefox/.test( navigator.userAgent ) === false && ! _td_fileOrigin ) {
 
 				this.textureLoader = new THREE.ImageBitmapLoader( this.options.manager );
 
