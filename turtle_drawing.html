@@ -6891,6 +6891,7 @@ function _newComponentId() {
    mesh at def.geometry and is placed by instanceMatrix on its group (see
    SketchObject.rebuild). N instances → 1 geometry + N matrices. ---- */
 const _IDENTITY4 = new THREE.Matrix4();
+const _nmScratch = new THREE.Matrix3();   // scratch normal-matrix for instance picking
 
 /* Build def.em (LOCAL space) from a definition's serialized vertex/face/edge
    arrays. Keeps the arrays as the persistable form; em is the live source. */
@@ -8650,9 +8651,14 @@ function raycastObjects(e, opts = {}) {
       // the ray pass through to objects behind. Skip the filter for them.
       const sk = h.object && h.object.userData && h.object.userData.sketchObject;
       if (sk && sk.em && sk.em._smoothShade) return true;
-      // face.normal is in local space; for world-space test we'd need to
-      // transform, but since our meshes have identity transforms it's fine.
-      return h.face.normal.dot(rayDir) < 0;
+      // face.normal is in the geometry's LOCAL space. Non-instances have an
+      // identity group transform, so local==world; an instance is placed by a
+      // group matrix, so transform the normal into world before the test.
+      let n = h.face.normal;
+      if (sk && sk.isInstance && h.object.matrixWorld) {
+        n = n.clone().applyNormalMatrix(_nmScratch.getNormalMatrix(h.object.matrixWorld));
+      }
+      return n.dot(rayDir) < 0;
     });
   }
   return hits;

@@ -25,12 +25,17 @@
       if (!obj.group.visible || obj.locked) continue;
       if (!obj.em.faces.length) continue;
       const entry = { segs: [] };
+      // Component instances store em in definition-LOCAL space placed by a group
+      // transform; transform verts to WORLD before testing against the (world)
+      // section plane. Non-instances have identity transforms (vw == vertex).
+      const _Mw = (obj.isInstance && obj.group) ? (obj.group.updateMatrixWorld(true), obj.group.matrixWorld) : null;
+      const _vw = (vi) => { const v = obj.em.vertices[vi]; return _Mw ? v.clone().applyMatrix4(_Mw) : v; };
       // Skip duplicate faces (CSG residue: identical vertex sets emit double
       // cut segments at the same location → phantom edges along slabs).
       const _seenFaces = new Set();
       // Crossings of plane with one closed loop of vertex indices.
       const loopCrossings = (vertIdxs) => {
-        const dists = vertIdxs.map(vi => plane.distanceToPoint(obj.em.vertices[vi]));
+        const dists = vertIdxs.map(vi => plane.distanceToPoint(_vw(vi)));
         let hasPos = false, hasNeg = false;
         for (const d of dists) {
           if (d >  EPS) hasPos = true;
@@ -41,8 +46,8 @@
         for (let i = 0; i < vertIdxs.length; i++) {
           const j = (i + 1) % vertIdxs.length;
           const da = dists[i], db = dists[j];
-          const pa = obj.em.vertices[vertIdxs[i]];
-          const pb = obj.em.vertices[vertIdxs[j]];
+          const pa = _vw(vertIdxs[i]);
+          const pb = _vw(vertIdxs[j]);
           if ((da > EPS && db < -EPS) || (da < -EPS && db > EPS)) {
             const t = da / (da - db);
             crosses.push(new THREE.Vector3().lerpVectors(pa, pb, t));
