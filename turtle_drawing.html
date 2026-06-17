@@ -23865,12 +23865,43 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
           em._smoothShade = (merged.length >= before * 0.6);   // mostly-flat → crisp flat shading
         }
       } catch (e) { console.warn('[skp] coplanar merge failed:', e); }
+      // Rebuild edges, but keep ONLY "hard" edges — real boundaries (an edge on
+      // one face), non-manifold edges, and creases where adjacent faces meet at
+      // > ~20°. Interior seams of flat / near-flat / smoothly-curved surfaces
+      // (roads, terrain, walls, the facets of a curved tower) are DROPPED, just
+      // as SketchUp softens/hides them — otherwise a triangulated ground imports
+      // as a wall of triangle lines that aren't in the SketchUp view.
       em.edges = [];
       const _seenE = new Set();
       const _addE = (a, b) => { if (a === b) return; const k = Math.min(a,b)+':'+Math.max(a,b); if (_seenE.has(k)) return; _seenE.add(k); em.edges.push({ a, b }); };
+      const _faceN = (f) => {
+        if (f.normal && f.normal.isVector3 && f.normal.lengthSq() > 0.5) return f.normal;
+        const V = em.vertices, vs = f.verts; const n = new THREE.Vector3();
+        for (let k = 0; k < vs.length; k++) {           // Newell's method (n-gon safe)
+          const c = V[vs[k]], d = V[vs[(k + 1) % vs.length]];
+          if (!c || !d) continue;
+          n.x += (c.y - d.y) * (c.z + d.z);
+          n.y += (c.z - d.z) * (c.x + d.x);
+          n.z += (c.x - d.x) * (c.y + d.y);
+        }
+        if (n.lengthSq() > 1e-20) n.normalize();
+        f.normal = n; return n;
+      };
+      const _edgeFaces = new Map();                     // "a:b" -> [face,...]
+      const _reg = (a, b, f) => { if (a === b) return; const k = Math.min(a,b)+':'+Math.max(a,b); let arr = _edgeFaces.get(k); if (!arr) { arr = []; _edgeFaces.set(k, arr); } arr.push(f); };
       for (const f of em.faces) {
-        for (let k = 0; k < f.verts.length; k++) _addE(f.verts[k], f.verts[(k+1) % f.verts.length]);
+        for (let k = 0; k < f.verts.length; k++) _reg(f.verts[k], f.verts[(k+1) % f.verts.length], f);
+        // Hole boundaries are real openings — always keep.
         if (f.holes) for (const h of f.holes) for (let k = 0; k < h.length; k++) _addE(h[k], h[(k+1) % h.length]);
+      }
+      const _HARD = 0.94;                               // cos(~20°): below → crease (keep)
+      for (const [k, faces] of _edgeFaces) {
+        let hard = faces.length !== 2;                  // boundary / non-manifold → keep
+        if (!hard) {
+          const n0 = _faceN(faces[0]), n1 = _faceN(faces[1]);
+          hard = (n0.lengthSq() < 0.5 || n1.lengthSq() < 0.5) || Math.abs(n0.dot(n1)) < _HARD;
+        }
+        if (hard) { const p = k.split(':'); _addE(+p[0], +p[1]); }
       }
       // Group path: mesh name "g1-g4-g7" rebuilds the NESTED group tree (each
       // segment → a Turtle Drawing group, parent = previous segment); the object
