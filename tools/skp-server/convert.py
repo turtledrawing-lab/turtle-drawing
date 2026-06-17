@@ -21,6 +21,7 @@ CALIBRATION KNOBS — verify against one known model on Windows and adjust:
   * TRANSPOSE_XFORM : whether the binding's 4x4 needs transposing for row-vector
     math. If imports come in mirrored/rotated wrong, flip this first.
 """
+import os
 import sys
 
 import numpy as np
@@ -29,6 +30,30 @@ import trimesh
 UNIT_SCALE = 1.0             # the pyslapi binding already returns metres (calibrated on Mac)
 Z_UP_TO_Y_UP = True
 TRANSPOSE_XFORM = False
+# Skip geometry that is HIDDEN in SketchUp (per-entity Hide, or on an invisible
+# tag/layer) so the import matches what's visible in SketchUp. The binding
+# exposes .hidden + .layer.visible on groups/instances (not on bare faces), so
+# filtering happens at the group/instance level — which is where hidden objects
+# live in practice. Set TD_SKP_INCLUDE_HIDDEN=1 to import everything anyway.
+INCLUDE_HIDDEN = bool(os.environ.get("TD_SKP_INCLUDE_HIDDEN"))
+
+
+def _is_visible(el):
+    """True unless the group/instance is hidden or sits on an invisible layer."""
+    if INCLUDE_HIDDEN:
+        return True
+    try:
+        if getattr(el, "hidden", False):
+            return False
+    except Exception:
+        pass
+    try:
+        lay = getattr(el, "layer", None)
+        if lay is not None and getattr(lay, "visible", True) is False:
+            return False
+    except Exception:
+        pass
+    return True
 
 # (x,y,z) Z-up -> (x, z, -y) Y-up
 _AXIS = np.array([[1, 0, 0, 0],
@@ -128,10 +153,15 @@ def convert(skp_path, glb_path):
         group_seq[0] += 1
         return path + ("g%d" % group_seq[0],)
 
+    skipped = [0]   # hidden groups/instances skipped (for the log)
+
     def walk(entities, xform, default_mat, path):
         for f in entities.faces:
             emit(f, xform, default_mat, path)
         for g in getattr(entities, "groups", []) or []:
+            if not _is_visible(g):           # hidden / invisible-tag group → drop
+                skipped[0] += 1
+                continue
             gm = default_mat
             try:
                 if g.material:
@@ -140,6 +170,9 @@ def convert(skp_path, glb_path):
                 pass
             walk(g.entities, xform @ _mat4(g.transform), gm, _child_path(path))
         for inst in getattr(entities, "instances", []) or []:
+            if not _is_visible(inst):        # hidden / invisible-tag instance → drop
+                skipped[0] += 1
+                continue
             im = default_mat
             try:
                 if inst.material:
@@ -214,7 +247,8 @@ def convert(skp_path, glb_path):
         raise RuntimeError("no geometry extracted from %s" % skp_path)
 
     scene.export(glb_path)
-    sys.stderr.write("[convert] %s -> %s  (%d meshes)\n" % (skp_path, glb_path, n_out))
+    sys.stderr.write("[convert] %s -> %s  (%d meshes, %d hidden group/instance(s) skipped)\n"
+                     % (skp_path, glb_path, n_out, skipped[0]))
 
 
 if __name__ == "__main__":
