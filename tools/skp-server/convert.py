@@ -218,33 +218,71 @@ def convert(skp_path, glb_path):
     root = _AXIS if Z_UP_TO_Y_UP else np.eye(4)
     walk(model.entities, root, "DefaultMaterial", ())
 
-    # OBJECT-COUNT CAP: full nesting can explode (a component used N times bakes
-    # its inner groups N times → tens of thousands of objects → the app freezes).
-    # If there are too many buckets, repeatedly merge the DEEPEST nesting level
-    # into its parent (truncate paths by one) until under the cap. Normal models
-    # keep full depth; huge models get as much nesting as the budget allows.
-    GROUP_CAP = 1000
-    def _merge_one_level(bk):
-        maxd = max((len(p) for (p, _m) in bk.keys()), default=0)
-        if maxd <= 1:
-            return bk, maxd
-        out = {}
-        for (path, mat), b in bk.items():
-            tp = path[:maxd - 1] if len(path) >= maxd else path
-            nb = out.setdefault((tp, mat), {"v": [], "f": [], "uv": []})
-            base = len(nb["v"])
-            nb["v"].extend(b["v"]); nb["uv"].extend(b["uv"])
-            for (a, b2, c) in b["f"]:
-                nb["f"].append((a + base, b2 + base, c + base))
-        return out, maxd - 1
-    _coarsened = 0
-    while len(buckets) > GROUP_CAP:
-        buckets, md = _merge_one_level(buckets)
-        if md <= 1:
-            break
-        _coarsened += 1
-    if _coarsened:
-        sys.stderr.write("[convert] coarsened %d nesting level(s) to cap objects at ~%d (was deeper)\n" % (_coarsened, GROUP_CAP))
+    _maxd0 = max((len(p) for (p, _m) in buckets.keys()), default=0)
+    sys.stderr.write("[convert] full nesting: %d buckets, max depth %d (before cap)\n" % (len(buckets), _maxd0))
+
+    # OBJECT-COUNT CAP: full nesting can explode — a component used N times bakes
+    # its inner groups N times → thousands of group paths → thousands of objects
+    # → the app freezes. We must cap the object (bucket) count, but the OLD
+    # approach flattened the DEEPEST level GLOBALLY, which also crushed the
+    # uniquely-deep nesting the user cares about (the main building) down to ~2
+    # levels. SMARTER: collapse the BUSHIEST leaf-clusters first — e.g. a "trees"
+    # or "surrounding buildings" container holding 100 repeated instances becomes
+    # one object — while sparsely-nested unique branches (the design itself) keep
+    # their full depth. Tunable via TD_SKP_GROUP_CAP.
+    GROUP_CAP = int(os.environ.get("TD_SKP_GROUP_CAP") or 1500)
+
+    def _merge_into(out, np, mat, b):
+        nb = out.setdefault((np, mat), {"v": [], "f": [], "uv": []})
+        base = len(nb["v"])
+        nb["v"].extend(b["v"]); nb["uv"].extend(b["uv"])
+        for (a, b2, c) in b["f"]:
+            nb["f"].append((a + base, b2 + base, c + base))
+
+    def _coarsen_smart(bk, cap):
+        passes = 0
+        while len(bk) > cap:
+            # A bucket path P is a LEAF if no other path strictly extends it.
+            extended = set()
+            for (p, _m) in bk:
+                for k in range(len(p)):
+                    extended.add(p[:k])
+            clusters = {}                       # parent path -> [keys of its leaf children]
+            for key in bk:
+                p = key[0]
+                if len(p) >= 1 and p not in extended:
+                    clusters.setdefault(p[:-1], []).append(key)
+            if not clusters:
+                break
+            # Collapse the biggest leaf-clusters first, just enough to reach cap.
+            order = sorted(clusters, key=lambda pp: -len(clusters[pp]))
+            need = len(bk) - cap
+            chosen, saved = set(), 0
+            for pp in order:
+                if saved >= need and len(clusters[pp]) < 2:
+                    break
+                chosen.add(pp)
+                saved += len(clusters[pp])
+                if saved >= need:
+                    break
+            out = {}
+            for (p, mat), b in bk.items():
+                if len(p) >= 1 and p[:-1] in chosen and p not in extended:
+                    _merge_into(out, p[:-1], mat, b)   # leaf → its parent
+                else:
+                    _merge_into(out, p, mat, b)
+            if len(out) >= len(bk):
+                break                            # no progress (safety)
+            bk = out
+            passes += 1
+        return bk, passes
+
+    _before = len(buckets)
+    buckets, _passes = _coarsen_smart(buckets, GROUP_CAP)
+    _maxd1 = max((len(p) for (p, _m) in buckets.keys()), default=0)
+    if _passes:
+        sys.stderr.write("[convert] coarsened bushiest subtrees in %d pass(es): %d → %d objects, max depth %d (cap ~%d)\n"
+                         % (_passes, _before, len(buckets), _maxd1, GROUP_CAP))
 
     # One PBRMaterial per material name, REUSED across every bucket that uses it
     # — so trimesh embeds each texture image ONCE in the glb (sharing the same
