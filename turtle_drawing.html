@@ -23801,22 +23801,18 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
   let added = 0;
   const bbox = new THREE.Box3();
   for (const m of meshes) {
-    const geo = m.geometry.clone();
+    // Read the SOURCE geometry directly (no clone) and bake the node's world
+    // matrix as we copy verts into the EditableMesh. Cloning every glTF
+    // geometry up-front doubled peak memory and OOM-crashed big imports; we
+    // never mutate m.geometry, so shared/instanced geometry is safe too.
+    const geo = m.geometry;
     if (!geo.attributes || !geo.attributes.position) continue;
-    if (!geo.index) {
-      // BufferGeometry without index — synthesize a sequential index for our mesh format
-      const N = geo.attributes.position.count;
-      const idx = new Uint32Array(N);
-      for (let k = 0; k < N; k++) idx[k] = k;
-      geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    }
-    geo.applyMatrix4(m.matrixWorld);
     // A mirrored node (negative-determinant transform, common in GLB/DAE
     // components) flips the winding when baked — emit reversed triangles so
     // normals still face outward.
     const mirrored = m.matrixWorld.determinant() < 0;
     const pos = geo.attributes.position;
-    const idx = geo.index;
+    const idxAttr = geo.index;   // may be null (non-indexed) → sequential triples
     // Carry the source mesh's material colour onto the faces (glTF/Collada
     // PBR baseColor → THREE material.color). Without this, every imported face
     // was hardcoded white, so materials looked completely lost.
@@ -23825,17 +23821,17 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
       ? _srcMat.color.getHex() : 0xffffff;
     const em = new EditableMesh();
     em._smoothShade = true;
-    // Vertices
+    // Vertices — transform by the node's world matrix on the fly.
+    const _mw = m.matrixWorld, _tv = new THREE.Vector3();
     for (let v = 0; v < pos.count; v++) {
-      em.vertices.push(new THREE.Vector3(
-        pos.getX(v) * unitToMeters,
-        pos.getY(v) * unitToMeters,
-        pos.getZ(v) * unitToMeters,
-      ));
+      _tv.set(pos.getX(v), pos.getY(v), pos.getZ(v)).applyMatrix4(_mw);
+      em.vertices.push(new THREE.Vector3(_tv.x * unitToMeters, _tv.y * unitToMeters, _tv.z * unitToMeters));
     }
-    // Faces (triangles)
-    for (let t = 0; t < idx.count; t += 3) {
-      const a = idx.getX(t), b = idx.getX(t+1), c = idx.getX(t+2);
+    // Faces (triangles) — use the index buffer if present, else sequential.
+    const _triCount = idxAttr ? idxAttr.count : pos.count;
+    const _gi = idxAttr ? (i) => idxAttr.getX(i) : (i) => i;
+    for (let t = 0; t + 2 < _triCount; t += 3) {
+      const a = _gi(t), b = _gi(t+1), c = _gi(t+2);
       if (a === b || b === c || a === c) continue;
       em.addFace(mirrored ? [a, c, b] : [a, b, c], _matCol, Model.activeLayerId || 'Layer0');
     }
@@ -23964,6 +23960,18 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
     }
     for (const v of em.vertices) bbox.expandByPoint(v);
     added += made.length;
+    // Free the source geometry's big typed arrays NOW (the EditableMesh holds
+    // its own copy) so memory is reclaimed incrementally instead of holding all
+    // glTF geometries until the whole import finishes → the difference between
+    // importing a large model and OOM-crashing the renderer. Gated to the SKP
+    // path where buckets are never shared between meshes.
+    if (opts.mergeCoplanar) {
+      try {
+        for (const k of Object.keys(geo.attributes)) geo.deleteAttribute(k);
+        geo.setIndex(null);
+        geo.dispose();
+      } catch (_) {}
+    }
   }
   if (placeMode) {
     if (!placeObjs.length || bbox.isEmpty()) { setStatus('msg', 'Nothing to place.'); return 0; }
@@ -24031,7 +24039,11 @@ async function importSKP(arrayBuffer, filename, srcPath) {
     else if (res && res.error) { showError('SKP 변환 실패 / conversion failed: ' + res.error); return; }
     else {
       const u8 = res;   // Uint8Array (the glb)
-      const glb = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+      // Use the buffer directly when it's a full view (avoids copying a
+      // hundreds-of-MB glb a second time → halves peak memory on big models).
+      const glb = (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength)
+        ? u8.buffer
+        : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
       importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'), { mergeCoplanar: true });
       return;
     }
