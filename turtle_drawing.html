@@ -23778,7 +23778,7 @@ function _applyGlbSourceMaterial(so, srcMat) {
   }
   applyMaterialToObject(so, def);
 }
-function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}) {
+async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}) {
   const featureEdgesOnly = !!(opts && opts.featureEdgesOnly);
   // placeMode: instead of dropping objects at the camera target, build them and
   // hand off to _startPlacementMode so the user positions them with the mouse
@@ -23800,7 +23800,17 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
   }
   let added = 0;
   const bbox = new THREE.Box3();
+  console.log('[skp-import] meshes=' + meshes.length + ' mergeCoplanar=' + !!opts.mergeCoplanar);
+  let _vtot = 0, _mi = 0;
   for (const m of meshes) {
+    _mi++;
+    // Yield to the event loop every few dozen objects so a big import doesn't
+    // block the main thread (which froze the UI and tripped the unresponsive
+    // watchdog). Also surfaces progress.
+    if (_mi % 30 === 0) {
+      setStatus('msg', 'Importing ' + _mi + '/' + meshes.length + ' …');
+      await new Promise((r) => setTimeout(r, 0));
+    }
     // Read the SOURCE geometry directly (no clone) and bake the node's world
     // matrix as we copy verts into the EditableMesh. Cloning every glTF
     // geometry up-front doubled peak memory and OOM-crashed big imports; we
@@ -23959,6 +23969,7 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
       try { _applyGlbSourceMaterial(so, _srcMat); } catch (e) { console.warn('[import] material apply failed:', e); }
     }
     for (const v of em.vertices) bbox.expandByPoint(v);
+    _vtot += em.vertices.length;
     added += made.length;
     // Free the source geometry's big typed arrays NOW (the EditableMesh holds
     // its own copy) so memory is reclaimed incrementally instead of holding all
@@ -23973,6 +23984,7 @@ function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}
       } catch (_) {}
     }
   }
+  console.log('[skp-import] DONE building objects: added=' + added + ' totalVerts=' + _vtot);
   if (placeMode) {
     if (!placeObjs.length || bbox.isEmpty()) { setStatus('msg', 'Nothing to place.'); return 0; }
     _startPlacementMode(placeObjs, bbox, filename);
@@ -24039,6 +24051,7 @@ async function importSKP(arrayBuffer, filename, srcPath) {
     else if (res && res.error) { showError('SKP 변환 실패 / conversion failed: ' + res.error); return; }
     else {
       const u8 = res;   // Uint8Array (the glb)
+      console.log('[skp-import] converted glb bytes=' + (u8 && u8.byteLength));
       // Use the buffer directly when it's a full view (avoids copying a
       // hundreds-of-MB glb a second time → halves peak memory on big models).
       const glb = (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength)
@@ -24123,12 +24136,12 @@ function importGLB(arrayBuffer, filename, opts) {
     return;
   }
   const loader = new THREE.GLTFLoader();
+  console.log('[skp-import] GLTFLoader.parse start, bytes=' + (arrayBuffer && arrayBuffer.byteLength));
   loader.parse(arrayBuffer, '', (gltf) => {
-    try {
-      _importMeshTreeIntoScene(gltf.scene, filename, 1, opts || {});
-    } catch (err) {
-      showError('GLB processing failed: ' + err.message);
-    }
+    console.log('[skp-import] GLTFLoader.parse OK');
+    Promise.resolve(_importMeshTreeIntoScene(gltf.scene, filename, 1, opts || {}))
+      .then(() => console.log('[skp-import] import fully complete'))
+      .catch((err) => showError('GLB processing failed: ' + (err && err.message || err)));
   }, (err) => {
     showError('GLB parse error: ' + (err && err.message || err));
   });
