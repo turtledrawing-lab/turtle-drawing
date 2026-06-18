@@ -14443,23 +14443,33 @@ Tools.move = {
     if (!this._cloneOrigVerts) this._cloneOrigVerts = new Map();
     if (!this._clonePartial) this._clonePartial = new Map();
     for (const o of this.objs) {
-      const partial = buildPartial(o);
-      const cloneEm = partial || o.em.clone();
-      const cloneObj = new SketchObject(cloneEm, o.name + ' (copy)');
-      this._clonePartial.set(cloneObj, !!partial);
-      // Snapshot clone's verts so the move loop can recompute positions
-      // independently from the source mesh (partial clones have a different
-      // vert indexing).
-      this._cloneOrigVerts.set(cloneObj, cloneEm.vertices.map(v => v.clone()));
+      let cloneObj;
+      if (o.isInstance && o.def && typeof createComponentInstance === 'function') {
+        // True instance copy: SHARE the definition, copy the source's placement
+        // matrix (the drag below moves it via the matrix, never baking geometry).
+        cloneObj = createComponentInstance(o.def, o.instanceMatrix ? o.instanceMatrix.clone() : new THREE.Matrix4());
+        if (!cloneObj) continue;
+        cloneObj.name = o.name + ' (copy)';
+        this._clonePartial.set(cloneObj, false);
+      } else {
+        const partial = buildPartial(o);
+        const cloneEm = partial || o.em.clone();
+        cloneObj = new SketchObject(cloneEm, o.name + ' (copy)');
+        this._clonePartial.set(cloneObj, !!partial);
+        // Snapshot clone's verts so the move loop can recompute positions
+        // independently from the source mesh (partial clones have a different
+        // vert indexing).
+        this._cloneOrigVerts.set(cloneObj, cloneEm.vertices.map(v => v.clone()));
+        // Preserve component linkage so copies stay live instances of the
+        // same definition — editing one propagates to all.
+        if (o.componentId) {
+          cloneObj.componentId = o.componentId;
+          cloneObj.componentOrigin = o.componentOrigin ? { ...o.componentOrigin } : null;
+        }
+        addObject(cloneObj);
+      }
       cloneObj.layerId = o.layerId;
       cloneObj.groupId = mappedCopyGroupId(o.groupId, groupIdMap, _boundary);
-      // Preserve component linkage so copies stay live instances of the
-      // same definition — editing one propagates to all.
-      if (o.componentId) {
-        cloneObj.componentId = o.componentId;
-        cloneObj.componentOrigin = o.componentOrigin ? { ...o.componentOrigin } : null;
-      }
-      addObject(cloneObj);
       this.copyObjs.push(cloneObj);
     }
     this.copyMode = true;
@@ -14470,6 +14480,14 @@ Tools.move = {
       for (let ti = 0; ti < this.copyObjs.length; ti++) {
         const o = this.copyObjs[ti];
         const origObj = this.objs[ti];
+        if (o.isInstance) {
+          if (!this._instOrigMat) this._instOrigMat = new Map();
+          if (!this._instOrigMat.has(o)) this._instOrigMat.set(o, (o.instanceMatrix || _IDENTITY4).clone());
+          o.instanceMatrix = new THREE.Matrix4().makeTranslation(delta.x, delta.y, delta.z).multiply(this._instOrigMat.get(o));
+          o.group.matrix.copy(o.instanceMatrix);
+          o.group.matrixWorldNeedsUpdate = true; o.group.updateMatrixWorld(true);
+          continue;
+        }
         const isPartial = this._clonePartial && this._clonePartial.get(o);
         if (isPartial) {
           const cloneOrig = this._cloneOrigVerts.get(o);
@@ -14734,8 +14752,9 @@ Tools.move = {
           const origObj = this.objs[ti];
           // INSTANCE move: compose the world translation into instanceMatrix
           // (never bake into the shared def geometry). Capture the pre-move
-          // matrix once per drag (lazy; the map is reset on deactivate).
-          if (o.isInstance && !this.copyMode) {
+          // matrix once per drag (lazy; the map is reset on deactivate). Works
+          // for copy-mode clones too (they're true instances sharing the def).
+          if (o.isInstance) {
             if (!this._instOrigMat) this._instOrigMat = new Map();
             if (!this._instOrigMat.has(o)) this._instOrigMat.set(o, (o.instanceMatrix || _IDENTITY4).clone());
             o.instanceMatrix = new THREE.Matrix4().makeTranslation(delta.x, delta.y, delta.z).multiply(this._instOrigMat.get(o));
