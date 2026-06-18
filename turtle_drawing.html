@@ -1196,6 +1196,7 @@ input[type="range"]:hover { accent-color: #22a722; }
         <div class="sep"></div>
         <div data-act="title-block">Title Block...</div>
         <div data-act="make-component">Make Component <span>Ctrl+Shift+G</span></div>
+        <div data-act="make-unique">Make Unique</div>
       </div>
     </div>
     <div class="menu-item" data-menu="help">Help
@@ -6688,6 +6689,13 @@ class SketchObject {
       // Shared-geometry instance: point mesh/edges at the definition's built
       // geometry and place via the group transform. NEVER dispose the shared
       // geometry (the def + sibling instances reference it).
+      // If this instance is being edited INSIDE (entered as the active
+      // component), its em IS def.em and was just modified — rebuild the shared
+      // def geometry so the edit shows and propagates to every instance.
+      if (this.def.em === this.em && typeof Model !== 'undefined' && Model.activeComponentSource === this
+          && typeof rebuildComponentDef === 'function') {
+        try { rebuildComponentDef(this.def); } catch (_) {}
+      }
       if (!this.def.geometry && typeof rebuildComponentDef === 'function') { try { rebuildComponentDef(this.def); } catch (_) {} }
       if (!this._sharedGeom) {          // dispose only the ctor's own empty geometry, once
         try { if (this.mesh.geometry) this.mesh.geometry.dispose(); } catch (_) {}
@@ -14009,8 +14017,14 @@ Tools.select = {
 
   onKey(k) {
     if (k === 'escape') {
+      // Inside a component edit: first Esc exits component edit mode.
+      if (Model.activeComponentSource) {
+        Model.activeComponentSource = null; Model.activeComponentId = null;
+        try { refreshSelectionVisuals(); } catch (_) {}
+        setStatus('msg', 'Exited component edit');
+      }
       // Inside a group: first Esc exits group, then clears selection.
-      if (Model.activeGroupId != null) exitGroup();
+      else if (Model.activeGroupId != null) exitGroup();
       else clearSelection();
     }
   },
@@ -17048,6 +17062,14 @@ Tools.pp = {
     if (e.button !== 0) return;
     if (!this.active) {
       if (!this.hoverFace || !this.hoverObj) return;
+      // Component instance: geometry editing (push/pull) is only allowed INSIDE
+      // the component (double-click to enter). From outside it's blocked so a
+      // shape edit can't silently change every instance. Editing inside DOES
+      // change all instances (shared definition); use Make Unique to edit one.
+      if (this.hoverObj.isInstance && Model.activeComponentSource !== this.hoverObj) {
+        setStatus('msg', '컴포넌트는 더블클릭으로 들어가서 편집하세요 / Double-click the component to edit (changes all instances); use Make Unique to edit just one.');
+        return;
+      }
       this.active = true;
       this.faceCopy = { verts: this.hoverFace.verts.slice(), normal: this.hoverFace.normal.clone(),
                         color: this.hoverFace.color, layerId: this.hoverFace.layerId };
@@ -28263,6 +28285,17 @@ function _handleActionImpl(act) {
       });
       break;
     }
+    case 'make-unique': {
+      const sel = [...Selection.objects].filter(o => o.isInstance && o.def);
+      if (!sel.length) { setStatus('msg', 'Select a component instance to make unique'); break; }
+      for (const o of sel) makeComponentUnique(o);
+      try { refreshSelectionVisuals(); } catch (_) {}
+      renderOutliner();
+      if (typeof renderComponentList === 'function') renderComponentList();
+      pushHistory('Make Unique');
+      setStatus('msg', `Made ${sel.length} instance(s) unique`);
+      break;
+    }
     case 'align-min-x':    alignSelected('x', 'min'); break;
     case 'align-center-x': alignSelected('x', 'center'); break;
     case 'align-max-x':    alignSelected('x', 'max'); break;
@@ -31898,6 +31931,7 @@ function showContextMenu(e) {
   const items = [
     { label: 'Make Group', act: 'group' },
     { label: 'Make Component', act: 'make-component', disabled: !hasSel },
+    { label: 'Make Unique', act: 'make-unique', disabled: !hasSel },
     { label: 'Explode', act: 'explode' },
     { label: 'Intersect Faces', act: 'intersect-faces', disabled: Selection.objects.size < 2 },
     { label: 'Boolean: Union',     act: 'bool-union',    disabled: Selection.objects.size < 2 },
