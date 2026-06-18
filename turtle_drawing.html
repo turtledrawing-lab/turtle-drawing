@@ -6946,7 +6946,13 @@ function rebuildComponentDef(def) {
   // Re-point existing instances at the new shared geometry.
   if (typeof Model !== 'undefined' && Model.objects) {
     for (const o of Model.objects) {
-      if (o.isInstance && o.def === def) { o.mesh.geometry = def.geometry; o.edges.geometry = def.edgeGeometry; o._sharedGeom = true; }
+      if (o.isInstance && o.def === def) {
+        o.mesh.geometry = def.geometry; o.edges.geometry = def.edgeGeometry; o._sharedGeom = true;
+        // The RENDERED linework is the LineSegments2 overlay (_thickEdges), a
+        // separate buffer built from o.edges.geometry. Re-pointing edges.geometry
+        // alone leaves the overlay stale (shade moves, lines don't) — resync it.
+        try { if (window.AD && AD.Layers && AD.Layers.syncThickEdges) AD.Layers.syncThickEdges(o); } catch (_) {}
+      }
     }
   }
   return def;
@@ -6986,6 +6992,13 @@ function enterComponentEdit(inst) {
   inst.group.matrix.identity();
   inst.group.position.set(0, 0, 0); inst.group.quaternion.identity(); inst.group.scale.set(1, 1, 1);
   inst.group.updateMatrixWorld(true);
+  // CRITICAL: detach the mesh/edges from the SHARED def geometry before rebuild.
+  // While an instance, mesh.geometry === def.geometry (+ its BVH). The normal
+  // (non-instance) rebuild path disposes mesh.geometry; if that's still the
+  // shared def geometry it frees the GPU buffers + BVH that sibling instances
+  // still render — so siblings render broken/invisible instead of dimming.
+  inst.mesh.geometry  = new THREE.BufferGeometry();
+  inst.edges.geometry = new THREE.BufferGeometry();
   inst.rebuild();                              // normal (world) rebuild
   Model.activeComponentSource = inst;
   Model.activeComponentId = def.id;
@@ -7847,8 +7860,16 @@ function _clearGroupEditOutline() {
 }
 function _refreshGroupEditOutline() {
   _clearGroupEditOutline();
-  if (Model.activeGroupId == null) return;
-  const members = getGroupDescendantObjects(Model.activeGroupId);
+  // Component edit gets the SAME dashed bounding-box cue as group edit — draw it
+  // around the instance being edited (which is a world object while open).
+  let members;
+  if (Model.activeComponentSource) {
+    members = [Model.activeComponentSource];
+  } else if (Model.activeGroupId != null) {
+    members = getGroupDescendantObjects(Model.activeGroupId);
+  } else {
+    return;
+  }
   if (!members.length) return;
   const bb = new THREE.Box3();
   for (const m of members) {
@@ -14963,9 +14984,25 @@ Tools.move = {
      Non-underlay objects keep the exact per-vertex behavior. */
   _applyMoveDelta(delta) {
     const moveTargets = this.copyMode ? this.copyObjs : this.objs;
+    // Per-drag instance-matrix snapshot: reset whenever the origVerts snapshot
+    // (re-made at each drag start) changes, so a second move composes from the
+    // post-first-move matrix rather than the original.
+    if (this._instOrigForVerts !== this.origVertsByObj) { this._instOrigMat = new Map(); this._instOrigForVerts = this.origVertsByObj; }
     for (let ti = 0; ti < moveTargets.length; ti++) {
       const o = moveTargets[ti];
       const origObj = this.objs[ti];
+      // INSTANCE move: compose the world translation into instanceMatrix and
+      // NEVER touch o.em — for an instance o.em IS the shared def.em, so editing
+      // it here would drag every sibling instance too (the reported bug).
+      if (o.isInstance) {
+        if (!this._instOrigMat) this._instOrigMat = new Map();
+        if (!this._instOrigMat.has(o)) this._instOrigMat.set(o, (o.instanceMatrix || _IDENTITY4).clone());
+        o.instanceMatrix = new THREE.Matrix4().makeTranslation(delta.x, delta.y, delta.z).multiply(this._instOrigMat.get(o));
+        o.group.matrix.copy(o.instanceMatrix);
+        o.group.matrixWorldNeedsUpdate = true;
+        o.group.updateMatrixWorld(true);
+        continue;
+      }
       const isPartial = this.copyMode && this._clonePartial && this._clonePartial.get(o);
       const mask = this.origMaskByObj ? this.origMaskByObj.get(origObj) : null;
       // Fast path: whole-object underlay → translate the group, skip rebuild.
@@ -15638,15 +15675,25 @@ Tools.scale = {
     const _boundary = Model.activeGroupId;
     const _grpMap = cloneGroupsForCopy(this.objs, _boundary);
     for (const o of this.objs) {
-      const cloneEm = o.em.clone();
-      const cloneObj = new SketchObject(cloneEm, o.name + ' (copy)');
+      let cloneObj;
+      if (o.isInstance && o.def && typeof createComponentInstance === 'function') {
+        // True instance copy: SHARE the definition, copy the placement matrix.
+        // Cloning o.em (def-LOCAL) into a plain object would bake it at the
+        // wrong (local) world position — must stay a real instance.
+        cloneObj = createComponentInstance(o.def, o.instanceMatrix ? o.instanceMatrix.clone() : new THREE.Matrix4());
+        if (!cloneObj) continue;
+        cloneObj.name = o.name + ' (copy)';
+      } else {
+        const cloneEm = o.em.clone();
+        cloneObj = new SketchObject(cloneEm, o.name + ' (copy)');
+        addObject(cloneObj);
+        if (o.componentId) {
+          cloneObj.componentId = o.componentId;
+          cloneObj.componentOrigin = o.componentOrigin ? { ...o.componentOrigin } : null;
+        }
+      }
       cloneObj.layerId = o.layerId;
       cloneObj.groupId = mappedCopyGroupId(o.groupId, _grpMap, _boundary);
-      if (o.componentId) {
-        cloneObj.componentId = o.componentId;
-        cloneObj.componentOrigin = o.componentOrigin ? { ...o.componentOrigin } : null;
-      }
-      addObject(cloneObj);
       this.copyObjs.push(cloneObj);
     }
     this.copyMode = true;
