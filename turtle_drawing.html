@@ -6963,6 +6963,69 @@ function createComponentInstance(def, matrix) {
   return so;
 }
 
+/* ENTER a component instance to edit its geometry (double-click, like a group).
+   The instance is temporarily "opened" into a WORLD-space normal object so every
+   tool (select, hover, snap, push/pull) works without per-tool transform math;
+   exitComponentEdit() bakes the edit back to definition-LOCAL and propagates to
+   all instances. Other objects dim (group-edit style) so it's clear you're inside. */
+function enterComponentEdit(inst) {
+  if (!inst || !inst.isInstance || !inst.def) return false;
+  if (Model.activeComponentSource && Model.activeComponentSource !== inst) exitComponentEdit();
+  const def = inst.def;
+  inst.group.updateMatrixWorld(true);
+  const M = inst.instanceMatrix ? inst.instanceMatrix.clone() : new THREE.Matrix4();
+  // Deep-build a WORLD-space editable mesh from the definition.
+  const wem = new EditableMesh();
+  for (const v of def.em.vertices) wem.vertices.push(v.clone().applyMatrix4(M));
+  for (const f of def.em.faces) { const nf = wem.addFace(f.verts.slice(), f.color, f.layerId); if (f.holes && f.holes.length) nf.holes = f.holes.map(h => h.slice()); }
+  for (const ed of (def.em.edges || [])) wem.edges.push({ a: ed.a, b: ed.b });
+  inst._editRestore = { def, matrix: M };
+  inst.isInstance = false; inst.def = null; inst._sharedGeom = false;
+  inst.em = wem;
+  inst.group.matrixAutoUpdate = true;
+  inst.group.matrix.identity();
+  inst.group.position.set(0, 0, 0); inst.group.quaternion.identity(); inst.group.scale.set(1, 1, 1);
+  inst.group.updateMatrixWorld(true);
+  inst.rebuild();                              // normal (world) rebuild
+  Model.activeComponentSource = inst;
+  Model.activeComponentId = def.id;
+  try { clearSelection(); } catch (_) {}
+  try { applyLayerVisibility(); } catch (_) {}  // dim others (component-aware below)
+  try { _refreshGroupEditOutline && _refreshGroupEditOutline(); } catch (_) {}
+  setStatus('msg', '컴포넌트 편집 중 — Esc로 나가기 / Component edit — Esc to exit (changes all instances)');
+  return true;
+}
+
+/* EXIT component edit: bake the edited world geometry back to the definition
+   (LOCAL) and restore the instance to shared-geometry mode. All instances update. */
+function exitComponentEdit() {
+  const inst = Model.activeComponentSource;
+  Model.activeComponentSource = null; Model.activeComponentId = null;
+  if (!inst || !inst._editRestore) { try { applyLayerVisibility(); } catch (_) {} return false; }
+  const { def, matrix } = inst._editRestore;
+  const inv = new THREE.Matrix4().copy(matrix).invert();
+  // Bake edited world em → definition-LOCAL.
+  const lem = new EditableMesh();
+  for (const v of inst.em.vertices) lem.vertices.push(v.clone().applyMatrix4(inv));
+  for (const f of inst.em.faces) { const nf = lem.addFace(f.verts.slice(), f.color, f.layerId); if (f.holes && f.holes.length) nf.holes = f.holes.map(h => h.slice()); }
+  for (const ed of (inst.em.edges || [])) lem.edges.push({ a: ed.a, b: ed.b });
+  def.em = lem;
+  def.vertices = lem.vertices.map(v => ({ x: v.x, y: v.y, z: v.z }));
+  def.faces = lem.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) }));
+  def.edges = (lem.edges || []).map(e => ({ a: e.a, b: e.b }));
+  rebuildComponentDef(def);                    // rebuild shared geometry + re-point all instances
+  // Restore THIS instance to shared-geometry mode.
+  inst.isInstance = true; inst.def = def; inst.componentId = def.id;
+  inst.em = def.em; inst.instanceMatrix = matrix; inst._sharedGeom = false;
+  inst._editRestore = null;
+  inst.rebuild();
+  try { _clearGroupEditOutline && _clearGroupEditOutline(); } catch (_) {}
+  try { applyLayerVisibility(); } catch (_) {}
+  try { pushHistory('Edit Component'); } catch (_) {}
+  setStatus('msg', 'Exited component edit');
+  return true;
+}
+
 /* Snapshot the EditableMesh of `obj` (in world coords relative to its bbox
    centre) into a component definition. Returns the new component. */
 function makeComponentFromObject(obj, name) {
@@ -7538,14 +7601,18 @@ function applyBackgroundMode() {
 }
 function applyLayerVisibility() {
   _updateIsolateBanner();
-  const editing = Model.activeGroupId != null;
+  // Component edit dims everything except the instance being edited (group-style),
+  // so it's clear you're "inside" a component.
+  const _compEdit = Model.activeComponentSource || null;
+  const editing = (Model.activeGroupId != null) || !!_compEdit;
   for (const o of Model.objects) {
     const L = getLayer(o.layerId);
     const baseVisible = o.visible && !o.hidden && (L ? L.visible : true);
     // Subtree-aware: the active group's WHOLE descendant subtree stays bright
     // (only truly-outside objects dim), so editing deeper than one level isn't
     // progressively dimmed into invisibility. Matches raycast/snap scope.
-    const isMember  = !editing || (typeof isInActiveSubtree === 'function' ? isInActiveSubtree(o) : o.groupId === Model.activeGroupId);
+    const isMember  = _compEdit ? (o === _compEdit)
+                    : (!editing || (typeof isInActiveSubtree === 'function' ? isInActiveSubtree(o) : o.groupId === Model.activeGroupId));
     const isIsolated = Model.isolatedObjects ? Model.isolatedObjects.has(o) : true;
     const hideOuter = editing && !isMember && !Model.outsideVisible;
     const hideByIsolate = !isIsolated && !editing;
@@ -13996,17 +14063,12 @@ Tools.select = {
       return;
     }
     const resolved = this._resolveClick(e);
-    // Component instance double-click → enter edit mode for THAT instance
+    // Component instance double-click → ENTER it to edit (like entering a group:
+    // others dim, edits apply to all instances, Esc to exit).
     if ((resolved.type === 'edge' || resolved.type === 'face') &&
-        resolved.obj && resolved.obj.componentId &&
+        resolved.obj && resolved.obj.isInstance &&
         Model.activeComponentSource !== resolved.obj) {
-      Model.activeComponentSource = resolved.obj;
-      Model.activeComponentId = resolved.obj.componentId;
-      Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear();
-      Selection.objects.add(resolved.obj);
-      refreshSelectionVisuals();
-      renderEntityInfo();
-      setStatus('msg', 'Component edit mode — Esc to exit');
+      if (typeof enterComponentEdit === 'function') enterComponentEdit(resolved.obj);
       return;
     }
     // Group enter on double-click of empty space exits the active group
@@ -14017,11 +14079,11 @@ Tools.select = {
 
   onKey(k) {
     if (k === 'escape') {
-      // Inside a component edit: first Esc exits component edit mode.
+      // Inside a component edit: first Esc exits component edit (bakes the edit
+      // back to the definition → all instances update).
       if (Model.activeComponentSource) {
-        Model.activeComponentSource = null; Model.activeComponentId = null;
-        try { refreshSelectionVisuals(); } catch (_) {}
-        setStatus('msg', 'Exited component edit');
+        if (typeof exitComponentEdit === 'function') exitComponentEdit();
+        try { clearSelection(); } catch (_) {}
       }
       // Inside a group: first Esc exits group, then clears selection.
       else if (Model.activeGroupId != null) exitGroup();
