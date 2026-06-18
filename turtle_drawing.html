@@ -16382,7 +16382,10 @@ Tools.pp = {
   highlight() {
     helperRoot.clear();
     if (!this.hoverFace || !this.hoverObj) return;
-    const vs = this.hoverFace.verts.map(i => this.hoverObj.em.vertices[i]);
+    const _o = this.hoverObj;
+    // Instance em is def-LOCAL; draw the highlight at the instance's world place.
+    const _M = (_o.isInstance && _o.group) ? (_o.group.updateMatrixWorld(true), _o.group.matrixWorld) : null;
+    const vs = this.hoverFace.verts.map(i => { const v = _o.em.vertices[i]; return _M ? v.clone().applyMatrix4(_M) : v; });
     const pts = [];
     // Triangulate fan for fill
     for (let i = 1; i < vs.length - 1; i++) pts.push(vs[0], vs[i], vs[i+1]);
@@ -17068,10 +17071,16 @@ Tools.pp = {
     const hits = raycastObjects(e, { skipOuterGroups: true });
     if (hits.length) {
       const o = hits[0].object.userData.sketchObject;
-      const geo = o.mesh.geometry;
-      const fi = geo.userData.faceIdxMap[hits[0].faceIndex];
-      this.hoverObj = o;
-      this.hoverFace = o.em.faces[fi];
+      // Don't hover-highlight a component instance you're not inside — push/pull
+      // is blocked there (double-click to enter), so a highlight is misleading.
+      if (o.isInstance && Model.activeComponentSource !== o) {
+        this.hoverObj = null; this.hoverFace = null;
+      } else {
+        const geo = o.mesh.geometry;
+        const fi = geo.userData.faceIdxMap[hits[0].faceIndex];
+        this.hoverObj = o;
+        this.hoverFace = o.em.faces[fi];
+      }
     } else {
       this.hoverObj = null; this.hoverFace = null;
     }
