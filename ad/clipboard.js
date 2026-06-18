@@ -49,6 +49,10 @@
       faceCamera:   !!o.faceCamera,
       componentId:  o.componentId || null,
       componentOrigin: o.componentOrigin ? { ...o.componentOrigin } : null,
+      // True component instance: copy = a new instance sharing the same
+      // definition, placed by this matrix (not a baked clone).
+      isInstance:   !!o.isInstance,
+      instanceMatrix: (o.isInstance && o.instanceMatrix) ? o.instanceMatrix.toArray() : null,
       ad: o.ad ? {
         kind: o.ad.kind || null,
         material: o.ad.material || null,
@@ -68,9 +72,31 @@
   }
 
   function reconstructObject(data, shift, groupMap) {
+    const s = shift || { x: 0, y: 0, z: 0 };
+    // True component instance: re-create as a shared-geometry instance of the
+    // same definition (looked up by componentId), placed by its matrix + the
+    // paste shift — NOT a baked clone. Falls back to baked geometry below if the
+    // definition is gone (e.g. cross-session paste).
+    if (data.isInstance && data.componentId && typeof Model !== 'undefined' && Model.components &&
+        typeof createComponentInstance === 'function') {
+      const def = Model.components.find(c => c.id === data.componentId);
+      if (def) {
+        const M = data.instanceMatrix ? new THREE.Matrix4().fromArray(data.instanceMatrix) : new THREE.Matrix4();
+        M.premultiply(new THREE.Matrix4().makeTranslation(s.x, s.y, s.z));
+        const so = createComponentInstance(def, M);
+        if (so) {
+          so.name = data.name || def.name;
+          so.layerId = data.layerId || 'Layer0';
+          if (typeof mappedCopyGroupId === 'function') {
+            const _b = (typeof Model !== 'undefined' && Model) ? Model.activeGroupId : null;
+            so.groupId = mappedCopyGroupId(data.groupId || null, groupMap, _b);
+          }
+        }
+        return so;
+      }
+    }
     const em = new EditableMesh();
     if (data.smoothShade) em._smoothShade = true;
-    const s = shift || { x: 0, y: 0, z: 0 };
     for (const v of data.vertices) {
       em.vertices.push(new THREE.Vector3(v[0] + s.x, v[1] + s.y, v[2] + s.z));
     }
@@ -352,7 +378,9 @@
       if (!obj) continue;
       placed.push(obj);
       Selection.objects.add(obj);
-      for (const v of obj.em.vertices) bb.expandByPoint(v);
+      // Instances store em in def-LOCAL space — use the world bbox.
+      if (obj.isInstance && typeof obj.computeBBox === 'function') bb.union(obj.computeBBox());
+      else for (const v of obj.em.vertices) bb.expandByPoint(v);
     }
     if (!placed.length) return;
     // Anchor at bottom-corner of the combined bbox so the cursor grabs
@@ -367,6 +395,8 @@
     const state = {
       objs: placed,
       origVerts: placed.map(o => o.em.vertices.map(v => v.clone())),
+      // Instances move via their matrix during the paste-drag (em is shared).
+      origMat: placed.map(o => (o.isInstance && o.instanceMatrix) ? o.instanceMatrix.clone() : null),
       anchor: anchor,
       lastShift: new THREE.Vector3(),
       copyGroupIds: groupMap ? Array.from(groupMap.values()) : [],
@@ -419,6 +449,15 @@
   function _applyShift(state, shift) {
     for (let i = 0; i < state.objs.length; i++) {
       const obj = state.objs[i];
+      // Instance: move via its matrix (em is the SHARED def geometry — mutating
+      // it would corrupt every instance).
+      if (obj.isInstance && state.origMat && state.origMat[i]) {
+        obj.instanceMatrix = new THREE.Matrix4().makeTranslation(shift.x, shift.y, shift.z).multiply(state.origMat[i]);
+        obj.group.matrix.copy(obj.instanceMatrix);
+        obj.group.matrixWorldNeedsUpdate = true;
+        try { obj.group.updateMatrixWorld(true); } catch (_) {}
+        continue;
+      }
       const orig = state.origVerts[i];
       for (let k = 0; k < obj.em.vertices.length; k++) {
         obj.em.vertices[k].copy(orig[k]).add(shift);
