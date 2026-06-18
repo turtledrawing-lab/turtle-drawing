@@ -15406,8 +15406,12 @@ Tools.scale = {
 
   _computeBBox() {
     const box = new THREE.Box3();
-    for (const o of this.objs)
-      for (const v of o.em.vertices) box.expandByPoint(v);
+    for (const o of this.objs) {
+      // Instances store em in def-LOCAL space — use the transform-aware
+      // computeBBox() so grips/origin land at the instance's WORLD position.
+      if (o.isInstance) box.union(o.computeBBox());
+      else for (const v of o.em.vertices) box.expandByPoint(v);
+    }
     return box;
   },
 
