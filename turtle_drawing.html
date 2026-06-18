@@ -6977,34 +6977,52 @@ function makeComponentFromObject(obj, name) {
     })),
     edges: (obj.em.edges || []).map(e => ({ a: e.a, b: e.b })),
   };
+  def.materialId = obj.materialId || null;
   Model.components.push(def);
-  // Convert this object into an instance of the new component
-  obj.componentId = def.id;
-  obj.componentOrigin = { x: pivot.x, y: pivot.y, z: pivot.z };
+  rebuildComponentDef(def);   // build def.em (LOCAL) + shared def.geometry
+  // Convert this object into a TRUE instance: share def geometry, place at the
+  // pivot via instanceMatrix (def is authored at origin). obj's old owned
+  // geometry is disposed on the next rebuild (_sharedGeom=false).
+  obj.isInstance = true; obj.def = def; obj.componentId = def.id;
+  obj.em = def.em;
+  obj.instanceMatrix = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
+  obj._sharedGeom = false;
+  obj.componentOrigin = { x: pivot.x, y: pivot.y, z: pivot.z };   // vestigial (back-compat)
   obj.name = def.name;
+  obj.rebuild();
   return def;
 }
 
-/* Build a SketchObject from a component definition at world position `at`. */
+/* Place a TRUE instance of a component definition with its pivot at world `at`
+   (shares def geometry; placed by a translation matrix — no geometry copy). */
 function placeComponentInstance(defId, at) {
   const def = Model.components.find(c => c.id === defId);
   if (!def) return null;
-  const em = new EditableMesh();
-  for (const v of def.vertices) {
-    em.vertices.push(new THREE.Vector3(v.x + at.x, v.y + at.y, v.z + at.z));
-  }
-  for (const fd of def.faces) {
-    const f = em.addFace(fd.verts.slice(), fd.color, fd.layerId);
-    if (fd.holes && fd.holes.length) f.holes = fd.holes.map(h => h.slice());
-  }
-  for (const ed of (def.edges || [])) em.edges.push({ a: ed.a, b: ed.b });
-  const so = new SketchObject(em, def.name);
-  so.componentId = def.id;
-  so.componentOrigin = { x: at.x, y: at.y, z: at.z };
-  so.layerId = Model.activeLayerId || 'Layer0';
-  addObject(so);
-  so.rebuild();
+  if (!def.geometry || !def.em) rebuildComponentDef(def);   // build from data arrays if legacy
+  const so = createComponentInstance(def, new THREE.Matrix4().makeTranslation(at.x, at.y, at.z));
+  if (so) so.componentOrigin = { x: at.x, y: at.y, z: at.z };
   return so;
+}
+
+/* "Make Unique": clone an instance's definition and re-point only `obj` at the
+   clone, so editing it no longer affects the other instances (SketchUp's Make
+   Unique). Returns the new definition. */
+function makeComponentUnique(obj) {
+  if (!obj || !obj.isInstance || !obj.def) return null;
+  const src = obj.def;
+  const def = {
+    id: _newComponentId(), name: (src.name || 'Component') + ' (unique)',
+    pivot: src.pivot ? { ...src.pivot } : { x: 0, y: 0, z: 0 },
+    vertices: src.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })),
+    faces: src.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
+    edges: (src.edges || []).map(e => ({ a: e.a, b: e.b })),
+    materialId: src.materialId || null,
+  };
+  Model.components.push(def);
+  rebuildComponentDef(def);
+  obj.def = def; obj.componentId = def.id; obj.em = def.em; obj._sharedGeom = false;
+  obj.rebuild();
+  return def;
 }
 
 /* Fallback bbox-bottom-centre anchor — used only if an instance's stored
@@ -7025,8 +7043,21 @@ function _instanceAnchor(obj) {
    tool's onPointerUp hook). */
 function updateComponentFromInstance(obj) {
   if (!obj || !obj.componentId) return false;
-  const def = Model.components.find(c => c.id === obj.componentId);
+  const def = Model.components.find(c => c.id === obj.componentId) || obj.def;
   if (!def) return false;
+  if (obj.isInstance && obj.def === def) {
+    // TRUE instance: obj.em IS def.em (shared geometry). Editing it edits the
+    // definition directly; rebuild the def once and every instance updates via
+    // the shared geometry (no per-sibling regeneration). Keep def's serialized
+    // arrays in sync for save.
+    try {
+      def.vertices = def.em.vertices.map(v => ({ x: v.x, y: v.y, z: v.z }));
+      def.faces = def.em.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) }));
+      def.edges = (def.em.edges || []).map(e => ({ a: e.a, b: e.b }));
+    } catch (_) {}
+    rebuildComponentDef(def);
+    return true;
+  }
   if (!obj.componentOrigin) obj.componentOrigin = _instanceAnchor(obj);
   const sourceAnchor = obj.componentOrigin;
   def.vertices = obj.em.vertices.map(v => ({
@@ -14330,6 +14361,7 @@ Tools.move = {
     }
     this.dragging = false; this.obj = null; this.objs = null;
     this.origVertsByObj = null; this.origMaskByObj = null; this._grabDeform = false;
+    this._instOrigMat = null;   // per-drag instance placement snapshots (Stage 4)
     this.sectionTarget = null;
     this.inferredAxis = null; this.activeAxis = null; this.activeDelta = null;
     this._lastCopyDelta = null; this._lastCopySourceObjs = null;
@@ -14686,6 +14718,18 @@ Tools.move = {
         for (let ti = 0; ti < targets.length; ti++) {
           const o = targets[ti];
           const origObj = this.objs[ti];
+          // INSTANCE move: compose the world translation into instanceMatrix
+          // (never bake into the shared def geometry). Capture the pre-move
+          // matrix once per drag (lazy; the map is reset on deactivate).
+          if (o.isInstance && !this.copyMode) {
+            if (!this._instOrigMat) this._instOrigMat = new Map();
+            if (!this._instOrigMat.has(o)) this._instOrigMat.set(o, (o.instanceMatrix || _IDENTITY4).clone());
+            o.instanceMatrix = new THREE.Matrix4().makeTranslation(delta.x, delta.y, delta.z).multiply(this._instOrigMat.get(o));
+            o.group.matrix.copy(o.instanceMatrix);
+            o.group.matrixWorldNeedsUpdate = true;
+            o.group.updateMatrixWorld(true);
+            continue;
+          }
           const isPartial = this.copyMode && this._clonePartial && this._clonePartial.get(o);
           if (isPartial) {
             const cloneOrig = this._cloneOrigVerts.get(o);
@@ -15236,6 +15280,17 @@ Tools.move = {
     for (let ti = 0; ti < targets.length; ti++) {
       const o = targets[ti];
       const origObj = this.objs[ti];
+      // INSTANCE: typed-distance move composes a world translation into the
+      // matrix (never bakes the shared def geometry).
+      if (o.isInstance && !this.copyMode) {
+        if (!this._instOrigMat) this._instOrigMat = new Map();
+        if (!this._instOrigMat.has(o)) this._instOrigMat.set(o, (o.instanceMatrix || _IDENTITY4).clone());
+        const dv = dir.clone().multiplyScalar(signedD);
+        o.instanceMatrix = new THREE.Matrix4().makeTranslation(dv.x, dv.y, dv.z).multiply(this._instOrigMat.get(o));
+        o.group.matrix.copy(o.instanceMatrix);
+        o.group.matrixWorldNeedsUpdate = true; o.group.updateMatrixWorld(true);
+        continue;
+      }
       const orig = this.origVertsByObj.get(origObj);
       // Respect the selection mask: when only a FACE/EDGE is selected, move just
       // those vertices — NOT the whole object. (Bug: typing a distance moved the
@@ -15505,9 +15560,24 @@ Tools.scale = {
     if (!targets) targets = this.copyMode ? this.copyObjs : this.objs;
     const origin = this.origin;
     if (!origin) return;
+    // Reset the instance-matrix snapshot when a new drag starts (tied to the
+    // origVertsByObj snapshot's identity — no deactivate hook needed).
+    if (this._instOrigForVerts !== this.origVertsByObj) { this._instOrigMat = new Map(); this._instOrigForVerts = this.origVertsByObj; }
     for (let ti = 0; ti < targets.length; ti++) {
       const o = targets[ti];
       const origObj = this.copyMode ? this.objs[ti] : o;
+      // INSTANCE: scale about the world origin by composing into instanceMatrix
+      // (never bake the shared def geometry).
+      if (o.isInstance) {
+        if (!this._instOrigMat.has(o)) this._instOrigMat.set(o, (o.instanceMatrix || _IDENTITY4).clone());
+        const S = new THREE.Matrix4().makeTranslation(origin.x, origin.y, origin.z)
+          .multiply(new THREE.Matrix4().makeScale(factors.x, factors.y, factors.z))
+          .multiply(new THREE.Matrix4().makeTranslation(-origin.x, -origin.y, -origin.z));
+        o.instanceMatrix = S.multiply(this._instOrigMat.get(o));
+        o.group.matrix.copy(o.instanceMatrix);
+        o.group.matrixWorldNeedsUpdate = true; o.group.updateMatrixWorld(true);
+        continue;
+      }
       const orig = this.origVertsByObj.get(origObj);
       if (!orig) continue;
       for (let i = 0; i < o.em.vertices.length; i++) {
@@ -15772,9 +15842,23 @@ Tools.rotate = {
   /* Apply rotation angle to the target objects. */
   _applyRotation(angle, targets) {
     if (!targets) return;
+    if (this._instOrigForVerts !== this.origVertsByObj) { this._instOrigMat = new Map(); this._instOrigForVerts = this.origVertsByObj; }
     for (let ti = 0; ti < targets.length; ti++) {
       const o = targets[ti];
       const origObj = this.objs[ti];
+      // INSTANCE: rotate about (center, axis) by composing into instanceMatrix
+      // (never bake the shared def geometry).
+      if (o.isInstance) {
+        if (!this._instOrigMat.has(o)) this._instOrigMat.set(o, (o.instanceMatrix || _IDENTITY4).clone());
+        const c = this.center;
+        const R = new THREE.Matrix4().makeTranslation(c.x, c.y, c.z)
+          .multiply(new THREE.Matrix4().makeRotationAxis(this.axis, angle))
+          .multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+        o.instanceMatrix = R.multiply(this._instOrigMat.get(o));
+        o.group.matrix.copy(o.instanceMatrix);
+        o.group.matrixWorldNeedsUpdate = true; o.group.updateMatrixWorld(true);
+        continue;
+      }
       const orig = this.origVertsByObj.get(origObj);
       if (!orig) continue;
       for (let i = 0; i < o.em.vertices.length; i++) {
