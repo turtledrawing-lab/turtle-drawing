@@ -6969,6 +6969,32 @@ function createComponentInstance(def, matrix) {
   return so;
 }
 
+/* Reconstruct a TRUE instance from a serialized record {defId, matArr:[16]}.
+   Used by undo restore + file load. Finds the def in Model.components (building
+   its shared em/geometry on first use), then creates a real shared instance.
+   Returns the instance, or null if the def is missing (caller falls back to a
+   baked object so nothing is lost). */
+function reconstructInstanceFromRecord(defId, matArr) {
+  if (!defId || !Model.components) return null;
+  const def = Model.components.find(c => c.id === defId);
+  if (!def) return null;
+  if (!def.em || !def.geometry) { try { rebuildComponentDef(def); } catch (_) { return null; } }
+  const m = (matArr && matArr.length === 16) ? new THREE.Matrix4().fromArray(matArr) : new THREE.Matrix4();
+  return createComponentInstance(def, m);
+}
+
+/* World-space vertices of an object. For an instance o.em is def-LOCAL, so
+   transform by the group's world matrix — serializers store WORLD coords (same
+   as every non-instance object) for self-consistency + back-compat. */
+function objWorldVertices(o) {
+  if (o.isInstance && o.instanceMatrix) {
+    o.group.updateMatrixWorld(true);
+    const M = o.group.matrixWorld;
+    return o.em.vertices.map(v => v.clone().applyMatrix4(M));
+  }
+  return o.em.vertices;
+}
+
 /* ENTER a component instance to edit its geometry (double-click, like a group).
    The instance is temporarily "opened" into a WORLD-space normal object so every
    tool (select, hover, snap, push/pull) works without per-tool transform math;
@@ -7458,13 +7484,19 @@ function removeObject(obj) {
   // Free GPU buffers NOW. Without this every undo / redo / tab switch / file
   // open leaked the entire previous model's WebGL geometry until the context
   // died ("blank canvas" on big models). Materials are per-object too.
+  // An INSTANCE's mesh.geometry === def.geometry (and edges === def.edgeGeometry)
+  // — SHARED by the definition + every sibling instance. Disposing it here would
+  // free GPU buffers the survivors still render (deleting one of N instances, or
+  // undo removing a non-kept instance, blanked the rest). Only dispose geometry
+  // an object actually OWNS. The def disposes its own geometry in rebuildComponentDef.
+  const _ownsGeom = !obj.isInstance && !obj._sharedGeom;
   try {
     if (obj.mesh) {
-      if (obj.mesh.geometry) obj.mesh.geometry.dispose();
+      if (_ownsGeom && obj.mesh.geometry) obj.mesh.geometry.dispose();
       if (obj.mat && obj.mat.dispose) obj.mat.dispose();
     }
     if (obj.edges) {
-      if (obj.edges.geometry) obj.edges.geometry.dispose();
+      if (_ownsGeom && obj.edges.geometry) obj.edges.geometry.dispose();
       if (obj.edgeMat && obj.edgeMat.dispose) obj.edgeMat.dispose();
     }
     if (obj._proxy) {
@@ -8094,6 +8126,11 @@ function snapshot() {
         uvBounds:     o._uvBounds ? { ...o._uvBounds } : null,
         componentId:  o.componentId || null,
         componentOrigin: o.componentOrigin ? { ...o.componentOrigin } : null,
+        // Component instance: restore re-links to the shared def + matrix rather
+        // than baking the cloned (def-LOCAL) em above.
+        isInstance:   !!o.isInstance,
+        defId:        (o.isInstance && o.def) ? o.def.id : null,
+        instanceMatrix: o.isInstance && o.instanceMatrix ? o.instanceMatrix.toArray() : null,
       };
     }),
     layers: JSON.parse(JSON.stringify(Model.layers)),
@@ -8130,13 +8167,19 @@ function snapshot() {
       text:     a.text || '',
       layerId:  a.layerId || 'Layer0',
     })),
-    components: (Model.components || []).map(c => ({
-      id: c.id, name: c.name,
-      pivot:    { ...c.pivot },
-      vertices: c.vertices.map(v => ({ ...v })),
-      faces:    c.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
-      edges:    (c.edges || []).map(e => ({ a: e.a, b: e.b })),
-    })),
+    components: (Model.components || []).map(c => {
+      const em = c.em;
+      return {
+        id: c.id, name: c.name,
+        pivot:    c.pivot ? { ...c.pivot } : { x: 0, y: 0, z: 0 },
+        materialId: c.materialId || null,
+        editGen:  c._editGen || 0,   // change marker — bumped by rebuildComponentDef
+        vertices: em ? em.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })) : (c.vertices || []).map(v => ({ ...v })),
+        faces:    em ? em.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) }))
+                     : (c.faces || []).map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
+        edges:    em ? (em.edges || []).map(e => ({ a: e.a, b: e.b })) : (c.edges || []).map(e => ({ a: e.a, b: e.b })),
+      };
+    }),
   };
 }
 function pushHistory(label) {
@@ -8204,6 +8247,10 @@ function restore(entry) {
   // Bulk mode: one outliner render + one section-fill rebuild at the END,
   // not per removed/recreated object (O(N²) DOM + N fill recomputes before).
   window._bulkRestore = true;
+  // Also suppress addObject's per-object outliner/visibility refresh (each
+  // reconstructed instance routes through addObject — would be O(n²) otherwise).
+  const _prevSuppressR = Model._suppressAddRefresh;
+  Model._suppressAddRefresh = true;
   try {
   // DELTA RESTORE: keep live objects whose snapshot entry matches their
   // identity (uid), edit generation, and material/render flags — undo then
@@ -8213,6 +8260,43 @@ function restore(entry) {
   for (const o of Model.objects) if (o && o._uid != null) _byUid.set(o._uid, o);
   const _keep = new Set();
   const _newList = [];
+  // Restore component definitions FIRST so instances can re-link to the shared
+  // def. Reconcile IN PLACE by id — a def kept across this undo keeps its object
+  // identity so kept-in-place instances (which still point at it) stay linked.
+  // Only rebuild a def whose geometry actually changed (cheap count+endpoint
+  // check) — otherwise rebuilding every def on every undo would be O(defs).
+  {
+    const _liveDefById = new Map((Model.components || []).map(c => [c.id, c]));
+    const _next = [];
+    const _mkV = (arr) => (arr || []).map(v => ({ x: v.x, y: v.y, z: v.z }));
+    const _mkF = (arr) => (arr || []).map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) }));
+    const _mkE = (arr) => (arr || []).map(e => ({ a: e.a, b: e.b }));
+    for (const cs of (entry.components || [])) {
+      let def = _liveDefById.get(cs.id);
+      if (def) {
+        def.name = cs.name; def.materialId = cs.materialId || null;
+        def.pivot = cs.pivot ? { ...cs.pivot } : (def.pivot || { x: 0, y: 0, z: 0 });
+        // Did the geometry change vs the snapshot? Use the def's _editGen change
+        // marker (bumped by every rebuildComponentDef) — same robust mechanism as
+        // _keepCompatible's per-object gen check. A vertex-sample heuristic missed
+        // interior-vertex edits and silently no-op'd undo of a component edit.
+        const liveGen = def._editGen || 0;
+        const snapGen = (cs.editGen != null) ? cs.editGen : -1;
+        if (liveGen !== snapGen) {
+          def.vertices = _mkV(cs.vertices); def.faces = _mkF(cs.faces); def.edges = _mkE(cs.edges);
+          def.em = null;
+          try { rebuildComponentDef(def); } catch (_) {}   // rebuilds em+geometry + re-points live instances
+          def._editGen = snapGen;                           // track the restored-to state so a repeat undo is a no-op
+        }
+      } else {
+        def = { id: cs.id, name: cs.name, materialId: cs.materialId || null,
+                pivot: cs.pivot ? { ...cs.pivot } : { x: 0, y: 0, z: 0 },
+                vertices: _mkV(cs.vertices), faces: _mkF(cs.faces), edges: _mkE(cs.edges) };
+      }
+      _next.push(def);
+    }
+    Model.components = _next;
+  }
   const _keepCompatible = (o, s) => {
     const eq = (a, b) => (a == null ? null : a) === (b == null ? null : b);
     try {
@@ -8244,6 +8328,14 @@ function restore(entry) {
       if (s.castShadow != null && cur.mesh) cur.mesh.castShadow = s.castShadow;
       cur.componentId = s.componentId || null;
       cur.componentOrigin = s.componentOrigin ? { ...s.componentOrigin } : null;
+      // A moved/scaled/rotated instance is "kept" (its def.em is unchanged), so
+      // its placement lives ONLY in instanceMatrix — restore it explicitly or
+      // undo of a transform wouldn't move it back.
+      if (s.isInstance && cur.isInstance && s.instanceMatrix && s.instanceMatrix.length === 16) {
+        cur.instanceMatrix = new THREE.Matrix4().fromArray(s.instanceMatrix);
+        cur.group.matrix.copy(cur.instanceMatrix);
+        cur.group.matrixWorldNeedsUpdate = true; cur.group.updateMatrixWorld(true);
+      }
       _keep.add(cur);
       s._keptObj = cur;
     }
@@ -8257,6 +8349,41 @@ function restore(entry) {
       _newList.push(s._keptObj);
       delete s._keptObj;
       continue;
+    }
+    // Component instance: re-create a TRUE shared instance from defId + matrix
+    // rather than baking the cloned (def-LOCAL) em. Falls through if the def is
+    // gone (shouldn't happen — components are restored above).
+    if (s.isInstance && s.defId) {
+      const inst = reconstructInstanceFromRecord(s.defId, s.instanceMatrix);
+      if (inst) {
+        inst.name = s.name;
+        inst.visible = s.visible; inst.setVisible(s.visible);
+        inst.locked = s.locked; inst.hidden = !!s.hidden;
+        inst.groupId = s.groupId || null;
+        if (s.componentOrigin) inst.componentOrigin = { ...s.componentOrigin };
+        if (s.edgeColor != null && inst.edgeMat) { inst._baseEdgeColor = s.edgeColor; inst.edgeMat.color.setHex(s.edgeColor); inst.edgeMat.needsUpdate = true; }
+        // Per-instance material appearance lives on inst.mat (not the def). The
+        // reconstructed instance starts with a default white material, so a
+        // recolor/opacity/shadow change is exactly what failed _keepCompatible and
+        // routed it here — restore those or undo of a recolor would come back white.
+        inst.materialId = s.materialId || null;
+        if (s.matColor != null) inst.mat.color.setHex(s.matColor);
+        if (s.matOpacity != null) inst.mat.opacity = s.matOpacity;
+        if (s.matTransparent != null) inst.mat.transparent = s.matTransparent;
+        if (s.matDepthWrite != null) inst.mat.depthWrite = s.matDepthWrite;
+        if (s.castShadow != null && inst.mesh) inst.mesh.castShadow = s.castShadow;
+        if (inst.materialId) {
+          let matDef = (typeof MATERIALS !== 'undefined') ? MATERIALS.find(m => m.id === inst.materialId) : null;
+          if (!matDef && typeof ImportedMaterials !== 'undefined') matDef = ImportedMaterials.find(m => m.id === inst.materialId);
+          if (matDef && typeof applyMaterialToObject === 'function') { try { applyMaterialToObject(inst, matDef); } catch (_) {} }
+        }
+        inst.mat.needsUpdate = true;
+        inst.layerId = s.layerId;
+        if (s.uid != null) inst._uid = s.uid;
+        if (s.gen != null) inst._editGen = s.gen;
+        _newList.push(inst);
+        continue;
+      }
     }
     const emClone = s.em.clone();
     if (s.em._smoothShade) emClone._smoothShade = true;
@@ -8423,15 +8550,10 @@ function restore(entry) {
     layerId: a.layerId || 'Layer0',
   }));
   Model.selectedAnnIds = new Set();
-  Model.components = (entry.components || []).map(c => ({
-    id: c.id, name: c.name,
-    pivot: { ...c.pivot },
-    vertices: c.vertices.map(v => ({ ...v })),
-    faces: c.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
-    edges: (c.edges || []).map(e => ({ a: e.a, b: e.b })),
-  }));
+  // Model.components already restored at the top of restore() (before objects).
   } finally {
     window._bulkRestore = false;
+    Model._suppressAddRefresh = _prevSuppressR;
   }
   try { renderOutliner(); } catch (_) {}
   try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {}
@@ -15343,25 +15465,39 @@ Tools.move = {
         const _boundary = Model.activeGroupId;
         const groupIdMap = cloneGroupsForCopy(srcObjs, _boundary);
         for (const src of srcObjs) {
-          const cloneEm = src.em.clone();
-          const cloneObj = new SketchObject(cloneEm, src.name + ' (copy)');
-          cloneObj.layerId = src.layerId;
-          cloneObj.groupId = mappedCopyGroupId(src.groupId, groupIdMap, _boundary);
-          if (src.componentId) {
-            cloneObj.componentId = src.componentId;
-            const o = src.componentOrigin || { x: 0, y: 0, z: 0 };
-            cloneObj.componentOrigin = {
-              x: o.x + delta.x * k,
-              y: o.y + delta.y * k,
-              z: o.z + delta.z * k,
-            };
+          let cloneObj;
+          if (src.isInstance && src.def && typeof createComponentInstance === 'function') {
+            // True instance copy: SHARE the def, place at src's matrix translated
+            // by k×delta in WORLD space. Cloning src.em (def-LOCAL) into a plain
+            // object would bake copies #2..n at the wrong position (the bug).
+            const m = (src.instanceMatrix ? src.instanceMatrix.clone() : new THREE.Matrix4());
+            m.premultiply(new THREE.Matrix4().makeTranslation(delta.x * k, delta.y * k, delta.z * k));
+            cloneObj = createComponentInstance(src.def, m);
+            if (!cloneObj) continue;
+            cloneObj.name = src.name + ' (copy)';
+            cloneObj.layerId = src.layerId;
+            cloneObj.groupId = mappedCopyGroupId(src.groupId, groupIdMap, _boundary);
+          } else {
+            const cloneEm = src.em.clone();
+            cloneObj = new SketchObject(cloneEm, src.name + ' (copy)');
+            cloneObj.layerId = src.layerId;
+            cloneObj.groupId = mappedCopyGroupId(src.groupId, groupIdMap, _boundary);
+            if (src.componentId) {
+              cloneObj.componentId = src.componentId;
+              const o = src.componentOrigin || { x: 0, y: 0, z: 0 };
+              cloneObj.componentOrigin = {
+                x: o.x + delta.x * k,
+                y: o.y + delta.y * k,
+                z: o.z + delta.z * k,
+              };
+            }
+            // Offset = k × delta from original position
+            for (let i = 0; i < cloneObj.em.vertices.length; i++) {
+              cloneObj.em.vertices[i].addScaledVector(delta, k);
+            }
+            addObject(cloneObj);
+            cloneObj.rebuild();
           }
-          // Offset = k × delta from original position
-          for (let i = 0; i < cloneObj.em.vertices.length; i++) {
-            cloneObj.em.vertices[i].addScaledVector(delta, k);
-          }
-          addObject(cloneObj);
-          cloneObj.rebuild();
         }
       }
       pushHistory('Array Copy ×' + n);
@@ -16030,11 +16166,22 @@ Tools.rotate = {
     const _boundary = Model.activeGroupId;
     const _grpMap = cloneGroupsForCopy(this.objs, _boundary);
     for (const o of this.objs) {
-      const cloneEm = o.em.clone();
-      const cloneObj = new SketchObject(cloneEm, o.name + ' (copy)');
-      cloneObj.layerId = o.layerId;
-      cloneObj.groupId = mappedCopyGroupId(o.groupId, _grpMap, _boundary);
-      addObject(cloneObj);
+      let cloneObj;
+      if (o.isInstance && o.def && typeof createComponentInstance === 'function') {
+        // True instance copy: SHARE the def, start at the source's matrix; the
+        // rotation below composes into instanceMatrix (never bake def-LOCAL em).
+        cloneObj = createComponentInstance(o.def, o.instanceMatrix ? o.instanceMatrix.clone() : new THREE.Matrix4());
+        if (!cloneObj) continue;
+        cloneObj.name = o.name + ' (copy)';
+        cloneObj.layerId = o.layerId;
+        cloneObj.groupId = mappedCopyGroupId(o.groupId, _grpMap, _boundary);
+      } else {
+        const cloneEm = o.em.clone();
+        cloneObj = new SketchObject(cloneEm, o.name + ' (copy)');
+        cloneObj.layerId = o.layerId;
+        cloneObj.groupId = mappedCopyGroupId(o.groupId, _grpMap, _boundary);
+        addObject(cloneObj);
+      }
       this.copyObjs.push(cloneObj);
     }
     this.copyMode = true;
@@ -16424,16 +16571,31 @@ Tools.rotate = {
         const _boundary = Model.activeGroupId;
         const _grpMap = cloneGroupsForCopy(srcObjs, _boundary);
         for (const src of srcObjs) {
-          const cloneEm = src.em.clone();
-          const cloneObj = new SketchObject(cloneEm, src.name + ' (copy)');
-          cloneObj.layerId = src.layerId;
-          cloneObj.groupId = mappedCopyGroupId(src.groupId, _grpMap, _boundary);
-          for (let i = 0; i < cloneObj.em.vertices.length; i++) {
-            const v = cloneObj.em.vertices[i].clone().sub(center);
-            v.applyAxisAngle(axis, ang);
-            cloneObj.em.vertices[i].copy(center).add(v);
+          let cloneObj;
+          if (src.isInstance && src.def && typeof createComponentInstance === 'function') {
+            // True instance copy: SHARE the def, place at src's matrix rotated by
+            // `ang` about (center, axis) in WORLD space (never bake def-LOCAL em).
+            const R = new THREE.Matrix4().makeTranslation(center.x, center.y, center.z)
+              .multiply(new THREE.Matrix4().makeRotationAxis(axis, ang))
+              .multiply(new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z));
+            const m = R.multiply(src.instanceMatrix ? src.instanceMatrix.clone() : new THREE.Matrix4());
+            cloneObj = createComponentInstance(src.def, m);
+            if (!cloneObj) continue;
+            cloneObj.name = src.name + ' (copy)';
+            cloneObj.layerId = src.layerId;
+            cloneObj.groupId = mappedCopyGroupId(src.groupId, _grpMap, _boundary);
+          } else {
+            const cloneEm = src.em.clone();
+            cloneObj = new SketchObject(cloneEm, src.name + ' (copy)');
+            cloneObj.layerId = src.layerId;
+            cloneObj.groupId = mappedCopyGroupId(src.groupId, _grpMap, _boundary);
+            for (let i = 0; i < cloneObj.em.vertices.length; i++) {
+              const v = cloneObj.em.vertices[i].clone().sub(center);
+              v.applyAxisAngle(axis, ang);
+              cloneObj.em.vertices[i].copy(center).add(v);
+            }
+            addObject(cloneObj); cloneObj.rebuild();
           }
-          addObject(cloneObj); cloneObj.rebuild();
         }
       }
       pushHistory('Array Rotate \u00D7' + n);
@@ -24624,7 +24786,7 @@ window.currentFilePath = window.currentFilePath || null;
    that an older app can't safely read it. openTT() warns when a file's version
    exceeds this, so beta files degrade gracefully across updates instead of
    silently mis-loading. */
-const TT_VERSION = 2;
+const TT_VERSION = 3;   // v3: component instances (defId + instanceMatrix) + Model.components serialized
 function sceneToDoc() {
   return {
     format: 'turtle-drawing',
@@ -24674,6 +24836,13 @@ function sceneToDoc() {
       uvBounds:     o._uvBounds ? { ...o._uvBounds } : null,
       componentId:  o.componentId || null,
       componentOrigin: o.componentOrigin ? { ...o.componentOrigin } : null,
+      // Component instance: shared-definition + per-instance placement matrix.
+      // The loader rebuilds the def once and re-creates a real shared instance;
+      // `vertices` below still hold WORLD coords (via objWorldVertices) so an
+      // older app — or any non-instance-aware reader — renders it baked.
+      isInstance:   !!o.isInstance,
+      defId:        (o.isInstance && o.def) ? o.def.id : null,
+      instanceMatrix: o.isInstance && o.instanceMatrix ? o.instanceMatrix.toArray() : null,
       // AD metadata (per-object material + per-section hatch overrides).
       ad: o.ad ? {
         kind: o.ad.kind || null,
@@ -24687,7 +24856,7 @@ function sceneToDoc() {
               .filter(([spId]) => spId)
           : [],
       } : null,
-      vertices: o.em.vertices.map(v => [
+      vertices: objWorldVertices(o).map(v => [
         +(v.x * 1000).toFixed(3),
         +(v.y * 1000).toFixed(3),
         +(v.z * 1000).toFixed(3),
@@ -24786,6 +24955,22 @@ function sceneToDoc() {
       } catch (e) { console.warn('[save] texture export error', e); }
       return out;
     }),
+    // Component definitions (shared geometry, def-LOCAL coords). Instances above
+    // reference these by defId + carry their own instanceMatrix. Serialize from
+    // the live def.em (authoritative) when present, else the data arrays.
+    components: (Model.components || []).map(c => {
+      const em = c.em;
+      const verts = em ? em.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })) : (c.vertices || []).map(v => ({ x: v.x, y: v.y, z: v.z }));
+      const faces = em ? em.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) }))
+                       : (c.faces || []).map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) }));
+      const edges = em ? (em.edges || []).map(e => ({ a: e.a, b: e.b })) : (c.edges || []).map(e => ({ a: e.a, b: e.b }));
+      return {
+        id: c.id, name: c.name,
+        pivot: c.pivot ? { ...c.pivot } : { x: 0, y: 0, z: 0 },
+        materialId: c.materialId || null,
+        vertices: verts, faces, edges,
+      };
+    }),
   };
 }
 
@@ -24797,6 +24982,9 @@ async function loadDocIntoScene(doc) {
   // Bulk mode: one outliner render + one section-fill rebuild at the END
   // (was O(N²) outliner DOM + per-object fill recomputes on big files).
   window._bulkRestore = true;
+  // Suppress addObject's per-object refresh too (instances route through it).
+  const _prevSuppressL = Model._suppressAddRefresh;
+  Model._suppressAddRefresh = true;
   try {
   // Clear current scene
   for (const o of Model.objects.slice()) removeObject(o);
@@ -24830,12 +25018,70 @@ async function loadDocIntoScene(doc) {
   // so addSectionPlane's bbox-based size comes out correct.
   const spIdMap = new Map();
 
+  // Restore component definitions BEFORE objects, so instances can re-link to
+  // their shared def. def.em/geometry are built lazily on first instance.
+  Model.components = (doc.components || []).map(c => ({
+    id: c.id, name: c.name,
+    pivot: c.pivot ? { ...c.pivot } : { x: 0, y: 0, z: 0 },
+    materialId: c.materialId || null,
+    vertices: (c.vertices || []).map(v => ({ ...v })),
+    faces: (c.faces || []).map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
+    edges: (c.edges || []).map(e => ({ a: e.a, b: e.b })),
+  }));
+
   // Restore objects
   const scale = doc.unit === 'mm' ? 0.001 : 1;  // file mm → internal m
   const _objTotal = (doc.objects || []).length;
   const _bigLoad = _objTotal > 120;   // chunk big files so the build never freezes
   let _loadIdx = 0;
   for (const od of (doc.objects || [])) {
+    // Component instance: re-create a TRUE shared instance from defId + matrix
+    // (def is meters-native, so its matrix needs no unit scaling). Falls through
+    // to the baked path below only if the def is missing (older/partial file).
+    if (od.isInstance && od.defId) {
+      const inst = reconstructInstanceFromRecord(od.defId, od.instanceMatrix);
+      if (inst) {
+        inst.name = od.name || inst.name;
+        inst.layerId = od.layerId || 'Layer0';
+        inst.visible = od.visible !== false;
+        inst.locked = !!od.locked;
+        inst.groupId = od.groupId || null;
+        if (od.componentOrigin) inst.componentOrigin = { ...od.componentOrigin };
+        if (od.edgeColor != null && inst.edgeMat) { inst._baseEdgeColor = od.edgeColor; inst.edgeMat.color.setHex(od.edgeColor); inst.edgeMat.needsUpdate = true; }
+        // Built-in material (glass/concrete/…) lives in the per-instance o.mat,
+        // not the def — re-apply it (imported materials are re-linked post-load).
+        if (od.materialId) {
+          inst.materialId = od.materialId;
+          if (typeof MATERIALS !== 'undefined') {
+            const matDef = MATERIALS.find(m => m.id === od.materialId);
+            if (matDef && typeof applyMaterialToObject === 'function') { try { applyMaterialToObject(inst, matDef); } catch (_) {} }
+          }
+        }
+        // AD metadata (material kind, cut behavior, surface/section hatch). The
+        // later hatchAt re-wiring loop needs inst.ad to exist, so set it here.
+        if (od.ad) {
+          if (window.AD && AD.Core && AD.Core.ensureMetadata) AD.Core.ensureMetadata(inst);
+          if (inst.ad) {
+            inst.ad.kind        = od.ad.kind || null;
+            inst.ad.material    = od.ad.material || null;
+            inst.ad.struct      = !!od.ad.struct;
+            inst.ad.cutBehavior = od.ad.cutBehavior || 'render';
+            inst.ad.level       = od.ad.level || null;
+            inst.ad.hatchAt     = new Map();
+            for (const [spId, hatchId] of (od.ad.hatchAt || [])) {
+              const sp = spIdMap.get(spId);
+              if (sp && hatchId) inst.ad.hatchAt.set(sp, hatchId);
+            }
+            if (inst.ad.material && window.AD && AD.HatchLines && AD.HatchLines.apply) {
+              try { AD.HatchLines.apply(inst, inst.ad.material); } catch (_) {}
+            }
+          }
+        }
+        if (_bigLoad && (++_loadIdx % 25 === 0)) { try { setStatus('msg', '여는 중… ' + _loadIdx + ' / ' + _objTotal); } catch (_) {} await new Promise((r) => setTimeout(r, 0)); }
+        continue;
+      }
+      // def missing → fall through and load the baked world geometry instead.
+    }
     const em = new EditableMesh();
     if (od.smoothShade) em._smoothShade = true;
     for (const v of od.vertices) {
@@ -25150,6 +25396,7 @@ async function loadDocIntoScene(doc) {
   }
   } finally {
     window._bulkRestore = false;
+    Model._suppressAddRefresh = _prevSuppressL;
   }
   // Rebuild the nested-group registry: prefer the doc's group tree (v3+), else
   // synthesize a flat one-level tree from object groupIds (legacy/flat docs).
@@ -25163,7 +25410,9 @@ async function loadDocIntoScene(doc) {
       ? doc.activeGroupPath.filter(id => Model.groups.has(id)) : [];
   } catch (_) {}
   try { renderOutliner(); } catch (_) {}
+  try { applyLayerVisibility(); } catch (_) {}   // final pass — per-object refresh was suppressed during load
   try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {}
+  try { if (typeof renderComponentList === 'function') renderComponentList(); } catch (_) {}
   drawOverlay();
 }
 
