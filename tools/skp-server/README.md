@@ -16,6 +16,31 @@ are **Windows-only** (`sketchup.cp3xx-win_amd64.pyd` + `SketchUpAPI.dll`). The
 official macOS SDK download is currently down. So run this on a Windows host
 (a small cloud VM or a Windows PC).
 
+## Setup (macOS) — the working path here
+This repo ships a **macOS** binding in `runtime-macos/` (`sketchup.so` +
+`SketchUpAPI.framework`, **proprietary + gitignored**). On this Mac the server
+runs directly against it — no Windows host needed:
+
+```
+npm run skp:serve            # → http://localhost:8787  (REAL convert.py)
+# or: bash tools/skp-server/serve-macos.sh --port 8787 --origin '*'
+```
+
+Python must match the binding (here **python@3.10**); override with
+`TD_SKP_PYTHON=/path/to/python3.x`. Smoke-test the converter alone:
+`PYTHONPATH=runtime-macos python3.10 runtime-macos/convert.py model.skp out.glb`.
+
+Using it from the web app:
+- **http://localhost…** — the `.skp` menu auto-enables and defaults the endpoint
+  to `http://localhost:8787/convert`.
+- **https://tdw.kr** — visit once as `tdw.kr/?skp=http://localhost:8787/convert`
+  to enable the menu + set the endpoint. Chrome treats `http://localhost` as a
+  secure origin, so the https→localhost upload is allowed (**use Chrome**; Safari
+  blocks it). The `.skp` is uploaded to *your own* machine, not a third party.
+
+The server emits **instanced** glb (one mesh per repeated component + N nodes), so
+the web import preserves full SketchUp depth — same as the desktop offline path.
+
 ## ⚠️ Licensing
 `SketchUpAPI.dll` and the `sketchup` binding are **Trimble proprietary** (SketchUp
 SDK EULA) — they are **NOT** committed to this repo (see `.gitignore`). You, as a

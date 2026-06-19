@@ -16,7 +16,8 @@
     "release": "bash build/release.sh",
     "release:install": "bash build/release.sh --install",
     "build:web": "bash build/web.sh",
-    "release:all": "bash build/release-all.sh"
+    "release:all": "bash build/release-all.sh",
+    "skp:serve": "bash tools/skp-server/serve-macos.sh"
   },
   "devDependencies": {
     "electron": "^31.0.0",
