@@ -25685,10 +25685,13 @@ function exportOBJ() {
   let vertOffset = 1; // OBJ is 1-indexed
   for (const obj of Model.objects) {
     if (!obj.em.vertices.length) continue;
+    // Instances store em in def-LOCAL coords — bake matrixWorld so the export
+    // matches the viewport. Indices/order are unchanged, so faces/edges align.
+    const verts = objWorldVertices(obj);
     lines.push('');
     lines.push('o ' + obj.name.replace(/\s+/g, '_'));
     lines.push('g ' + obj.name.replace(/\s+/g, '_'));
-    for (const v of obj.em.vertices) {
+    for (const v of verts) {
       lines.push('v ' + v.x.toFixed(6) + ' ' + v.y.toFixed(6) + ' ' + v.z.toFixed(6));
     }
     for (const f of obj.em.faces) {
@@ -25698,7 +25701,7 @@ function exportOBJ() {
     for (const e of obj.em.edges) {
       lines.push('l ' + (e.a + vertOffset) + ' ' + (e.b + vertOffset));
     }
-    vertOffset += obj.em.vertices.length;
+    vertOffset += verts.length;
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
@@ -25876,11 +25879,14 @@ function exportSTL() {
     const layer = Model.layers.find(l => l.id === obj.layerId);
     if (layer && layer.visible === false) continue;
     const em = obj.em;
+    // Instances store em in def-LOCAL coords — bake matrixWorld so the export
+    // matches the viewport. Triangulation indices are unchanged.
+    const verts = objWorldVertices(obj);
     for (const f of em.faces) {
       let ftris;
       try { ftris = em.triangulateFace(f); } catch (_) { continue; }
       for (const t of ftris) {
-        const a = em.vertices[t[0]], b = em.vertices[t[1]], c = em.vertices[t[2]];
+        const a = verts[t[0]], b = verts[t[1]], c = verts[t[2]];
         if (a && b && c) tris.push([a, b, c]);
       }
     }
@@ -25959,13 +25965,16 @@ async function export3DM() {
   for (const obj of Model.objects) {
     if (!obj || !obj.em) continue;
     const em = obj.em;
+    // Instances store em in def-LOCAL coords — bake matrixWorld so the export
+    // matches the viewport. Indices are unchanged, so faces/edges still align.
+    const wverts = objWorldVertices(obj);
     // ----- Mesh (faces) -----
     if (em.faces && em.faces.length) {
       const mesh = new rhino.Mesh();
       const verts = mesh.vertices();
       // Turtle Y-up → Rhino Z-up (mirrors importRhino3dm's inverse rotation,
       // so Turtle→Rhino→Turtle round-trips exactly and models stand upright).
-      for (const v of em.vertices) verts.add(v.x, -v.z, v.y);
+      for (const v of wverts) verts.add(v.x, -v.z, v.y);
       const faces = mesh.faces();
       for (const f of em.faces) {
         const vs = f.verts;
@@ -25992,7 +26001,7 @@ async function export3DM() {
     // ----- Standalone edges -----
     if (em.edges && em.edges.length) {
       for (const e of em.edges) {
-        const a = em.vertices[e.a], b = em.vertices[e.b];
+        const a = wverts[e.a], b = wverts[e.b];
         if (!a || !b) continue;
         const line = new rhino.Line([a.x, -a.z, a.y], [b.x, -b.z, b.y]);
         const lc = new rhino.LineCurve(line);
