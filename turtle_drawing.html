@@ -6995,6 +6995,20 @@ function objWorldVertices(o) {
   return o.em.vertices;
 }
 
+/* GATE for geometry-editing tools: returns true (and shows a hint) when `obj` is
+   a component instance NOT currently being edited. An instance's o.em is the
+   SHARED def.em, so editing it from outside silently changes every sibling — so
+   we block it and tell the user to double-click in (or Make Unique), exactly
+   like the push/pull tool already does. Returns false for normal objects and for
+   the instance you're inside (Model.activeComponentSource). */
+function blockInstanceEdit(obj) {
+  if (obj && obj.isInstance && Model.activeComponentSource !== obj) {
+    setStatus('msg', '컴포넌트는 더블클릭으로 들어가서 편집하세요 / Double-click the component to edit (changes all instances); use Make Unique to edit just one.');
+    return true;
+  }
+  return false;
+}
+
 /* ENTER a component instance to edit its geometry (double-click, like a group).
    The instance is temporarily "opened" into a WORLD-space normal object so every
    tool (select, hover, snap, push/pull) works without per-tool transform math;
@@ -11577,6 +11591,35 @@ function computeSnap(e, opts = {}) {
     (!_snapEditing || isInActiveSubtree(o))
   );
 
+  // STAGE 3 — snap transform-aware for component instances. Snapping is done in
+  // SCREEN space (worldToScreen) so candidate geometry must be in WORLD coords.
+  // An instance's em IS the shared def.em (def-LOCAL), so for the snap scan we
+  // swap in a WORLD-transformed clone (cached per matrix+geometry), then restore
+  // in the finally below. instanceMatrix is cleared during the swap so
+  // computeBBox (called in a couple of quick-rejects) reads the world em as-is
+  // instead of double-transforming it. o.mesh (used by occlusion raycasts) is
+  // already world-correct, so it's left untouched.
+  const _snapEmSwap = [];
+  for (const o of Model.objects) {
+    if (o.isInstance && o.instanceMatrix && o.def && o.em === o.def.em) {
+      try {
+        o.group.updateMatrixWorld(true);
+        const M = o.group.matrixWorld;
+        const key = M.elements.join(',') + '|' + (o.def._editGen || 0);
+        let w = (o._snapWorldEmKey === key) ? o._snapWorldEm : null;
+        if (!w) {
+          w = o.em.clone();
+          for (const v of w.vertices) v.applyMatrix4(M);
+          for (const f of w.faces) { try { w.computeFaceNormal(f); } catch (_) {} }
+          o._snapWorldEm = w; o._snapWorldEmKey = key;
+        }
+        _snapEmSwap.push([o, o.em, o.instanceMatrix]);
+        o.em = w; o.instanceMatrix = null;
+      } catch (_) {}
+    }
+  }
+  try {
+
   // Screen-space proximity filter: many inference/extension scans should skip
   // edges that are far from the cursor (so faraway objects don't generate
   // distracting inference guides). Defined here so all scanners can use it.
@@ -12722,6 +12765,15 @@ function computeSnap(e, opts = {}) {
   if (best && skipGroups && best.obj && isOuterGroup(best.obj)) {
     best = { ...best, obj: null, face: null };
   }
+  // Instance snap: keep the WORLD snap point (correct for placement/drawing), but
+  // strip the obj/face refs — exactly like the outer-group case above. The face
+  // points into the discarded world-em CLONE, and an instance must never be a
+  // host for line-merge / face-split / offset (it would edit the shared def and
+  // appear on every instance). With obj=null the line tool creates a free-
+  // standing object at the snapped point instead of corrupting the definition.
+  if (best && best.obj && best.obj.isInstance && Model.activeComponentSource !== best.obj) {
+    best = { ...best, obj: null, face: null };
+  }
   // Endpoint-only mode (Dimension tool): suppress any non-vertex snap so
   // the dim grabs only corners. Falls back to no-snap (free placement)
   // if no endpoint is within range.
@@ -12731,6 +12783,11 @@ function computeSnap(e, opts = {}) {
   }
   currentSnap = best;
   return best;
+  } finally {
+    // Restore each instance's shared def.em + instanceMatrix (the world clone
+    // stays cached on o._snapWorldEm for the next frame).
+    for (const _s of _snapEmSwap) { _s[0].em = _s[1]; _s[0].instanceMatrix = _s[2]; }
+  }
 }
 
 /* Draw a colored dashed guide from snap.anchor to snap.point when the snap is
@@ -18249,6 +18306,7 @@ Tools.followMe = {
     const hits = raycastObjects(e, { skipOuterGroups: true });
     if (!hits.length) { setStatus('msg', 'Face(Profile) — click.'); return; }
     const obj = hits[0].object.userData.sketchObject;
+    if (blockInstanceEdit(obj)) return;   // follow-me edits the profile object's def
     const fi = obj.mesh.geometry.userData.faceIdxMap[hits[0].faceIndex];
     const face = obj.em.faces[fi];
     if (!face) return;
@@ -19078,6 +19136,8 @@ Tools.line = {
       for (const obj of objs) {
         if (!obj || !obj.group.visible || obj.locked) continue;
         if (obj.em._smoothShade) continue;
+        // Don't split a component instance's face — it edits the shared def.
+        if (obj.isInstance && Model.activeComponentSource !== obj) continue;
         for (const f of obj.em.faces) {
           if (!f.normal || !f.verts || f.verts.length < 3) continue;
           const p0 = obj.em.vertices[f.verts[0]];
@@ -19132,6 +19192,10 @@ Tools.line = {
     // 2) Otherwise, merge into an existing object (or create a new one) and
     //    add a freestanding edge. Check for closed loops after adding.
     let target = obj1 || obj2 || null;
+    // Never merge a freestanding edge into a component instance: its em is the
+    // shared def.em (def-LOCAL), so the world-coord edge would be stored wrong
+    // AND appear on every instance. Force a new free-standing object instead.
+    if (target && target.isInstance && Model.activeComponentSource !== target) target = null;
     // Find OTHER pure line-drawing objects whose standalone edges this new
     // segment actually crosses in 3D. They must merge into the target so the
     // crossing splits BOTH lines into separate edges (SketchUp-style sticky
@@ -19468,7 +19532,9 @@ Tools.rect = {
         if (face) {
           normal = face.normal.clone();
           hostNormal = face.normal.clone();
-          if (!obj && !isOuterGroup(hitObj)) obj = hitObj;
+          // Don't adopt a component instance as the host — merging would edit the
+          // shared def. Take its plane normal but leave the rect free-standing.
+          if (!obj && !isOuterGroup(hitObj) && !(hitObj.isInstance && Model.activeComponentSource !== hitObj)) obj = hitObj;
         }
       }
       if (!normal && obj) {
@@ -20013,7 +20079,9 @@ Tools.arc = {
     //     face's boundary, split that face using the arc polyline. ---
     const obj1 = this.snap1 && this.snap1.obj;
     const obj2 = this.snap2 && this.snap2.obj;
-    if (obj1 && obj2 && obj1 === obj2) {
+    // Don't split a component instance's face (edits the shared def) — fall
+    // through to a free-standing arc instead.
+    if (obj1 && obj2 && obj1 === obj2 && !(obj1.isInstance && Model.activeComponentSource !== obj1)) {
       const em = obj1.em;
       const P1 = pts[0], P2 = pts[pts.length - 1];
       const midpoint = P1.clone().add(P2).multiplyScalar(0.5);
@@ -20245,6 +20313,11 @@ Tools.offset = {
     // raw raycast would miss the face.
     const snap = computeSnap(e, { skipOuterGroups: true });
     const res = this._resolveFace(snap, e);
+    // No offset preview on a component you're not inside — its face verts are
+    // def-LOCAL (the preview would be mis-positioned) and offset is blocked.
+    if (res && res.obj && res.obj.isInstance && Model.activeComponentSource !== res.obj) {
+      this.hoverObj = null; this.hoverFace = null; helperRoot.clear(); return;
+    }
     if (res) { this.hoverObj = res.obj; this.hoverFace = res.face; }
     else { this.hoverObj = null; this.hoverFace = null; }
     this.highlight();
@@ -20267,6 +20340,7 @@ Tools.offset = {
         this.referencePoint = null;
       }
       if (!this.hoverFace || !this.hoverObj) return;
+      if (blockInstanceEdit(this.hoverObj)) { this.hoverObj = null; this.hoverFace = null; return; }
       this.active = true;
       this.faceCopy = this.hoverFace;
       this.lastDistance = 0;
@@ -22173,6 +22247,9 @@ Tools.erase = {
       if (Model.objects.indexOf(obj) < 0) continue; // welded away mid-loop
       if (!obj.group.visible || obj.locked) continue;
       if (typeof isOuterGroup === 'function' && isOuterGroup(obj)) continue;
+      // Skip component instances — brushing edges would edit the shared def and
+      // change every sibling. Double-click still erases the whole instance.
+      if (obj.isInstance && Model.activeComponentSource !== obj) continue;
       const em = obj.em;
       // Only kill STANDALONE edges in the brush radius — never face
       // boundary edges (those collapse faces into triangles, surprising
@@ -22504,6 +22581,7 @@ Tools.erase = {
     // the face behind it stealing the click.
     if (edgePick) {
       const obj = edgePick.obj;
+      if (blockInstanceEdit(obj)) return;   // erasing sub-geometry edits the shared def
       const killKey = _edgeKey(edgePick.a, edgePick.b);
       // 1. Drop a matching standalone edge entry, if any.
       const beforeStandalone = obj.em.edges.length;
@@ -22557,6 +22635,7 @@ Tools.erase = {
     // No edge under the cursor → fall through to a face ray.
     if (hits.length) {
       const obj = hits[0].object.userData.sketchObject;
+      if (blockInstanceEdit(obj)) return;   // erasing a face edits the shared def
       const fi  = obj.mesh.geometry.userData.faceIdxMap
         ? obj.mesh.geometry.userData.faceIdxMap[hits[0].faceIndex]
         : -1;
@@ -22784,6 +22863,11 @@ Tools.paint = {
         document.querySelectorAll('.mat-swatch').forEach(s => s.classList.remove('selected'));
         setStatus('msg', '✅ Color picked — Click to apply.');
         return;
+      } else if (blockInstanceEdit(obj)) {
+        // Painting edits the shared definition — block from outside (eyedropper
+        // above is still allowed since it only reads).
+        this._dragging = false;
+        return;
       } else if (this.currentMaterial) {
         const matDef = { ...this.currentMaterial, opacity: this.currentOpacity };
         // Determine which faces to apply the material to
@@ -22847,6 +22931,9 @@ Tools.paint = {
     const hits = raycastObjects(e, { skipOuterGroups: true });
     if (hits.length) {
       const obj = hits[0].object.userData.sketchObject;
+      // No paint preview on a component you're not inside — the overlay would be
+      // built from def-LOCAL verts (mis-positioned) and painting is blocked anyway.
+      if (obj.isInstance && Model.activeComponentSource !== obj) { try { renderer && renderer.render(scene, camera); } catch (_) {} return; }
       const fi = obj.mesh.geometry.userData.faceIdxMap[hits[0].faceIndex];
       const face = obj.em.faces[fi];
       if (face) {
@@ -22907,6 +22994,7 @@ Tools.paint = {
     const hits = raycastObjects(e, { skipOuterGroups: true });
     if (!hits.length) return;
     const obj = hits[0].object.userData.sketchObject;
+    if (blockInstanceEdit(obj)) return;
     const fi = obj.mesh.geometry.userData.faceIdxMap[hits[0].faceIndex];
     if (fi == null || fi < 0 || !obj.em.faces[fi]) return;
     if (this.currentMaterial) {
