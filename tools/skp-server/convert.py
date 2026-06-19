@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
 """Convert a SketchUp .skp file to binary glTF (.glb).
 
-Runs ONLY where the SketchUp SDK binding is available (Windows, via the RedHalo
-"sketchup_importer" binaries placed next to this file — the `sketchup` module +
-SketchUpAPI.dll). It walks the model with the SketchUp C API binding and emits a
-.glb that Turtle Drawing loads through its normal importGLB() path.
+Runs ONLY where the SketchUp SDK binding is available (sketchup.so +
+SketchUpAPI.framework next to this file). It walks the model with the SketchUp
+C API binding and emits a .glb that Turtle Drawing loads through its normal
+importGLB() path.
 
     python convert.py input.skp output.glb
 
-Binding API used (from RedHalo/pyslapi):
-    m = sketchup.Model.from_file(path)
-    m.materials -> [ mat(.name, .color=(r,g,b,a), .texture(.dimensions, .write(path))) ]
-    m.entities  -> entities(.faces, .groups, .instances)
-        face: .material(.name), .tessfaces -> (verts, tris, uvs)
-        group/instance: .transform (4x4), .entities (or .definition.entities), .material
+INSTANCING (Stage 8): a SketchUp COMPONENT used N times shares one DEFINITION.
+The old converter BAKED every instance's geometry into world space → a component
+used N times produced N full copies → memory/object explosion → nesting had to be
+coarsened away (GROUP_CAP). Now each definition used ≥ TD_SKP_INSTANCE_MIN (2)
+times is emitted ONCE as a def-LOCAL mesh, and every instance becomes a
+lightweight glTF NODE that references that shared mesh with the instance's world
+transform. GLTFLoader shares the BufferGeometry across those nodes, so the
+importer rebuilds them as one component definition + N instances (shared
+geometry, per-instance matrix) — full depth, no explosion.
 
-CALIBRATION KNOBS — verify against one known model on Windows and adjust:
-  * UNIT_SCALE : SketchUp C API lengths are INCHES; glTF is metres → 0.0254.
-  * Z_UP_TO_Y_UP : SketchUp is Z-up, glTF is Y-up → rotate -90° about X.
-  * TRANSPOSE_XFORM : whether the binding's 4x4 needs transposing for row-vector
-    math. If imports come in mirrored/rotated wrong, flip this first.
+Singleton components and groups (inherently unique) are still BAKED inline, which
+preserves their nesting via the group-path mesh name without any duplication.
+
+Binding API (from the pyslapi/RedHalo binding):
+    m = sketchup.Model.from_file(path)
+    m.materials -> [ mat(.name, .color, .opacity, .texture(.write(path))) ]
+    m.entities  -> entities(.faces, .groups, .instances)
+        face:  .material(.name), .tessfaces -> (verts, tris, uvs)
+        group: .transform (4x4), .entities, .material, .hidden, .layer
+        instance(component): .transform, .definition(.name,.entities,.numInstances,
+                             .numUsedInstances), .material, .hidden, .layer
+
+CALIBRATION KNOBS:
+  * UNIT_SCALE      : binding lengths (here already metres) → glTF metres.
+  * Z_UP_TO_Y_UP    : SketchUp Z-up → glTF Y-up (rotate -90° about X).
+  * TRANSPOSE_XFORM : flip if the binding's 4x4 needs transposing.
 """
 import os
 import sys
@@ -30,20 +44,14 @@ import trimesh
 UNIT_SCALE = 1.0             # the pyslapi binding already returns metres (calibrated on Mac)
 Z_UP_TO_Y_UP = True
 TRANSPOSE_XFORM = False
-# Skip geometry that is HIDDEN in SketchUp (per-entity Hide, or on an invisible
-# tag/layer) so the import matches what's visible in SketchUp. The binding
-# exposes .hidden + .layer.visible on groups/instances (not on bare faces), so
-# filtering happens at the group/instance level — which is where hidden objects
-# live in practice. Set TD_SKP_INCLUDE_HIDDEN=1 to import everything anyway.
 INCLUDE_HIDDEN = bool(os.environ.get("TD_SKP_INCLUDE_HIDDEN"))
-# Embed real material textures (PNG via glTF bufferView) + per-material opacity.
-# Default ON. The desktop file:// texture-load path is handled by forcing
-# TextureLoader in the vendored GLTFLoader (ImageBitmapLoader's fetch() is
-# blocked under file://). Set TD_SKP_NO_TEXTURES=1 for the old color-only output.
 TEXTURES = not os.environ.get("TD_SKP_NO_TEXTURES")
-TEX_MAX = 1024   # cap embedded texture dimension. Textures are TILED (triplanar)
-                 # in the renderer, so 1024 looks great while keeping glb size +
-                 # GPU memory sane (2048 × dozens of textures = ~1GB VRAM).
+TEX_MAX = 1024
+# A component definition used at least this many times is emitted ONCE + instanced
+# (rather than baked per use). Set TD_SKP_NO_INSTANCE=1 to fully disable instancing
+# (every component baked inline — the old behaviour, kept as a safety fallback).
+INSTANCE_MIN = (1 << 30) if os.environ.get("TD_SKP_NO_INSTANCE") \
+    else int(os.environ.get("TD_SKP_INSTANCE_MIN") or 2)
 
 
 def _is_visible(el):
@@ -62,6 +70,7 @@ def _is_visible(el):
     except Exception:
         pass
     return True
+
 
 # (x,y,z) Z-up -> (x, z, -y) Y-up
 _AXIS = np.array([[1, 0, 0, 0],
@@ -88,8 +97,6 @@ def _build_materials(model):
             col = tuple(mat.color) if getattr(mat, "color", None) else (204, 204, 204, 255)
             if max(col) > 1.0:
                 col = tuple(c / 255.0 for c in col)
-            # Opacity: the binding exposes mat.opacity (float 0..1); fall back to
-            # the colour's alpha channel. <1 → glass/translucent.
             try:
                 op = float(mat.opacity)
             except Exception:
@@ -109,12 +116,9 @@ def _build_materials(model):
                     full.load()
                     full = full.convert("RGB")
                     if TEXTURES:
-                        # Embed the REAL texture (capped to TEX_MAX).
                         if max(full.size) > TEX_MAX:
                             full.thumbnail((TEX_MAX, TEX_MAX), Image.LANCZOS)
                         image = full.copy()
-                    # Always compute an average colour as a fallback / for
-                    # color-only mode (brick→red, grass→green, …).
                     thumb = full.copy()
                     thumb.thumbnail((24, 24))
                     px = list(thumb.getdata())
@@ -129,8 +133,6 @@ def _build_materials(model):
                         pass
                 except Exception as e:        # texture handling is best-effort
                     sys.stderr.write("[convert] texture skip (%s): %s\n" % (name, e))
-            # Color-only path (or texture-load failed): use the average colour so
-            # a textured material isn't rendered flat white.
             if image is None and avg is not None:
                 col = (avg[0], avg[1], avg[2], col[3] if len(col) > 3 else 1.0)
             out[name] = {"color": col, "opacity": op, "image": image}
@@ -139,56 +141,133 @@ def _build_materials(model):
     return out
 
 
+def _face_mat_name(face, default_mat):
+    try:
+        if face.material:
+            return face.material.name
+    except Exception:
+        pass
+    return default_mat
+
+
+def _emit_face(bucket, face, xform, default_mat):
+    """Append one tessellated face's triangles into `bucket` ({v,f,uv}),
+    transformed by `xform`. Returns the material name used."""
+    try:
+        vs, tris, uvs = face.tessfaces
+    except Exception:
+        return None
+    if not vs or not tris:
+        return None
+    base = len(bucket["v"])
+    M = xform
+    for (x, y, z) in vs:
+        p = M @ np.array([x, y, z, 1.0])
+        bucket["v"].append((p[0] * UNIT_SCALE, p[1] * UNIT_SCALE, p[2] * UNIT_SCALE))
+    if uvs and len(uvs) == len(vs):
+        bucket["uv"].extend((u, v) for (u, v, *_rest) in (tuple(t) for t in uvs))
+    else:
+        bucket["uv"].extend((0.0, 0.0) for _ in vs)
+    for tri in tris:
+        bucket["f"].append((tri[0] + base, tri[1] + base, tri[2] + base))
+    return _face_mat_name(face, default_mat)
+
+
 def convert(skp_path, glb_path):
-    import sketchup  # provided by the RedHalo binding next to this file (Windows)
+    import sketchup  # provided by the SketchUp binding next to this file
     model = sketchup.Model.from_file(skp_path)
     mats = _build_materials(model)
 
-    # Accumulate triangles per (group-PATH, material), baked into world space.
-    # EVERY SketchUp group/component instance — at ANY depth — opens a new node,
-    # so the full nesting is preserved. The path of unique group ids is encoded
-    # into each mesh name ("g1/g4/g7::<material>"; "::<material>" = ungrouped),
-    # and the importer rebuilds the nested group tree from it.
-    buckets = {}        # (path_tuple, mat_name) -> {"v","f","uv"}
+    # --- World-baked geometry: root faces, groups, and singleton components ---
+    # bucket key (path_tuple, mat_name) -> {v,f,uv}  (world coords, Y-up metres)
+    buckets = {}
     group_seq = [0]
+    skipped = [0]
 
-    def emit(face, xform, default_mat, path):
-        try:
-            vs, tris, uvs = face.tessfaces
-        except Exception:
-            return
-        if not vs or not tris:
-            return
-        mname = default_mat
-        try:
-            if face.material:
-                mname = face.material.name
-        except Exception:
-            pass
-        b = buckets.setdefault((path, mname), {"v": [], "f": [], "uv": []})
-        base = len(b["v"])
-        M = xform
-        for (x, y, z) in vs:
-            p = M @ np.array([x, y, z, 1.0])
-            b["v"].append((p[0] * UNIT_SCALE, p[1] * UNIT_SCALE, p[2] * UNIT_SCALE))
-        if uvs and len(uvs) == len(vs):
-            b["uv"].extend((u, v) for (u, v, *_rest) in (tuple(t) for t in uvs))
-        else:
-            b["uv"].extend((0.0, 0.0) for _ in vs)
-        for tri in tris:
-            b["f"].append((tri[0] + base, tri[1] + base, tri[2] + base))
+    # --- Component DEFINITIONS, emitted once in def-LOCAL space (Z-up) ---
+    # def_name -> { mat_name: {v,f,uv} } | None while building (cycle guard)
+    def_cache = {}
+    # Placed instances: list of (path_tuple, def_name, world_xform 4x4)
+    instances = []
 
     def _child_path(path):
         group_seq[0] += 1
         return path + ("g%d" % group_seq[0],)
 
-    skipped = [0]   # hidden groups/instances skipped (for the log)
+    def _inst_count(d):
+        for k in ("numUsedInstances", "numInstances"):
+            try:
+                c = int(getattr(d, k, 0) or 0)
+                if c:
+                    return c
+            except Exception:
+                pass
+        return 0
+
+    def _flatten_def(definition):
+        """Build (cached) def-LOCAL per-material buckets for a definition by
+        walking its entities with an IDENTITY root and FLATTENING nested groups
+        and nested component instances into the definition's own local frame.
+        (Nested components are flattened here for v1; the instance's own world
+        matrix still places the whole definition, so repeated use stays shared.)"""
+        name = definition.name
+        cached = def_cache.get(name, False)
+        if cached is not False:
+            return cached
+        def_cache[name] = None     # cycle guard (a def can't contain itself, but be safe)
+        local = {}                 # mat -> {v,f,uv}
+
+        def w(ents, xf, default_mat):
+            for f in (getattr(ents, "faces", []) or []):
+                tmp = {"v": [], "f": [], "uv": []}
+                mn = _emit_face(tmp, f, xf, default_mat)
+                if mn is None:
+                    continue
+                b = local.setdefault(mn, {"v": [], "f": [], "uv": []})
+                base = len(b["v"])
+                b["v"].extend(tmp["v"]); b["uv"].extend(tmp["uv"])
+                for (a, c, d2) in tmp["f"]:
+                    b["f"].append((a + base, c + base, d2 + base))
+            for g in (getattr(ents, "groups", []) or []):
+                if not _is_visible(g):
+                    continue
+                gm = default_mat
+                try:
+                    if g.material:
+                        gm = g.material.name
+                except Exception:
+                    pass
+                w(g.entities, xf @ _mat4(g.transform), gm)
+            for ins in (getattr(ents, "instances", []) or []):
+                if not _is_visible(ins):
+                    continue
+                im = default_mat
+                try:
+                    if ins.material:
+                        im = ins.material.name
+                except Exception:
+                    pass
+                try:
+                    ents2 = ins.definition.entities
+                except Exception:
+                    ents2 = getattr(ins, "entities", None)
+                if ents2 is not None:
+                    w(ents2, xf @ _mat4(ins.transform), im)
+
+        try:
+            w(definition.entities, np.eye(4), "DefaultMaterial")
+        except Exception as e:
+            sys.stderr.write("[convert] def flatten skip (%s): %s\n" % (name, e))
+        def_cache[name] = local
+        return local
 
     def walk(entities, xform, default_mat, path):
-        for f in entities.faces:
-            emit(f, xform, default_mat, path)
-        for g in getattr(entities, "groups", []) or []:
-            if not _is_visible(g):           # hidden / invisible-tag group → drop
+        for f in (getattr(entities, "faces", []) or []):
+            mn = _face_mat_name(f, default_mat)
+            b = buckets.setdefault((path, mn), {"v": [], "f": [], "uv": []})
+            _emit_face(b, f, xform, mn)
+        for g in (getattr(entities, "groups", []) or []):
+            if not _is_visible(g):
                 skipped[0] += 1
                 continue
             gm = default_mat
@@ -198,8 +277,8 @@ def convert(skp_path, glb_path):
             except Exception:
                 pass
             walk(g.entities, xform @ _mat4(g.transform), gm, _child_path(path))
-        for inst in getattr(entities, "instances", []) or []:
-            if not _is_visible(inst):        # hidden / invisible-tag instance → drop
+        for inst in (getattr(entities, "instances", []) or []):
+            if not _is_visible(inst):
                 skipped[0] += 1
                 continue
             im = default_mat
@@ -208,32 +287,36 @@ def convert(skp_path, glb_path):
                     im = inst.material.name
             except Exception:
                 pass
-            try:
-                ents = inst.definition.entities
-            except Exception:
-                ents = getattr(inst, "entities", None)
-            if ents is not None:
-                walk(ents, xform @ _mat4(inst.transform), im, _child_path(path))
+            d = getattr(inst, "definition", None)
+            world = xform @ _mat4(inst.transform)
+            if d is not None and _inst_count(d) >= INSTANCE_MIN:
+                # Shared component: emit the def once (def-LOCAL) + an instance node.
+                _flatten_def(d)
+                instances.append((path, d.name, world))
+            else:
+                # Singleton component (or no definition): bake inline like a group,
+                # preserving nesting via the path. No duplication (used once).
+                try:
+                    ents = inst.definition.entities
+                except Exception:
+                    ents = getattr(inst, "entities", None)
+                if ents is not None:
+                    walk(ents, world, im, _child_path(path))
 
     root = _AXIS if Z_UP_TO_Y_UP else np.eye(4)
     walk(model.entities, root, "DefaultMaterial", ())
 
-    _maxd0 = max((len(p) for (p, _m) in buckets.keys()), default=0)
-    sys.stderr.write("[convert] full nesting: %d buckets, max depth %d (before cap)\n" % (len(buckets), _maxd0))
+    _ndef = sum(1 for v in def_cache.values() if v)
+    sys.stderr.write("[convert] baked buckets=%d, definitions=%d, instance placements=%d\n"
+                     % (len(buckets), _ndef, len(instances)))
 
-    # OBJECT-COUNT CAP: full nesting can explode — a component used N times bakes
-    # its inner groups N times → thousands of group paths → thousands of objects
-    # → the app freezes. We must cap the object (bucket) count, but the OLD
-    # approach flattened the DEEPEST level GLOBALLY, which also crushed the
-    # uniquely-deep nesting the user cares about (the main building) down to ~2
-    # levels. SMARTER: collapse the BUSHIEST leaf-clusters first — e.g. a "trees"
-    # or "surrounding buildings" container holding 100 repeated instances becomes
-    # one object — while sparsely-nested unique branches (the design itself) keep
-    # their full depth. Tunable via TD_SKP_GROUP_CAP.
+    # OBJECT-COUNT CAP for the BAKED part only (instances don't explode). Repeated
+    # components are now shared, so this rarely triggers; kept as a safety net for
+    # pathological models with thousands of unique groups.
     GROUP_CAP = int(os.environ.get("TD_SKP_GROUP_CAP") or 1500)
 
-    def _merge_into(out, np, mat, b):
-        nb = out.setdefault((np, mat), {"v": [], "f": [], "uv": []})
+    def _merge_into(out, npath, mat, b):
+        nb = out.setdefault((npath, mat), {"v": [], "f": [], "uv": []})
         base = len(nb["v"])
         nb["v"].extend(b["v"]); nb["uv"].extend(b["uv"])
         for (a, b2, c) in b["f"]:
@@ -242,19 +325,17 @@ def convert(skp_path, glb_path):
     def _coarsen_smart(bk, cap):
         passes = 0
         while len(bk) > cap:
-            # A bucket path P is a LEAF if no other path strictly extends it.
             extended = set()
             for (p, _m) in bk:
                 for k in range(len(p)):
                     extended.add(p[:k])
-            clusters = {}                       # parent path -> [keys of its leaf children]
+            clusters = {}
             for key in bk:
                 p = key[0]
                 if len(p) >= 1 and p not in extended:
                     clusters.setdefault(p[:-1], []).append(key)
             if not clusters:
                 break
-            # Collapse the biggest leaf-clusters first, just enough to reach cap.
             order = sorted(clusters, key=lambda pp: -len(clusters[pp]))
             need = len(bk) - cap
             chosen, saved = set(), 0
@@ -268,25 +349,22 @@ def convert(skp_path, glb_path):
             out = {}
             for (p, mat), b in bk.items():
                 if len(p) >= 1 and p[:-1] in chosen and p not in extended:
-                    _merge_into(out, p[:-1], mat, b)   # leaf → its parent
+                    _merge_into(out, p[:-1], mat, b)
                 else:
                     _merge_into(out, p, mat, b)
             if len(out) >= len(bk):
-                break                            # no progress (safety)
+                break
             bk = out
             passes += 1
         return bk, passes
 
     _before = len(buckets)
     buckets, _passes = _coarsen_smart(buckets, GROUP_CAP)
-    _maxd1 = max((len(p) for (p, _m) in buckets.keys()), default=0)
     if _passes:
-        sys.stderr.write("[convert] coarsened bushiest subtrees in %d pass(es): %d → %d objects, max depth %d (cap ~%d)\n"
-                         % (_passes, _before, len(buckets), _maxd1, GROUP_CAP))
+        sys.stderr.write("[convert] coarsened baked buckets in %d pass(es): %d -> %d\n"
+                         % (_passes, _before, len(buckets)))
 
-    # One PBRMaterial per material name, REUSED across every bucket that uses it
-    # — so trimesh embeds each texture image ONCE in the glb (sharing the same
-    # material instance lets the exporter dedupe), not once per bucket.
+    # One PBRMaterial per material name, REUSED so trimesh embeds each texture once.
     _pbr_cache = {}
     _n_transp = [0]
     _n_tex = [0]
@@ -298,28 +376,22 @@ def convert(skp_path, glb_path):
         col = info["color"]
         op = info.get("opacity", col[3] if len(col) > 3 else 1.0)
         img = info.get("image")
-        # baseColorFactor as glTF FLOATS 0..1. A textured material is left WHITE
-        # so the texture isn't double-tinted; a solid material carries its rgb.
         if img is not None:
             base = [1.0, 1.0, 1.0, float(op)]
         else:
             base = [float(col[0]), float(col[1]), float(col[2]), float(op)]
         kw = dict(name=mname, baseColorFactor=base)
         if op < 0.999:
-            kw["alphaMode"] = "BLEND"      # → GLTFLoader sets material.transparent=true
+            kw["alphaMode"] = "BLEND"
             _n_transp[0] += 1
         if img is not None:
-            kw["baseColorTexture"] = img   # PIL.Image → trimesh embeds as a bufferView
+            kw["baseColorTexture"] = img
             _n_tex[0] += 1
         mat = trimesh.visual.material.PBRMaterial(**kw)
         _pbr_cache[mname] = mat
         return mat
 
-    scene = trimesh.Scene()
-    n_out = 0
-    for (path, mname), b in buckets.items():
-        if not b["f"]:
-            continue
+    def _make_mesh(b, mname):
         verts = np.array(b["v"], dtype=float)
         faces = np.array(b["f"], dtype=np.int64)
         mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
@@ -329,20 +401,64 @@ def convert(skp_path, glb_path):
                 material=_material_for(mname))
         except Exception as e:
             sys.stderr.write("[convert] visual skip (%s): %s\n" % (mname, e))
-        # Encode the nested group path in the mesh name using '-' (GLTFLoader
-        # STRIPS '/', ':', '.' from names but keeps '-'). Group ids are "g<n>",
-        # so "g1-g4-g7" is unambiguous; ungrouped geometry → "loose". The
-        # material name is NOT in the name (its colour rides on the PBR material).
-        gname = "-".join(path) if path else "loose"
-        scene.add_geometry(mesh, geom_name=gname)
-        n_out += 1
+        return mesh
 
-    if not n_out:
+    scene = trimesh.Scene()
+    n_baked = 0
+    # 1) Baked geometry — one mesh per (path, material), node name = group path.
+    for (path, mname), b in buckets.items():
+        if not b["f"]:
+            continue
+        gname = "-".join(path) if path else "loose"
+        scene.add_geometry(_make_mesh(b, mname), geom_name=gname)
+        n_baked += 1
+
+    # 2) Component definitions — each (def, material) mesh added to the scene ONCE
+    #    under a stable geometry name. Instances below reference these by name, so
+    #    trimesh/GLTF emit a single shared mesh + N nodes (the importer rebuilds
+    #    them as one component def + N instances).
+    def_geom_names = {}     # (def_name, mat_name) -> geometry name in the scene
+    _dsan = {}
+    for di, (dname, local) in enumerate(def_cache.items()):
+        if not local:
+            continue
+        _dsan[dname] = di
+        for mi, (mname, b) in enumerate(local.items()):
+            if not b["f"]:
+                continue
+            gname = "def%d_%d" % (di, mi)
+            scene.geometry[gname] = _make_mesh(b, mname)
+            def_geom_names[(dname, mname)] = gname
+
+    # 3) Instance NODES — one node per (instance, def-material) referencing the
+    #    shared geometry, placed by the instance's world matrix. The node name
+    #    carries the group path (+ a unique "_<seq>" the importer strips) so the
+    #    importer rebuilds the nested group tree; geometry identity carries the
+    #    instancing.
+    n_inst_nodes = 0
+    seq = 0
+    for (path, dname, world) in instances:
+        local = def_cache.get(dname)
+        if not local:
+            continue
+        pstr = "-".join(path) if path else "loose"
+        for mname in local.keys():
+            gname = def_geom_names.get((dname, mname))
+            if not gname:
+                continue
+            seq += 1
+            node = "%s_%d" % (pstr, seq)
+            scene.graph.update(frame_to=node, matrix=np.asarray(world, dtype=float), geometry=gname)
+            n_inst_nodes += 1
+
+    if not n_baked and not n_inst_nodes:
         raise RuntimeError("no geometry extracted from %s" % skp_path)
 
     scene.export(glb_path)
-    sys.stderr.write("[convert] %s -> %s  (%d meshes, %d hidden skipped, %d transparent mat, %d textured mat)\n"
-                     % (skp_path, glb_path, n_out, skipped[0], _n_transp[0], _n_tex[0]))
+    sys.stderr.write("[convert] %s -> %s  (%d baked meshes, %d defs, %d instance nodes, "
+                     "%d hidden skipped, %d transparent mat, %d textured mat)\n"
+                     % (skp_path, glb_path, n_baked, len(def_geom_names), n_inst_nodes,
+                        skipped[0], _n_transp[0], _n_tex[0]))
 
 
 if __name__ == "__main__":

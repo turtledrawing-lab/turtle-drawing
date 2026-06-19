@@ -24390,6 +24390,70 @@ function _applyGlbSourceMaterial(so, srcMat) {
   }
   applyMaterialToObject(so, def);
 }
+
+/* Weld + merge coplanar triangles into editable n-gons, then rebuild ONLY "hard"
+   edges (real boundaries + creases > ~20°), dropping interior triangulation
+   seams — the SketchUp/CAD import look. Mutates `em`. Used to build a component
+   DEFINITION from instanced glTF (the singleton bake path keeps its own inline
+   copy untouched). */
+function _skpMergeProcessEM(em) {
+  try { em.weldVertices(1e-3); } catch (_) {}
+  const before = em.faces.length;
+  try {
+    const merged = (typeof _mergeCoplanarFacesEM === 'function') ? _mergeCoplanarFacesEM(em, 0.01, 0.999) : null;
+    if (merged && merged.length && merged.length < before) {
+      em.faces = merged;
+      em._smoothShade = (merged.length >= before * 0.6);
+    }
+  } catch (e) { console.warn('[skp] coplanar merge failed:', e); }
+  em.edges = [];
+  const _seenE = new Set();
+  const _addE = (a, b) => { if (a === b) return; const k = Math.min(a,b)+':'+Math.max(a,b); if (_seenE.has(k)) return; _seenE.add(k); em.edges.push({ a, b }); };
+  const _faceN = (f) => {
+    if (f.normal && f.normal.isVector3 && f.normal.lengthSq() > 0.5) return f.normal;
+    const V = em.vertices, vs = f.verts; const n = new THREE.Vector3();
+    for (let k = 0; k < vs.length; k++) {
+      const c = V[vs[k]], d = V[vs[(k + 1) % vs.length]];
+      if (!c || !d) continue;
+      n.x += (c.y - d.y) * (c.z + d.z);
+      n.y += (c.z - d.z) * (c.x + d.x);
+      n.z += (c.x - d.x) * (c.y + d.y);
+    }
+    if (n.lengthSq() > 1e-20) n.normalize();
+    f.normal = n; return n;
+  };
+  const _edgeFaces = new Map();
+  const _reg = (a, b, f) => { if (a === b) return; const k = Math.min(a,b)+':'+Math.max(a,b); let arr = _edgeFaces.get(k); if (!arr) { arr = []; _edgeFaces.set(k, arr); } arr.push(f); };
+  for (const f of em.faces) {
+    for (let k = 0; k < f.verts.length; k++) _reg(f.verts[k], f.verts[(k+1) % f.verts.length], f);
+    if (f.holes) for (const h of f.holes) for (let k = 0; k < h.length; k++) _addE(h[k], h[(k+1) % h.length]);
+  }
+  const _HARD = 0.94;
+  for (const [k, faces] of _edgeFaces) {
+    let hard = faces.length !== 2;
+    if (!hard) {
+      const n0 = _faceN(faces[0]), n1 = _faceN(faces[1]);
+      hard = (n0.lengthSq() < 0.5 || n1.lengthSq() < 0.5) || Math.abs(n0.dot(n1)) < _HARD;
+    }
+    if (hard) { const p = k.split(':'); _addE(+p[0], +p[1]); }
+  }
+}
+
+/* Build a ComponentDef directly from a (def-LOCAL) EditableMesh + register it.
+   Used by the instanced glTF import path (shared mesh → one definition). */
+function _defFromEM(em, name) {
+  const def = {
+    id: _newComponentId(), name: name || 'Component', pivot: { x: 0, y: 0, z: 0 }, materialId: null,
+    vertices: em.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })),
+    faces: em.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
+    edges: (em.edges || []).map(e => ({ a: e.a, b: e.b })),
+  };
+  def.em = em;
+  Model.components.push(def);
+  rebuildComponentDef(def);
+  return def;
+}
+
 async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}) {
   const featureEdgesOnly = !!(opts && opts.featureEdgesOnly);
   // placeMode: instead of dropping objects at the camera target, build them and
@@ -24416,6 +24480,37 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
   let _vtot = 0, _mi = 0;
   const _prevSuppress = Model._suppressAddRefresh;
   Model._suppressAddRefresh = true;   // batch outliner/visibility refresh (O(n²)→O(n))
+  // INSTANCING (Stage 8): GLTFLoader SHARES one BufferGeometry across every node
+  // that references the same glTF mesh — i.e. component instances. Group nodes by
+  // geometry identity; a geometry used by ≥2 nodes becomes ONE ComponentDef +
+  // N instances (shared geometry, per-instance matrix), preserving full depth
+  // without the per-instance bake explosion. Gated to the SKP path (mergeCoplanar)
+  // and disabled in placeMode (ghost placement builds objects differently).
+  const _instancingOK = !!opts.mergeCoplanar && !placeMode && !featureEdgesOnly;
+  const _geoToNodes = new Map();
+  if (_instancingOK) {
+    for (const m of meshes) {
+      if (!m.geometry || !m.geometry.attributes || !m.geometry.attributes.position) continue;
+      let arr = _geoToNodes.get(m.geometry);
+      if (!arr) { arr = []; _geoToNodes.set(m.geometry, arr); }
+      arr.push(m);
+    }
+  }
+  const _geoDef = new Map();   // shared BufferGeometry → ComponentDef (built once)
+  // Assign an imported object's nested group path from its node name
+  // ("g1-g4-g7" + optional "_<seq>"), building the group tree as needed.
+  const _assignSrcPath = (so, nm) => {
+    if (!/^g\d+(?:-g\d+)*(?:_\d+)?$/.test(nm || '')) return;
+    let _parentTid = null, _leafTid = null;
+    for (const _seg of nm.replace(/_\d+$/, '').split('-')) {
+      if (!_seg) continue;
+      let _tid = _srcGroups.get(_seg);
+      if (!_tid) { _tid = _newGroupId(); _srcGroups.set(_seg, _tid); registerGroup(_tid, _parentTid); }
+      else { const _g = Model.groups.get(_tid); if (_g && _g.parentId == null && _parentTid != null) _g.parentId = _parentTid; }
+      _parentTid = _tid; _leafTid = _tid;
+    }
+    if (_leafTid != null) so.groupId = _leafTid;
+  };
   for (const m of meshes) {
     _mi++;
     // Yield to the event loop every few dozen objects so a big import doesn't
@@ -24431,6 +24526,49 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
     // never mutate m.geometry, so shared/instanced geometry is safe too.
     const geo = m.geometry;
     if (!geo.attributes || !geo.attributes.position) continue;
+    // ---- Instanced path: geometry shared by ≥2 nodes → ComponentDef + instance.
+    const _sharedNodes = _instancingOK ? _geoToNodes.get(geo) : null;
+    if (_sharedNodes && _sharedNodes.length >= 2) {
+      const _srcMatI = Array.isArray(m.material) ? m.material[0] : m.material;
+      const _matColI = (_srcMatI && _srcMatI.color && typeof _srcMatI.color.getHex === 'function') ? _srcMatI.color.getHex() : 0xffffff;
+      let def = _geoDef.get(geo);
+      if (!def) {
+        // Build the definition ONCE in def-LOCAL space (raw geometry, no node
+        // matrix), with the same weld/merge/hard-edge processing as the bake path.
+        const dem = new EditableMesh(); dem._smoothShade = true;
+        const _pos = geo.attributes.position, _idx = geo.index;
+        for (let v = 0; v < _pos.count; v++) {
+          dem.vertices.push(new THREE.Vector3(_pos.getX(v) * unitToMeters, _pos.getY(v) * unitToMeters, _pos.getZ(v) * unitToMeters));
+        }
+        const _tc = _idx ? _idx.count : _pos.count, _gi = _idx ? (i) => _idx.getX(i) : (i) => i;
+        for (let t = 0; t + 2 < _tc; t += 3) {
+          const a = _gi(t), b = _gi(t + 1), c = _gi(t + 2);
+          if (a === b || b === c || a === c) continue;
+          dem.addFace([a, b, c], _matColI, Model.activeLayerId || 'Layer0');
+        }
+        try { _skpMergeProcessEM(dem); } catch (e) { console.warn('[skp] def process failed:', e); }
+        const _dn = (_srcMatI && _srcMatI.name ? _srcMatI.name : 'Component') + ' (' + (filename || 'imported') + ')';
+        def = _defFromEM(dem, _dn);
+        _geoDef.set(geo, def);
+        // The def has its own vertex copy; free the shared glTF geometry now
+        // (other instance nodes use the def, not this BufferGeometry).
+        try { for (const k of Object.keys(geo.attributes)) geo.deleteAttribute(k); geo.setIndex(null); geo.dispose(); } catch (_) {}
+      }
+      // Instance: place by the node's world matrix (translation scaled to metres
+      // for unit conversion; def verts are already metres).
+      const im = m.matrixWorld.clone();
+      if (unitToMeters !== 1) { im.elements[12] *= unitToMeters; im.elements[13] *= unitToMeters; im.elements[14] *= unitToMeters; }
+      const inst = createComponentInstance(def, im);
+      if (inst) {
+        inst.name = def.name;
+        inst.layerId = (opts.layerOf && opts.layerOf(m)) || Model.activeLayerId || 'Layer0';
+        _assignSrcPath(inst, m.name || '');
+        try { _applyGlbSourceMaterial(inst, _srcMatI); } catch (_) {}
+        try { bbox.union(inst.computeBBox()); } catch (_) {}
+        added++;
+      }
+      continue;
+    }
     // A mirrored node (negative-determinant transform, common in GLB/DAE
     // components) flips the winding when baked — emit reversed triangles so
     // normals still face outward.
