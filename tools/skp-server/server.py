@@ -21,11 +21,19 @@ down in production.
 """
 import argparse
 import json
+import os
 import struct
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ARGS = None
+
+# Public-exposure hardening: cap the upload size and SERIALIZE conversions — the
+# SketchUp binding holds process-global state and is not safe to run concurrently,
+# so one model converts at a time (extra requests queue on the lock).
+MAX_UPLOAD = int(os.environ.get("TD_SKP_MAX_UPLOAD") or (400 * 1024 * 1024))   # 400 MB
+_CONVERT_LOCK = threading.Lock()
 
 
 def cube_glb():
@@ -119,12 +127,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             n = int(self.headers.get("Content-Length", 0))
+            if n <= 0 or n > MAX_UPLOAD:
+                raise ValueError("upload too large or empty (%d bytes; max %d)" % (n, MAX_UPLOAD))
             skp = self.rfile.read(n)
             name = self.headers.get("X-Filename", "model.skp")
             if ARGS.stub:
                 glb = cube_glb()
             else:
-                glb = convert_skp(skp, name)
+                # One conversion at a time — the binding isn't concurrency-safe.
+                with _CONVERT_LOCK:
+                    glb = convert_skp(skp, name)
         except Exception as e:  # noqa: BLE001 — report any converter failure to the client
             msg = json.dumps({"error": str(e)}).encode()
             self.send_response(500)
