@@ -24867,9 +24867,14 @@ async function importSKP(arrayBuffer, filename, srcPath) {
   setStatus('msg', 'Converting ' + (filename || 'model.skp') + ' …');
   let res;
   try {
+    // HTTP header values must be ISO-8859-1 (Latin-1). A non-ASCII filename
+    // (e.g. Korean) put fetch()'s X-Filename header out of range, so the browser
+    // REJECTED the request before sending it (no network request at all → looked
+    // like "could not reach the server"). Percent-encode so any filename is safe;
+    // the server only uses it for a temp name.
     res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': filename || 'model.skp' },
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(filename || 'model.skp') },
       body: arrayBuffer,
     });
   } catch (e) {
