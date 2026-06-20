@@ -24900,6 +24900,12 @@ function _gateSkpImport() {
       if (q === '' || q === 'off' || q === 'clear') localStorage.removeItem('td_skp_endpoint');
       else localStorage.setItem('td_skp_endpoint', q);
     }
+    // Self-heal: a *.trycloudflare.com endpoint is an EPHEMERAL quick-tunnel
+    // (a fresh random hostname each restart → dead within minutes), only ever
+    // used for setup testing. If one got saved, drop it so the stable baked
+    // public endpoint (convert.tdw.kr) is used instead of a dead URL.
+    const _saved = localStorage.getItem('td_skp_endpoint');
+    if (_saved && /trycloudflare\.com/i.test(_saved)) localStorage.removeItem('td_skp_endpoint');
   } catch (_) {}
   try {
     let ok = (typeof window.electronConvertSKP === 'function');
