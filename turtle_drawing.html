@@ -24807,6 +24807,12 @@ function importSTL(arrayBuffer, filename) {
    that returns glb, then load it via importGLB. Server URL is remembered in
    localStorage('td_skp_endpoint'); see tools/skp-server/. (Desktop could spawn
    a local converter instead — not wired yet.) */
+// Public .skp→glb conversion server (a Cloudflare-tunnelled converter running on
+// the owner's Mac). Baked default so every WEB user can import .skp with zero
+// setup. Empty string = no public server (then the menu hides off-localhost).
+// Desktop uses its own offline converter and ignores this.
+const TD_SKP_PUBLIC_ENDPOINT = 'https://convert.tdw.kr/convert';
+
 async function importSKP(arrayBuffer, filename, srcPath) {
   // Desktop (macOS): convert locally via the bundled SketchUp binding — no
   // server, fully offline. Falls through to the web path if unavailable.
@@ -24841,6 +24847,10 @@ async function importSKP(arrayBuffer, filename, srcPath) {
   if (!endpoint && (location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     endpoint = 'http://localhost:8787/convert';   // local dev default
   }
+  // Public conversion server (a Cloudflare-tunnelled converter) — the default for
+  // every web user, so .skp import works with no per-user setup. An explicit
+  // localStorage 'td_skp_endpoint' still overrides it.
+  if (!endpoint) endpoint = TD_SKP_PUBLIC_ENDPOINT;
   if (!endpoint) {
     const v = prompt('SketchUp(.skp) 변환 서버 주소를 입력하세요 / Enter the .skp conversion server URL\n(예: https://convert.example.com/convert)', '');
     if (!v) return;
@@ -24895,6 +24905,7 @@ function _gateSkpImport() {
     let ok = (typeof window.electronConvertSKP === 'function');
     try { ok = ok || !!localStorage.getItem('td_skp_endpoint'); } catch (_) {}
     ok = ok || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    ok = ok || !!TD_SKP_PUBLIC_ENDPOINT;   // a public conversion server is configured → enable for everyone
     if (!ok) document.querySelectorAll('[data-act="import-skp"]').forEach(el => { el.style.display = 'none'; });
   } catch (_) {}
 }
