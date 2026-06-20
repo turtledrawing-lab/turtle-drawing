@@ -24888,7 +24888,10 @@ async function importSKP(arrayBuffer, filename, srcPath) {
     return;
   }
   const glb = await res.arrayBuffer();
-  importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'));
+  // Same options as the desktop path: mergeCoplanar merges the converter's
+  // triangles back into clean editable n-gon faces (without it the model looks
+  // shattered into triangles) AND enables instancing/heavy-object handling.
+  importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'), { mergeCoplanar: true });
 }
 
 /* Gate the .skp import affordance: on the public web build it needs a
