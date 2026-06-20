@@ -6762,7 +6762,13 @@ class SketchObject {
      bbox wireframe so the scene stays responsive. Toggle on/off any time. */
   _ensureProxy() {
     if (this._proxy) return this._proxy;
-    const bb = this.computeBBox();
+    // Bbox in the GROUP's LOCAL frame — the proxy is a child of this.group, so
+    // for an INSTANCE (group.matrix = instanceMatrix) we must use the def-LOCAL
+    // em directly; computeBBox() returns WORLD coords which the group would then
+    // transform AGAIN (double-placed proxy). A non-instance has group=identity so
+    // local == world either way.
+    const bb = new THREE.Box3();
+    for (const v of this.em.vertices) bb.expandByPoint(v);
     if (!isFinite(bb.min.x)) return null;
     const s = new THREE.Vector3(); bb.getSize(s);
     const c = new THREE.Vector3(); bb.getCenter(c);
@@ -24478,8 +24484,10 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
   const bbox = new THREE.Box3();
   console.log('[skp-import] meshes=' + meshes.length + ' mergeCoplanar=' + !!opts.mergeCoplanar);
   let _vtot = 0, _mi = 0;
+  let _lastYield = Date.now();
   const _prevSuppress = Model._suppressAddRefresh;
   Model._suppressAddRefresh = true;   // batch outliner/visibility refresh (O(n²)→O(n))
+  const _startObjN = Model.objects.length;   // mark only THIS import's objects as heavy
   // INSTANCING (Stage 8): GLTFLoader SHARES one BufferGeometry across every node
   // that references the same glTF mesh — i.e. component instances. Group nodes by
   // geometry identity; a geometry used by ≥2 nodes becomes ONE ComponentDef +
@@ -24513,12 +24521,15 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
   };
   for (const m of meshes) {
     _mi++;
-    // Yield to the event loop every few dozen objects so a big import doesn't
-    // block the main thread (which froze the UI and tripped the unresponsive
-    // watchdog). Also surfaces progress so it doesn't look hung.
-    if (_mi % 30 === 0) {
+    // Yield to the event loop on a TIME budget (not a fixed object count) so a
+    // big import never blocks the main thread for long: heavy objects (large
+    // coplanar-merge meshes) take very different times, so a count-based yield
+    // could freeze the UI for seconds between updates and the progress %
+    // appeared stuck. Repaint + yield whenever ~80ms has elapsed.
+    if (Date.now() - _lastYield > 80) {
       setStatus('msg', '가져오는 중 / Importing… ' + Math.round(_mi / meshes.length * 100) + '%  (' + _mi + '/' + meshes.length + ')');
       await new Promise((r) => setTimeout(r, 0));
+      _lastYield = Date.now();
     }
     // Read the SOURCE geometry directly (no clone) and bake the node's world
     // matrix as we copy verts into the EditableMesh. Cloning every glTF
@@ -24736,9 +24747,17 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
       } catch (_) {}
     }
   }
+  // Auto-collapse heavy furniture/props (small + dense, or huge) to bbox proxies
+  // so a big SKP/CAD import stays responsive — same treatment OBJ import gets.
+  // SKP/CAD path only (not 3D-text feature-edge imports). Reversible in the Heavy
+  // Objects panel (Show All / Delete). Mark BEFORE the refresh so badges show.
+  if (!placeMode && opts.mergeCoplanar) {
+    try { _markHeavyObjects(Model.objects.slice(_startObjN), 'SKP Import'); } catch (_) {}
+  }
   Model._suppressAddRefresh = _prevSuppress;
   // Refresh outliner + layer visibility ONCE now (suppressed per-object above).
   if (!_prevSuppress) { try { renderOutliner(); applyLayerVisibility(); } catch (_) {} }
+  try { if (typeof renderHeavyList === 'function') renderHeavyList(); } catch (_) {}
   console.log('[skp-import] DONE building objects: added=' + added + ' totalVerts=' + _vtot);
   if (placeMode) {
     if (!placeObjs.length || bbox.isEmpty()) { setStatus('msg', 'Nothing to place.'); return 0; }
@@ -26576,6 +26595,36 @@ async function _confirmImportUnit(filename, rawSize, autoScale, autoLabel) {
   return (v !== 'auto' && _UNIT_FACTORS[v]) ? _UNIT_FACTORS[v] : autoScale;
 }
 
+/* Flag heavy imported objects so the scene stays responsive: a SMALL (<3 m bbox)
+   object with many faces (a 3D-warehouse prop / furniture) OR ANY object over a
+   hard face cap is collapsed to a bbox proxy on import. Reversible per-object in
+   the Heavy Objects panel (renderHeavyList) — Show All / Delete Selected. Works
+   for instances too (face count = def faces; computeBBox is transform-aware; the
+   proxy is built in the group-local frame). Skips already-flagged objects. */
+function _markHeavyObjects(objs, label) {
+  const HEAVY_FACES = 1500, HEAVY_VERTS = 5000, SMALL_MAX_AXIS_M = 3, HARD_FACE_CAP = 10000;
+  let heavyCount = 0;
+  for (const o of (objs || [])) {
+    if (!o || !o.em || o._heavy) continue;
+    const nf = o.em.faces ? o.em.faces.length : 0;
+    const nv = o.em.vertices ? o.em.vertices.length : 0;
+    let heavy = false;
+    if (nf > HARD_FACE_CAP) {
+      heavy = true;
+    } else if (nf > HEAVY_FACES || nv > HEAVY_VERTS) {
+      const bb = o.computeBBox();
+      const sz = new THREE.Vector3(); bb.getSize(sz);
+      if (Math.max(sz.x, sz.y, sz.z) < SMALL_MAX_AXIS_M) heavy = true;
+    }
+    if (!heavy) continue;
+    o._heavy = true;
+    try { o.setLowDetail(true); } catch (_) {}
+    heavyCount++;
+  }
+  if (heavyCount) console.log('[' + (label || 'Import') + '] ' + heavyCount + ' heavy object(s) collapsed to bbox proxy.');
+  return heavyCount;
+}
+
 async function importOBJ(text, filename, mtlText, imageMap) {
   // Parse MTL if provided
   const materials = mtlText ? parseMTL(mtlText) : new Map();
@@ -26818,35 +26867,9 @@ async function importOBJ(text, filename, mtlText, imageMap) {
 
   if (!pendingObjs.length) { setStatus('msg', 'No geometry found in OBJ file.'); return; }
 
-  // Mark heavy objects so the scene stays responsive after import.
-  //   • Small (<3 m bbox) AND >1500 faces  → typical 3D-warehouse prop;
-  //     hide as bbox proxy.
-  //   • ANY object > 10 000 faces            → too heavy to render in full
-  //     detail even at architectural scale; hide as bbox proxy.
-  // Users can re-enable detail per object from the Outliner.
-  const HEAVY_FACES = 1500;
-  const HEAVY_VERTS = 5000;
-  const SMALL_MAX_AXIS_M = 3;
-  const HARD_FACE_CAP = 10000;
-  let heavyCount = 0;
-  for (const o of pendingObjs) {
-    if (!o.em) continue;
-    const nf = o.em.faces ? o.em.faces.length : 0;
-    const nv = o.em.vertices ? o.em.vertices.length : 0;
-    let heavy = false;
-    if (nf > HARD_FACE_CAP) {
-      heavy = true;
-    } else if (nf > HEAVY_FACES || nv > HEAVY_VERTS) {
-      const bb = o.computeBBox();
-      const sz = new THREE.Vector3(); bb.getSize(sz);
-      if (Math.max(sz.x, sz.y, sz.z) < SMALL_MAX_AXIS_M) heavy = true;
-    }
-    if (!heavy) continue;
-    o._heavy = true;
-    try { o.setLowDetail(true); } catch (_) {}
-    heavyCount++;
-  }
-  if (heavyCount) console.log('[OBJ Import] ' + heavyCount + ' heavy object(s) collapsed to bbox proxy.');
+  // Mark heavy objects so the scene stays responsive after import (collapse to
+  // a bbox proxy; user can re-show / delete them in the Heavy Objects panel).
+  _markHeavyObjects(pendingObjs, 'OBJ Import');
 
   // Preserve source OBJ groups (SketchUp groups/components) as editable groups:
   // every object originating from the same `g`/`o` block shares one groupId, so

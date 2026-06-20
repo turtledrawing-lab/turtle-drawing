@@ -46,7 +46,13 @@ Z_UP_TO_Y_UP = True
 TRANSPOSE_XFORM = False
 INCLUDE_HIDDEN = bool(os.environ.get("TD_SKP_INCLUDE_HIDDEN"))
 TEXTURES = not os.environ.get("TD_SKP_NO_TEXTURES")
-TEX_MAX = 1024
+# Cap embedded texture dimension. Textures are TILED (triplanar) in the renderer
+# and the app is an architectural sectional/perspective tool — they're viewed in
+# a viewport, not photoreal close-ups — so a smaller cap is plenty on screen while
+# cutting glb size, convert/parse time, web transfer, and GPU memory a LOT (data
+# scales with the square of the dimension). 512 ≈ ¼ the data of 1024. Override
+# with TD_SKP_TEX_MAX (e.g. 256 = fastest, 1024 = full).
+TEX_MAX = int(os.environ.get("TD_SKP_TEX_MAX") or 512)
 # A component definition used at least this many times is emitted ONCE + instanced
 # (rather than baked per use). Set TD_SKP_NO_INSTANCE=1 to fully disable instancing
 # (every component baked inline — the old behaviour, kept as a safety fallback).
