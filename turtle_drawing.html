@@ -6270,8 +6270,11 @@ class EditableMesh {
       }
       if (emit) positions.push(va.x, va.y, va.z, vb.x, vb.y, vb.z);
     }
-    // Standalone edges
+    // Standalone edges (explicit em.edges, e.g. the import hard-edge set / drawn
+    // lines) — also honour softEdges so the Soften slider (and the import's
+    // auto-soften) can hide tessellation here, just like the crease loop above.
     for (const e of this.edges) {
+      if (soft && soft.has(e.a < e.b ? e.a + ':' + e.b : e.b + ':' + e.a)) continue;
       const a = this.vertices[e.a], b = this.vertices[e.b];
       positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
     }
@@ -24403,6 +24406,36 @@ function _applyGlbSourceMaterial(so, srcMat) {
   applyMaterialToObject(so, def);
 }
 
+/* Mark coplanar (within `deg`) edges as SOFT so a smooth/tessellated surface
+   hides its facet lines — IDENTICAL logic to the manual Soften-Edges slider
+   (initSoftenPanel) but callable on any EditableMesh, so an import auto-matches
+   "Soften Edges 20°". Uses FRESH per-face normals (computeFaceNormal), populates
+   em.softEdges; the renderer skips those edges. Faces/topology untouched. */
+function _softenEdgesByAngle(em, deg) {
+  try {
+    if (!em || !em.faces || em.faces.length < 2) return;
+    const cosT = Math.cos((deg || 20) * Math.PI / 180);
+    if (!em.softEdges) em.softEdges = new Set(); else em.softEdges.clear();
+    const map = new Map();
+    for (let fi = 0; fi < em.faces.length; fi++) {
+      em.computeFaceNormal(em.faces[fi]);
+      const vs = em.faces[fi].verts; if (!vs) continue;
+      for (let i = 0; i < vs.length; i++) {
+        let a = vs[i], b = vs[(i + 1) % vs.length];
+        if (a === b) continue;
+        if (a > b) { const t = a; a = b; b = t; }
+        const k = a + ':' + b;
+        let arr = map.get(k); if (!arr) { arr = []; map.set(k, arr); } arr.push(fi);
+      }
+    }
+    for (const [k, fl] of map) {
+      if (fl.length !== 2) continue;
+      const n1 = em.faces[fl[0]].normal, n2 = em.faces[fl[1]].normal;
+      if (n1 && n2 && n1.dot(n2) >= cosT) em.softEdges.add(k);
+    }
+  } catch (_) {}
+}
+
 /* Weld + merge coplanar triangles into editable n-gons, then rebuild ONLY "hard"
    edges (real boundaries + creases > ~20°), dropping interior triangulation
    seams — the SketchUp/CAD import look. Mutates `em`. Used to build a component
@@ -24440,7 +24473,7 @@ function _skpMergeProcessEM(em) {
     for (let k = 0; k < f.verts.length; k++) _reg(f.verts[k], f.verts[(k+1) % f.verts.length], f);
     if (f.holes) for (const h of f.holes) for (let k = 0; k < h.length; k++) _addE(h[k], h[(k+1) % h.length]);
   }
-  const _HARD = 0.94;
+  const _HARD = 0.94;                                // cos(~20°): below → crease (keep)
   for (const [k, faces] of _edgeFaces) {
     let hard = faces.length !== 2;
     if (!hard) {
@@ -24449,6 +24482,10 @@ function _skpMergeProcessEM(em) {
     }
     if (hard) { const p = k.split(':'); _addE(+p[0], +p[1]); }
   }
+  // Mark coplanar (≤20°) edges SOFT — same logic the manual Soften-Edges slider
+  // uses (fresh per-face normals) — so a smooth surface's tessellation hides like
+  // it does in SketchUp. The renderer skips soft edges; faces stay editable.
+  _softenEdgesByAngle(em, 20);
 }
 
 /* Build a ComponentDef directly from a (def-LOCAL) EditableMesh + register it.
@@ -24691,6 +24728,9 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
         }
         if (hard) { const p = k.split(':'); _addE(+p[0], +p[1]); }
       }
+      // Mark coplanar (≤20°) edges SOFT (same logic as the manual Soften slider,
+      // fresh normals) so a smooth surface's tessellation hides like in SketchUp.
+      _softenEdgesByAngle(em, 20);
       // Group path: mesh name "g1-g4-g7" rebuilds the NESTED group tree (each
       // segment → a Turtle Drawing group, parent = previous segment); the object
       // joins the LEAF group. (GLTFLoader strips '/', ':' from names, so the
@@ -33690,30 +33730,8 @@ document.getElementById('btnUnhideAll').onclick = () => unhideAllObjects();
       : Model.objects.slice();
   }
   function applyByAngle(deg) {
-    const cosT = Math.cos(deg * Math.PI / 180);
     for (const obj of targets()) {
-      const em = obj.em;
-      if (!em.softEdges) em.softEdges = new Set();
-      else em.softEdges.clear();
-      const map = new Map();
-      for (let fi = 0; fi < em.faces.length; fi++) {
-        em.computeFaceNormal(em.faces[fi]);
-        const vs = em.faces[fi].verts;
-        for (let i = 0; i < vs.length; i++) {
-          let a = vs[i], b = vs[(i+1)%vs.length];
-          if (a > b) { const t = a; a = b; b = t; }
-          const k = a + ':' + b;
-          let arr = map.get(k);
-          if (!arr) { arr = []; map.set(k, arr); }
-          arr.push(fi);
-        }
-      }
-      for (const [k, fl] of map) {
-        if (fl.length !== 2) continue;
-        const n1 = em.faces[fl[0]].normal;
-        const n2 = em.faces[fl[1]].normal;
-        if (n1.dot(n2) >= cosT) em.softEdges.add(k);
-      }
+      _softenEdgesByAngle(obj.em, deg);   // shared with the import auto-soften
       obj.rebuild();
     }
   }
