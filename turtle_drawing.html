@@ -6625,7 +6625,13 @@ function applyBackFaceTint(mat) {
     shader.fragmentShader = shader.fragmentShader
       .replace('void main() {', 'uniform vec3 uBackColor;\nuniform float uBackStrength;\nvoid main() {')
       .replace('#include <dithering_fragment>',
-        '#include <dithering_fragment>\n\tif (!gl_FrontFacing) { gl_FragColor.rgb = mix(gl_FragColor.rgb, uBackColor, uBackStrength); }');
+        // Only tint the back of OPAQUE faces. Transparent materials (glass) are
+        // see-through, so the front face shows the tinted BACK face behind it —
+        // a grey #808080 "Translucent Glass" then reads as solid blue. Gating on
+        // the final fragment alpha keeps the reversed-face cue on solids while
+        // letting transparent glass render its true colour. (gl_FragColor.a here
+        // is diffuse.a × opacity, so glass < 1 is skipped, opaque == 1 is tinted.)
+        '#include <dithering_fragment>\n\tif (!gl_FrontFacing && gl_FragColor.a > 0.97) { gl_FragColor.rgb = mix(gl_FragColor.rgb, uBackColor, uBackStrength); }');
   };
 }
 
