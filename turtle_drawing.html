@@ -24864,34 +24864,48 @@ async function importSKP(arrayBuffer, filename, srcPath) {
       localStorage.setItem('td_skp_privacy_ok', '1');
     }
   } catch (_) {}
-  setStatus('msg', 'Converting ' + (filename || 'model.skp') + ' …');
-  let res;
+  const _nm = filename || 'model.skp';
+  setStatus('msg', 'Converting ' + _nm + ' …');
+  // Use XMLHttpRequest (not fetch) so the long network round-trip shows PROGRESS
+  // instead of a frozen-looking "Converting…": upload % → "converting on server"
+  // → download %. (fetch() has no upload-progress.) X-Filename is percent-encoded
+  // because HTTP header values must be Latin-1 — a non-ASCII (e.g. Korean) name
+  // otherwise makes the browser reject the request before sending.
+  let glb;
   try {
-    // HTTP header values must be ISO-8859-1 (Latin-1). A non-ASCII filename
-    // (e.g. Korean) put fetch()'s X-Filename header out of range, so the browser
-    // REJECTED the request before sending it (no network request at all → looked
-    // like "could not reach the server"). Percent-encode so any filename is safe;
-    // the server only uses it for a temp name.
-    res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(filename || 'model.skp') },
-      body: arrayBuffer,
+    glb = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', endpoint);
+      xhr.responseType = 'arraybuffer';
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(_nm));
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) setStatus('msg', '업로드 중 / Uploading … ' + Math.round(ev.loaded / ev.total * 100) + '%  (' + _nm + ')');
+      };
+      xhr.upload.onload = () => setStatus('msg', '서버에서 변환 중 / Converting on server …  (잠시 기다려 주세요)');
+      xhr.onprogress = (ev) => {
+        if (ev.lengthComputable) setStatus('msg', '결과 받는 중 / Downloading model … ' + Math.round(ev.loaded / ev.total * 100) + '%');
+        else setStatus('msg', '결과 받는 중 / Downloading model … ' + (ev.loaded / 1e6).toFixed(1) + ' MB');
+      };
+      xhr.onerror = () => reject({ net: true });
+      xhr.ontimeout = () => reject({ net: true });
+      xhr.onload = () => {
+        if (xhr.status === 200) { resolve(xhr.response); return; }
+        let detail = xhr.status;
+        try { detail = JSON.parse(new TextDecoder().decode(xhr.response)).error || detail; } catch (_) {}
+        reject({ conv: detail });
+      };
+      xhr.send(arrayBuffer);
     });
   } catch (e) {
-    showError('SKP 변환 서버에 연결할 수 없습니다 (' + endpoint + ').\nCould not reach the .skp conversion server — check that it is running and the URL is correct.');
+    if (e && e.conv != null) showError('SKP 변환 실패 / conversion failed: ' + e.conv);
+    else showError('SKP 변환 서버에 연결할 수 없습니다 (' + endpoint + ').\nCould not reach the .skp conversion server — check that it is running and the URL is correct.');
     return;
   }
-  if (!res.ok) {
-    let detail = res.status;
-    try { const j = await res.json(); if (j && j.error) detail = j.error; } catch (_) {}
-    showError('SKP 변환 실패 / conversion failed: ' + detail);
-    return;
-  }
-  const glb = await res.arrayBuffer();
   // Same options as the desktop path: mergeCoplanar merges the converter's
   // triangles back into clean editable n-gon faces (without it the model looks
   // shattered into triangles) AND enables instancing/heavy-object handling.
-  importGLB(glb, (filename || 'model.skp').replace(/\.skp$/i, '.glb'), { mergeCoplanar: true });
+  importGLB(glb, _nm.replace(/\.skp$/i, '.glb'), { mergeCoplanar: true });
 }
 
 /* Gate the .skp import affordance: on the public web build it needs a
