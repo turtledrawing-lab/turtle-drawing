@@ -29023,7 +29023,18 @@ function _handleActionImpl(act) {
           }
         })();
       } else {
-        openFileDialog('.skp');
+        // iOS/iPadOS Safari greys out EVERY file when `accept` is an extension it
+        // has no registered UTI for (.skp), so the user can't select anything.
+        // Drop the filter there and let the change handler validate the .skp
+        // extension after the pick. (Other platforms keep the precise filter.)
+        const _iOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+          || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
+        if (_iOS) {
+          const fi = document.getElementById('fileInput');
+          fi.accept = ''; fi.multiple = false; fi.click();
+        } else {
+          openFileDialog('.skp');
+        }
       }
       break;
     case 'import-3dm':
