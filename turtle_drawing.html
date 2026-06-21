@@ -24542,7 +24542,14 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
     if (_sharedNodes && _sharedNodes.length >= 2) {
       const _srcMatI = Array.isArray(m.material) ? m.material[0] : m.material;
       const _matColI = (_srcMatI && _srcMatI.color && typeof _srcMatI.color.getHex === 'function') ? _srcMatI.color.getHex() : 0xffffff;
-      let def = _geoDef.get(geo);
+      // A mirrored instance (negative-determinant matrix) flips the shared
+      // geometry's winding → faces render inverted (back-face/blue). We can't bake
+      // a flip into SHARED geometry, so build a separate REVERSED-winding def for
+      // mirrored uses; the negative-det matrix then flips it back to front-facing.
+      const _mir = m.matrixWorld.determinant() < 0;
+      let _variants = _geoDef.get(geo);
+      if (!_variants) { _variants = {}; _geoDef.set(geo, _variants); }
+      let def = _mir ? _variants.mirrored : _variants.normal;
       if (!def) {
         // Build the definition ONCE in def-LOCAL space (raw geometry, no node
         // matrix), with the same weld/merge/hard-edge processing as the bake path.
@@ -24555,15 +24562,21 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
         for (let t = 0; t + 2 < _tc; t += 3) {
           const a = _gi(t), b = _gi(t + 1), c = _gi(t + 2);
           if (a === b || b === c || a === c) continue;
-          dem.addFace([a, b, c], _matColI, Model.activeLayerId || 'Layer0');
+          dem.addFace(_mir ? [a, c, b] : [a, b, c], _matColI, Model.activeLayerId || 'Layer0');
         }
         try { _skpMergeProcessEM(dem); } catch (e) { console.warn('[skp] def process failed:', e); }
-        const _dn = (_srcMatI && _srcMatI.name ? _srcMatI.name : 'Component') + ' (' + (filename || 'imported') + ')';
+        const _dn = (_srcMatI && _srcMatI.name ? _srcMatI.name : 'Component') + (_mir ? ' (mirror)' : '') + ' (' + (filename || 'imported') + ')';
         def = _defFromEM(dem, _dn);
-        _geoDef.set(geo, def);
-        // The def has its own vertex copy; free the shared glTF geometry now
-        // (other instance nodes use the def, not this BufferGeometry).
-        try { for (const k of Object.keys(geo.attributes)) geo.deleteAttribute(k); geo.setIndex(null); geo.dispose(); } catch (_) {}
+        if (_mir) _variants.mirrored = def; else _variants.normal = def;
+        // The def has its own vertex copy → free the shared glTF geometry to keep
+        // peak memory down on big imports. BUT only if no sibling node needs the
+        // OTHER winding (a component used both mirrored + non-mirrored still needs
+        // geo to build the second variant) — else keep it.
+        let _needsOther = false;
+        for (const _sn of _sharedNodes) { if ((_sn.matrixWorld.determinant() < 0) !== _mir) { _needsOther = true; break; } }
+        if (!_needsOther) {
+          try { for (const k of Object.keys(geo.attributes)) geo.deleteAttribute(k); geo.setIndex(null); geo.dispose(); } catch (_) {}
+        }
       }
       // Instance: place by the node's world matrix (translation scaled to metres
       // for unit conversion; def verts are already metres).
