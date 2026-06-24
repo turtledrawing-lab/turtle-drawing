@@ -41,6 +41,41 @@ Using it from the web app:
 The server emits **instanced** glb (one mesh per repeated component + N nodes), so
 the web import preserves full SketchUp depth — same as the desktop offline path.
 
+## Keeping it alive (dedicated always-on Mac)
+`convert.tdw.kr` is served by a dedicated Mac running two LaunchAgents
+(`kr.tdw.skpserver` = server.py, `kr.tdw.cloudflared` = the named tunnel), both
+`RunAtLoad`+`KeepAlive`. That covers crashes; the pieces below cover hangs,
+deploys, and sleep.
+
+**Self-heal a HUNG server/tunnel** (KeepAlive only restarts *crashed* processes —
+the SketchUp binding can wedge on a bad model and stop answering while alive):
+```
+npm run skp:setup-watchdog      # once — installs kr.tdw.skpwatchdog (checks /health every 5 min)
+```
+It pings `localhost:8787/health` and `convert.tdw.kr/health` and `launchctl
+kickstart`s the right agent if unresponsive. Logs: `~/Library/Logs/skp-watchdog.log`.
+Run a check by hand: `npm run skp:watchdog`.
+
+**Deploy new server code** (a plain `git pull` isn't enough — the server runs from
+the gitignored `runtime-macos/`, so server.py/convert.py must be copied in):
+```
+npm run skp:update              # git pull → sync into runtime-macos/ → restart → /health
+```
+
+**Never sleep / low power**:
+```
+sudo pmset -c sleep 0 displaysleep 10     # never idle-sleep on AC; screen may sleep (saves power)
+sudo pmset -c disablesleep 1              # run with the LID CLOSED (no external display needed)
+```
+Then enable **auto-login** (System Settings ▸ Users & Groups ▸ Automatically log in)
+so a reboot/power-blip brings both agents back without anyone logging in. With the
+lid closed, keep airflow (conversions are brief CPU bursts). Verify from another
+device: open `https://convert.tdw.kr/health` → `{"ok": true, …}`.
+
+**Status / logs**: `launchctl list | grep tdw` (front column = PID if running);
+`~/Library/Logs/{skp-server,cloudflared,skp-watchdog}.log`. Cloudflare **1033** =
+tunnel down (cloudflared), **502** = tunnel up but origin (server.py) down.
+
 ## ⚠️ Licensing
 `SketchUpAPI.dll` and the `sketchup` binding are **Trimble proprietary** (SketchUp
 SDK EULA) — they are **NOT** committed to this repo (see `.gitignore`). You, as a
