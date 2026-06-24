@@ -15788,7 +15788,7 @@ Tools.move = {
         if (mask && !mask.has(i)) { o.em.vertices[i].copy(orig[i]); continue; }
         o.em.vertices[i].copy(orig[i]).addScaledVector(dir, signedD);
       }
-      if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
+      if (o.group) o.group.position.set(0, 0, 0);   // typed-distance: zero the baked fast-move offset for ALL objects
       o.rebuild();
     }
     if (this.copyMode) {
@@ -15796,7 +15796,7 @@ Tools.move = {
       for (const o of this.objs) {
         const orig = this.origVertsByObj.get(o);
         if (orig) for (let i = 0; i < o.em.vertices.length; i++) o.em.vertices[i].copy(orig[i]);
-        if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
+        if (o.group) o.group.position.set(0, 0, 0);   // typed-distance: zero the baked fast-move offset for ALL objects
         o.rebuild();
       }
       // Save copy info for *N multiplier
