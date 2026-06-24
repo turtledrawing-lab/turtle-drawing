@@ -8350,11 +8350,10 @@ function restore(entry) {
     }
     Model.components = _next;
   }
-  const _keepCompatible = (o, s) => {
+  const _sameAppearance = (o, s) => {
     const eq = (a, b) => (a == null ? null : a) === (b == null ? null : b);
     try {
-      return o._editGen === s.gen &&
-        eq(o.materialId || null, s.materialId) &&
+      return eq(o.materialId || null, s.materialId) &&
         o.mat.color.getHex() === s.matColor &&
         o.mat.opacity === s.matOpacity &&
         o.mat.transparent === s.matTransparent &&
@@ -8368,10 +8367,74 @@ function restore(entry) {
         !!o.faceCamera === !!s.faceCamera;
     } catch (_) { return false; }
   };
+  const _keepCompatible = (o, s) => { try { return o._editGen === s.gen && _sameAppearance(o, s); } catch (_) { return false; } };
+  // Undo/redo of a whole-object MOVE changes geometry ONLY by a uniform translation
+  // of every vertex (_bakeFastMoves adds the same offset to all verts). The generic
+  // path clones + rebuilds each mesh from scratch (~43ms each → a 170-object group
+  // move froze undo for ~7s). If the snapshot differs from the live object by one
+  // constant delta on every vertex, just shift the existing position buffers in place
+  // (O(verts), no allocation, no geometry rebuild). Returns true if applied; false
+  // (any non-uniform difference) falls back to the full remove+recreate path.
+  const _tryTranslateInPlace = (o, s) => {
+    try {
+      const ov = o.em && o.em.vertices, sv = s.em && s.em.vertices;
+      if (!ov || !sv || ov.length === 0 || ov.length !== sv.length) return false;
+      if (o.em.faces && s.em.faces && o.em.faces.length !== s.em.faces.length) return false;
+      const dx = sv[0].x - ov[0].x, dy = sv[0].y - ov[0].y, dz = sv[0].z - ov[0].z;
+      let mag = 0;
+      for (let i = 0; i < ov.length; i++) {
+        const a = Math.abs(ov[i].x), b = Math.abs(ov[i].y), c = Math.abs(ov[i].z);
+        if (a > mag) mag = a; if (b > mag) mag = b; if (c > mag) mag = c;
+      }
+      const eps = 1e-4 * (1 + mag);   // float32 bake error ~1e-6·mag « smallest real edit ~1e-3·mag
+      for (let i = 1; i < ov.length; i++) {
+        if (Math.abs((sv[i].x - ov[i].x) - dx) > eps ||
+            Math.abs((sv[i].y - ov[i].y) - dy) > eps ||
+            Math.abs((sv[i].z - ov[i].z) - dz) > eps) return false;
+      }
+      const shiftPos = (geom) => {
+        if (!geom) return;
+        const p = geom.attributes && geom.attributes.position;
+        if (p && p.array) { const a = p.array; for (let i = 0; i < a.length; i += 3) { a[i] += dx; a[i + 1] += dy; a[i + 2] += dz; } p.needsUpdate = true; }
+        try { geom.computeBoundingBox(); geom.computeBoundingSphere(); } catch (_) {}
+        try { if (geom.boundsTree && geom.boundsTree.refit) geom.boundsTree.refit(); } catch (_) {}
+      };
+      if (o.mesh) shiftPos(o.mesh.geometry);
+      if (o.edges) shiftPos(o.edges.geometry);
+      // Thick-edge overlay (LineSegmentsGeometry: interleaved [sx,sy,sz,ex,ey,ez] —
+      // still flat xyz triplets). Hidden while the edge batch is on, but shift anyway
+      // so a section/group-edit view (batch off) stays correct.
+      if (o._thickEdges && o._thickEdges.geometry) {
+        const g = o._thickEdges.geometry;
+        const isa = g.attributes && g.attributes.instanceStart;
+        const arr = isa && isa.data && isa.data.array;
+        if (arr) { for (let i = 0; i < arr.length; i += 3) { arr[i] += dx; arr[i + 1] += dy; arr[i + 2] += dz; } isa.data.needsUpdate = true; }
+        try { if (g.computeBoundingSphere) g.computeBoundingSphere(); } catch (_) {}
+      }
+      for (let i = 0; i < ov.length; i++) { ov[i].x = sv[i].x; ov[i].y = sv[i].y; ov[i].z = sv[i].z; }
+      return true;
+    } catch (_) { return false; }
+  };
   for (const s of entry.state) {
     const cur = (s.uid != null) ? _byUid.get(s.uid) : null;
-    if (cur && !_keep.has(cur) && _keepCompatible(cur, s)) {
-      // Unchanged geometry/material — keep the live object, sync cheap props.
+    if (!cur || _keep.has(cur)) continue;
+    let kept = false;
+    if (_keepCompatible(cur, s)) {
+      // A moved/scaled/rotated instance is "kept" (its def.em is unchanged), so its
+      // placement lives ONLY in instanceMatrix — restore it explicitly or undo of a
+      // transform wouldn't move it back.
+      if (s.isInstance && cur.isInstance && s.instanceMatrix && s.instanceMatrix.length === 16) {
+        cur.instanceMatrix = new THREE.Matrix4().fromArray(s.instanceMatrix);
+        cur.group.matrix.copy(cur.instanceMatrix);
+        cur.group.matrixWorldNeedsUpdate = true; cur.group.updateMatrixWorld(true);
+      }
+      kept = true;
+    } else if (!cur.isInstance && _sameAppearance(cur, s) && _tryTranslateInPlace(cur, s)) {
+      cur._editGen = s.gen;     // now represents the restored (pre-move) geometry
+      kept = true;
+    }
+    if (kept) {
+      // Unchanged (or translation-only) geometry/material — keep the live object, sync cheap props.
       cur.layerId = s.layerId;
       cur.name = s.name;
       cur.setVisible(s.visible);
@@ -8381,14 +8444,6 @@ function restore(entry) {
       if (s.castShadow != null && cur.mesh) cur.mesh.castShadow = s.castShadow;
       cur.componentId = s.componentId || null;
       cur.componentOrigin = s.componentOrigin ? { ...s.componentOrigin } : null;
-      // A moved/scaled/rotated instance is "kept" (its def.em is unchanged), so
-      // its placement lives ONLY in instanceMatrix — restore it explicitly or
-      // undo of a transform wouldn't move it back.
-      if (s.isInstance && cur.isInstance && s.instanceMatrix && s.instanceMatrix.length === 16) {
-        cur.instanceMatrix = new THREE.Matrix4().fromArray(s.instanceMatrix);
-        cur.group.matrix.copy(cur.instanceMatrix);
-        cur.group.matrixWorldNeedsUpdate = true; cur.group.updateMatrixWorld(true);
-      }
       _keep.add(cur);
       s._keptObj = cur;
     }
