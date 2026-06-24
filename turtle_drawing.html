@@ -8337,6 +8337,9 @@ function restore(entry) {
         const snapGen = (cs.editGen != null) ? cs.editGen : -1;
         if (liveGen !== snapGen) {
           def.vertices = _mkV(cs.vertices); def.faces = _mkF(cs.faces); def.edges = _mkE(cs.edges);
+          // _defBuildEM reads def.softEdges/def.smoothShade — restore them from the
+          // snapshot or undo of a component edit would drop soften / smooth-shade state.
+          def.softEdges = (cs.softEdges || []).slice(); def.smoothShade = !!cs.smoothShade;
           def.em = null;
           try { rebuildComponentDef(def); } catch (_) {}   // rebuilds em+geometry + re-points live instances
           def._editGen = snapGen;                           // track the restored-to state so a repeat undo is a no-op
@@ -8344,7 +8347,8 @@ function restore(entry) {
       } else {
         def = { id: cs.id, name: cs.name, materialId: cs.materialId || null,
                 pivot: cs.pivot ? { ...cs.pivot } : { x: 0, y: 0, z: 0 },
-                vertices: _mkV(cs.vertices), faces: _mkF(cs.faces), edges: _mkE(cs.edges) };
+                vertices: _mkV(cs.vertices), faces: _mkF(cs.faces), edges: _mkE(cs.edges),
+                softEdges: (cs.softEdges || []).slice(), smoothShade: !!cs.smoothShade };
       }
       _next.push(def);
     }
@@ -8381,6 +8385,11 @@ function restore(entry) {
       if (!ov || !sv || ov.length === 0 || ov.length !== sv.length) return false;
       if (o.em.faces && s.em.faces && o.em.faces.length !== s.em.faces.length) return false;
       const dx = sv[0].x - ov[0].x, dy = sv[0].y - ov[0].y, dz = sv[0].z - ov[0].z;
+      // A zero / sub-micron delta means nothing actually MOVED — the _editGen bump came
+      // from a non-vertex change (Soften Edges, smooth-shade toggle, a no-op rebuild).
+      // Keeping the live object would make that edit's undo a silent no-op; fall back to
+      // the recreate path so the snapshot's pre-edit geometry + edge state is restored.
+      if (dx * dx + dy * dy + dz * dz < 1e-12) return false;
       let mag = 0;
       for (let i = 0; i < ov.length; i++) {
         const a = Math.abs(ov[i].x), b = Math.abs(ov[i].y), c = Math.abs(ov[i].z);
@@ -13250,7 +13259,7 @@ function refreshSelectionVisuals() {
     side: THREE.DoubleSide, depthTest: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   });
-  for (const [obj, faceIdxs] of (_selVisualsLite ? [] : Selection.faces)) {
+  for (const [obj, faceIdxs] of ((_selVisualsLite || _bigSel) ? [] : Selection.faces)) {
     // Whole-object selection (e.g., grouped object click) auto-fills faces;
     // skip the per-face overlay so the object isn't painted blue.
     if (Selection.objects.has(obj)) continue;
@@ -13276,7 +13285,7 @@ function refreshSelectionVisuals() {
     color: 0x0066ff, depthTest: false, transparent: true, opacity: 0.95,
   });
   const edgeRadius = Math.max(0.00075, controls.spherical.radius * 0.0006);
-  for (const [obj, keys] of (_selVisualsLite ? [] : Selection.edges)) {
+  for (const [obj, keys] of ((_selVisualsLite || _bigSel) ? [] : Selection.edges)) {
     // Whole-selected objects' edges are covered by the silhouette / merged bbox —
     // skip them here (a group/triple-click auto-fills Selection.edges with every
     // member edge, which previously built a tube PER edge → the marquee freeze).
