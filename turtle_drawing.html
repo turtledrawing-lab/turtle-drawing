@@ -1827,6 +1827,7 @@ window._ensureVendor = _ensureVendor;
 <script src="ad/hatch_lines.js"></script>
 <script src="ad/scenes.js"></script>
 <script src="ad/layers.js"></script>
+<script src="ad/edge_batch.js"></script>
 <script src="ad/section_style.js"></script>
 <script src="ad/entourage.js"></script>
 <script src="ad/export.js"></script>
@@ -7726,6 +7727,13 @@ function applyLayerVisibility() {
     }
     o.mat.needsUpdate = true;
     o.edgeMat.needsUpdate = true;
+    // The VISIBLE linework is the thick-edge overlay (LineSegments2), not edgeMat
+    // — fade it too, or a dimmed group-edit outsider keeps bright wireframe lines.
+    if (o._thickEdges && o._thickEdges.material) {
+      o._thickEdges.material.transparent = dim;
+      o._thickEdges.material.opacity = dim ? 0.18 : 1.0;
+      o._thickEdges.material.needsUpdate = true;
+    }
     if (Model.colorByLayer && L) {
       if (!o.materialId) o.mat.color.set(L.color);
     } else {
@@ -7747,6 +7755,9 @@ function applyLayerVisibility() {
   // (restore), file open (loadDocIntoScene), new/empty tab (clearSceneAll),
   // and layer eye toggles — so invalidate here.
   try { if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true; } catch (_) {}
+  // Re-form the edge batch after a visibility/dim change (group enter/exit toggles
+  // it off so per-object thick edges can dim individually).
+  try { if (window.AD && AD.EdgeBatch) AD.EdgeBatch.rebuild(); } catch (_) {}
 }
 
 /* ----- Group editing (standard "enter group" context) ----- */
@@ -11600,10 +11611,38 @@ function computeSnap(e, opts = {}) {
   // group is editable — which makes snapping inside a complex grouped model
   // crawl. Press Esc to leave the group and snap against the rest again.
   const _snapEditing = Model.activeGroupId != null;
+  // Cursor-proximity prefilter (large scenes only): screen-bbox distance from the
+  // cursor to each object, computed ONCE and reused by the endpoint/edge scan and
+  // the inference candidate set. On a dense 1000+-object import this turns a
+  // ~500ms/mousemove whole-model scan into a near-cursor scan. An object with any
+  // vertex near the cursor has a near-cursor bbox, so the tight margin never drops
+  // a real endpoint/edge target; inference refs keep a generous margin.
+  const _snapCull = Model.objects.length > 80;
+  const _objSDist = _snapCull ? new Map() : null;
+  if (_snapCull) {
+    const _snapTmpV = new THREE.Vector3();
+    for (const o of Model.objects) {
+      if (!o || !o.group || !o.group.visible || o.locked) continue;
+      let bb; try { bb = o.computeBBox(); } catch (_) { _objSDist.set(o, 0); continue; }
+      if (!bb || !isFinite(bb.min.x)) { _objSDist.set(o, 0); continue; }
+      let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity, front = false;
+      const C = bb.min, D = bb.max, cx = [C.x, D.x], cy = [C.y, D.y], cz = [C.z, D.z];
+      for (let i = 0; i < 8; i++) {
+        const p = worldToScreen(_snapTmpV.set(cx[i & 1], cy[(i >> 1) & 1], cz[(i >> 2) & 1]));
+        if (p.z < 1) front = true;
+        if (p.x < mnX) mnX = p.x; if (p.y < mnY) mnY = p.y;
+        if (p.x > mxX) mxX = p.x; if (p.y > mxY) mxY = p.y;
+      }
+      if (!front) { _objSDist.set(o, Infinity); continue; }
+      const dx = Math.max(mnX - mx, 0, mx - mxX), dy = Math.max(mnY - my, 0, my - mxY);
+      _objSDist.set(o, Math.hypot(dx, dy));
+    }
+  }
   const _snapObjects = Model.objects.filter(o =>
     o.group.visible && !o.locked && (_snapUnderlayOK || !o.isUnderlay) &&
     !(_snapExclude && _snapExclude.has(o)) &&
-    (!_snapEditing || isInActiveSubtree(o))
+    (!_snapEditing || isInActiveSubtree(o)) &&
+    (!_snapCull || (_objSDist.get(o) || 0) <= 220)
   );
 
   // STAGE 3 — snap transform-aware for component instances. Snapping is done in
@@ -11729,6 +11768,9 @@ function computeSnap(e, opts = {}) {
   for (const obj of Model.objects) {
     if (!obj.group.visible || obj.locked) continue;
     if (_snapExclude && _snapExclude.has(obj)) continue;
+    // Cursor-proximity cull (large scenes): skip the per-vertex/edge/occlusion
+    // scan for any object whose screen bbox is well outside the snap radius.
+    if (_snapCull) { const _sd = _objSDist.get(obj); if (_sd == null || _sd > SNAP_PX_END + 24) continue; }
     // Background underlay (imported DXF): trace-friendly LIGHT snap by default.
     // We still snap to its real corners (Endpoint) and lines (On Edge) so you
     // can trace right over it, but skip midpoints, the per-point occlusion
@@ -13118,6 +13160,11 @@ function _buildMergedTubeGeometry(verts, segPairs, radius) {
 // highlight is rebuilt once on mouse-up.
 let _selVisualsLite = false;
 function refreshSelectionVisuals() {
+  // Large selections: per-face/per-edge/silhouette overlay builds make HUNDREDS
+  // of meshes EACH (a 418-object marquee built 210k meshes → 2.6s freeze). Past
+  // this many selected objects, skip ALL per-object overlays and draw one merged
+  // blue bbox-wireframe instead (see below).
+  const _bigSel = Selection.objects.size > 12;
   // Clear previous overlays
   while (selectionHelper.children.length) {
     const c = selectionHelper.children.pop();
@@ -13132,7 +13179,7 @@ function refreshSelectionVisuals() {
     side: THREE.DoubleSide, depthTest: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   });
-  for (const [obj, faceIdxs] of (_selVisualsLite ? [] : Selection.faces)) {
+  for (const [obj, faceIdxs] of ((_selVisualsLite || _bigSel) ? [] : Selection.faces)) {
     // Whole-object selection (e.g., grouped object click) auto-fills faces;
     // skip the per-face overlay so the object isn't painted blue.
     if (Selection.objects.has(obj)) continue;
@@ -13158,7 +13205,7 @@ function refreshSelectionVisuals() {
     color: 0x0066ff, depthTest: false, transparent: true, opacity: 0.95,
   });
   const edgeRadius = Math.max(0.00075, controls.spherical.radius * 0.0006);
-  for (const [obj, keys] of (_selVisualsLite ? [] : Selection.edges)) {
+  for (const [obj, keys] of ((_selVisualsLite || _bigSel) ? [] : Selection.edges)) {
     for (const k of keys) {
       const [a, b] = k.split(':').map(Number);
       const A = obj.em.vertices[a], B = obj.em.vertices[b];
@@ -13206,7 +13253,7 @@ function refreshSelectionVisuals() {
     //     (_selectActiveGroupAll fills edges too — selectGroup does not), so
     //     a plain single-click group-as-unit pick keeps just the dashed outline.
     const groupTripleSel = o.groupId != null && Selection.edges.has(o);
-    if (wholeSel && o.mesh && o.mesh.geometry && (o.groupId == null || groupTripleSel)) {
+    if (!_bigSel && wholeSel && o.mesh && o.mesh.geometry && (o.groupId == null || groupTripleSel)) {
       const overlay = new THREE.Mesh(o.mesh.geometry, wholeSelMat);
       o.group.updateMatrixWorld(true);
       overlay.matrixAutoUpdate = false;
@@ -13233,7 +13280,7 @@ function refreshSelectionVisuals() {
       o.edgeMat.color.set(0x0066ff);
       o.edgeMat.linewidth = 2;
     }
-    if (!_selVisualsLite && (_doSilhouette || _doStandalone)) {
+    if (!_bigSel && !_selVisualsLite && (_doSilhouette || _doStandalone)) {
       o.group.updateMatrixWorld(true);
       const tubeRadius = Math.max(0.00015, controls.spherical.radius * 0.000125);
       const tubeMat = new THREE.MeshBasicMaterial({
@@ -13346,6 +13393,33 @@ function refreshSelectionVisuals() {
       }
     }
   }
+  // Big selection highlight: ONE merged blue bbox-wireframe for all selected
+  // objects (12 edges each → a single LineSegments / 1 draw call) instead of the
+  // per-object silhouette tubes that froze the UI. Release-only (the lite drag
+  // shows just the marquee rect).
+  if (_bigSel && !_selVisualsLite && Selection.objects.size) {
+    const pos = [];
+    const _ed = (a, b) => { pos.push(a.x, a.y, a.z, b.x, b.y, b.z); };
+    for (const o of Selection.objects) {
+      let bb; try { bb = o.computeBBox(); } catch (_) { continue; }
+      if (!bb || !isFinite(bb.min.x)) continue;
+      const a = bb.min, d = bb.max;
+      const c = [
+        new THREE.Vector3(a.x, a.y, a.z), new THREE.Vector3(d.x, a.y, a.z), new THREE.Vector3(d.x, d.y, a.z), new THREE.Vector3(a.x, d.y, a.z),
+        new THREE.Vector3(a.x, a.y, d.z), new THREE.Vector3(d.x, a.y, d.z), new THREE.Vector3(d.x, d.y, d.z), new THREE.Vector3(a.x, d.y, d.z),
+      ];
+      _ed(c[0], c[1]); _ed(c[1], c[2]); _ed(c[2], c[3]); _ed(c[3], c[0]);
+      _ed(c[4], c[5]); _ed(c[5], c[6]); _ed(c[6], c[7]); _ed(c[7], c[4]);
+      _ed(c[0], c[4]); _ed(c[1], c[5]); _ed(c[2], c[6]); _ed(c[3], c[7]);
+    }
+    if (pos.length) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      const ls = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x0066ff, depthTest: false, transparent: true, opacity: 0.9 }));
+      ls.renderOrder = 12;
+      selectionHelper.add(ls);
+    }
+  }
   // Section plane handles: orange normally, blue when selected
   for (const sp of Model.sectionPlanes) {
     const sel = Selection.sectionPlanes.has(sp);
@@ -13365,7 +13439,10 @@ function refreshSelectionVisuals() {
   }
   // Edge colors (selection blue / resting) are finalized above; mirror them
   // onto the thick-line overlays so the highlight + colors are actually seen.
-  for (const o of Model.objects) _syncThickEdge(o);
+  // Skip overlays the edge batch has hidden (selection shows via the silhouette
+  // overlay, not their colour) — otherwise this is O(all objects) per selection
+  // and dominates large multi-selects on big imports.
+  for (const o of Model.objects) if (o._thickEdges && o._thickEdges.visible) _syncThickEdge(o);
 }
 
 const ToolMgr = {
@@ -14383,10 +14460,15 @@ Tools.select = {
       if (Model.activeGroupId != null
             ? (typeof isInActiveSubtree === 'function' && !isInActiveSubtree(o))
             : isOuterGroup(o)) continue;
-      // Fast path for imported smooth-shaded meshes: project the bbox corners
-      // and treat the object as a whole unit — avoids iterating tens of
-      // thousands of faces per mouse move.
-      if (o.em._smoothShade) {
+      // Fast path: project the bbox corners and treat the object as a WHOLE unit
+      // instead of iterating every face × vertex per mouse move (that froze the UI
+      // marquee-ing a dense 1000-object import). Used for smooth-shaded imports,
+      // any heavy object, AND every object during a TOP-LEVEL marquee on a big
+      // scene (whole-object select is what you want there — SketchUp-style). When
+      // editing a group the per-face path still runs, but only on the small active
+      // subtree, so it stays responsive.
+      if (o.em._smoothShade || (o.em.faces && o.em.faces.length > 300) ||
+          (Model.activeGroupId == null && Model.objects.length > 150)) {
         const bb = this._cachedBBox(o);
         const cs = [
           new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z),
@@ -14640,6 +14722,7 @@ Tools.move = {
       this.copyObjs = null;
     }
     this.copyMode = false;
+    this._cancelFastMoves();   // mid-drag tool switch → drop live group offsets
     // Defensive: if a drag was interrupted (tool switch mid-move), an underlay
     // member may still carry a transient group.position offset. Clear it so the
     // object reflects its true (vertex) position and never gets stuck offset.
@@ -14670,11 +14753,12 @@ Tools.move = {
     // source. Copying a deform-in-progress has no sane meaning; ignore C/Alt.
     if (this.copyMode || !this.dragging || !this.objs || this.sectionTarget ||
         this._grabDeform) return;
-    // Restore originals to saved positions
+    // Restore originals to saved positions (drop any live group-transform offset)
+    this._cancelFastMoves();
     for (const o of this.objs) {
       const orig = this.origVertsByObj.get(o);
       if (orig) for (let i = 0; i < o.em.vertices.length; i++) o.em.vertices[i].copy(orig[i]);
-      if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
+      if (o.group) o.group.position.set(0, 0, 0);
       o.rebuild();
     }
     // Create clones. Clone each source group's WHOLE subtree with FRESH ids so
@@ -15138,6 +15222,7 @@ Tools.move = {
         this.copyMode = false;
         setStatus('msg', 'Copied. Type *N to create N copies (e.g. *3).');
       } else {
+        this._bakeFastMoves();   // bake the live group-transform offset into verts
         this._lastCopyDelta = null;
         this._lastCopySourceObjs = null;
         // For non-copy moves of component instances: shift componentOrigin by
@@ -15181,7 +15266,13 @@ Tools.move = {
     // Per-drag instance-matrix snapshot: reset whenever the origVerts snapshot
     // (re-made at each drag start) changes, so a second move composes from the
     // post-first-move matrix rather than the original.
-    if (this._instOrigForVerts !== this.origVertsByObj) { this._instOrigMat = new Map(); this._instOrigForVerts = this.origVertsByObj; }
+    if (this._instOrigForVerts !== this.origVertsByObj) {
+      this._instOrigMat = new Map(); this._instOrigForVerts = this.origVertsByObj;
+      this._fastMoveObjs = new Set();
+      // New drag: pull the moving objects out of the static edge batch so their
+      // lines track live (no ghost) while we move them by group transform.
+      try { if (window.AD && AD.EdgeBatch && !this.copyMode) AD.EdgeBatch.excludeMany(moveTargets); } catch (_) {}
+    }
     for (let ti = 0; ti < moveTargets.length; ti++) {
       const o = moveTargets[ti];
       const origObj = this.objs[ti];
@@ -15204,6 +15295,15 @@ Tools.move = {
         o.group.position.copy(delta);
         continue;
       }
+      // Fast path: whole-object baked move → translate the group transform only
+      // (O(1) per object — no geometry/normal/edge/BVH rebuild, so it scales to
+      // huge groups). em.vertices are baked once on commit (_bakeFastMoves); snap
+      // already excludes these objects so their stale verts don't affect the drag.
+      if (!this.copyMode && !isPartial && !mask && o.group) {
+        o.group.position.copy(delta);
+        (this._fastMoveObjs || (this._fastMoveObjs = new Set())).add(o);
+        continue;
+      }
       if (isPartial) {
         const cloneOrig = this._cloneOrigVerts.get(o);
         for (let i = 0; i < o.em.vertices.length; i++) {
@@ -15218,6 +15318,27 @@ Tools.move = {
       }
       o.rebuild();
     }
+  },
+  /* Bake the live group-transform offset (fast-path move) into em.vertices once,
+     on commit: add group.position to every vertex, zero the transform, rebuild.
+     Cheap O(geometry) ONCE (vs every drag frame). */
+  _bakeFastMoves() {
+    const set = this._fastMoveObjs;
+    if (!set || !set.size) return;
+    for (const o of set) {
+      if (!o || !o.group) continue;
+      const gp = o.group.position;
+      if (gp.lengthSq() > 1e-20) { for (const v of o.em.vertices) v.add(gp); gp.set(0, 0, 0); o.rebuild(); }
+    }
+    set.clear();
+  },
+  /* Cancel fast-path moves: drop the group offset, leave em.vertices (still orig)
+     untouched. Used on Escape and tool-switch mid-drag. */
+  _cancelFastMoves() {
+    const set = this._fastMoveObjs;
+    if (!set || !set.size) return;
+    for (const o of set) { if (o && o.group) o.group.position.set(0, 0, 0); }
+    set.clear();
   },
   onPointerMove(e) {
     if (!this.dragging) return;
@@ -15500,6 +15621,7 @@ Tools.move = {
           this.copyObjs = null;
         }
         this.copyMode = false;
+        this._cancelFastMoves();   // drop any live group-transform offsets
         // Restore original vertex positions (cancel the move)
         if (this.objs && this.origVertsByObj) {
           for (const o of this.objs) {
@@ -15508,7 +15630,7 @@ Tools.move = {
               for (let i = 0; i < o.em.vertices.length; i++) {
                 o.em.vertices[i].copy(orig[i]);
               }
-              if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
+              if (o.group) o.group.position.set(0, 0, 0);
               o.rebuild();
             }
           }
@@ -15661,6 +15783,7 @@ Tools.move = {
       this.copyMode = false;
       setStatus('msg', 'Copied. Type *N to create N copies (e.g. *3).');
     } else {
+      this._bakeFastMoves();   // bake the live group-transform offset into verts
       this._lastCopyDelta = null;
       this._lastCopySourceObjs = null;
       // Whole-object component moves must carry their anchor along (same
