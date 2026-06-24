@@ -15272,6 +15272,7 @@ Tools.move = {
         pushHistory('Move');
         setStatus('msg', 'Moved.');
       }
+      try { refreshSelectionVisuals(); } catch (_) {}   // move the selection highlight to the new position (no stale ghost at the old spot)
       this.dragging = false;
       this.obj = null;
       helperRoot.clear();
@@ -15828,6 +15829,7 @@ Tools.move = {
       try { _syncBimAfterMove(this.objs, this.origVertsByObj); } catch (e) { console.warn('BIM sync:', e); }
       pushHistory('Move ' + Units.format(Math.abs(signedD)));
     }
+    try { refreshSelectionVisuals(); } catch (_) {}   // move the selection highlight to the new position
     this.dragging = false;
     this.inferredAxis = null; this.activeAxis = null; this.activeDelta = null;
     helperRoot.clear();

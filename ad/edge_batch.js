@@ -59,7 +59,17 @@
         for (const o of Model.objects) {
           if (!this._canBatch(o)) { if (o && o._thickEdges) o._thickEdges.visible = true; continue; }
           o._thickEdges.visible = false;          // batch represents it now
-          const col = (o.edgeMat && o.edgeMat.color) ? o.edgeMat.color.getHex() : 0x1a1a1a;
+          // Use the RESTING colour, not the live edgeMat.color — a selected object's
+          // edgeMat is tinted blue, and if the batch is (re)built while it's selected
+          // (e.g. right after a move) the blue gets baked in and lingers even after
+          // deselect (the batch isn't rebuilt on selection change). Selection shows via
+          // the separate silhouette/bbox overlay, so the batch must stay resting.
+          let col = 0x1a1a1a;
+          try {
+            col = (typeof _restingEdgeColor === 'function')
+              ? new THREE.Color(_restingEdgeColor(o)).getHex()
+              : (o.edgeMat && o.edgeMat.color ? o.edgeMat.color.getHex() : 0x1a1a1a);
+          } catch (_) { if (o.edgeMat && o.edgeMat.color) col = o.edgeMat.color.getHex(); }
           let arr = byColor.get(col); if (!arr) { arr = []; byColor.set(col, arr); }
           arr.push(o.edges.geometry.attributes.position.array);
         }
