@@ -94,10 +94,17 @@
        re-batch everything after edits settle. */
     onObjectChanged(o) {
       if (!this.enabled || !o) return;
+      // During a bulk scene swap (file open / undo restore / tab switch) every
+      // addObject re-syncs an overlay; skip the per-object churn — the load ends
+      // with applyLayerVisibility() which rebuilds the batch once over the final scene.
+      if (typeof Model !== 'undefined' && Model._suppressAddRefresh) return;
       if (!this._excluded.has(o)) {
         this._excluded.add(o);
         if (o._thickEdges) o._thickEdges.visible = true;
-        if (this._excluded.size <= 30 && !this._rafPending) {   // small edit → drop ghost now
+        // Drop the stale batch copy this frame so the live overlay doesn't double-
+        // draw over it. Coalesced via rAF, so a bulk edit touching many objects in
+        // one frame still triggers just one rebuild (no 30-object cap → no 400ms ghost).
+        if (!this._rafPending) {
           this._rafPending = true;
           requestAnimationFrame(() => { this._rafPending = false; if (this.enabled) this.rebuild(); });
         }
@@ -119,6 +126,7 @@
     },
 
     scheduleFull() {     // structural change (delete/paste/import) → full re-batch
+      if (typeof Model !== 'undefined' && Model._suppressAddRefresh) return;   // bulk swap → applyLayerVisibility rebuilds at the end
       if (this._settleTimer) clearTimeout(this._settleTimer);
       this._settleTimer = setTimeout(() => { this._settleTimer = null; this._excluded.clear(); this.rebuild(); }, 300);
     },

@@ -6927,6 +6927,10 @@ function _defBuildEM(def) {
     if (fd.holes && fd.holes.length) f.holes = fd.holes.map(h => h.slice());
   }
   for (const ed of (def.edges || [])) em.edges.push({ a: ed.a, b: ed.b });
+  // Restore soften state (auto-soften / curved-import shading) so a reloaded def
+  // looks the same as at import instead of reverting to faceted.
+  if (def.softEdges && def.softEdges.length) em.softEdges = new Set(def.softEdges);
+  if (def.smoothShade) em._smoothShade = true;
   def.em = em;
   return em;
 }
@@ -7532,6 +7536,13 @@ function removeObject(obj) {
     if (obj._proxy) {
       if (obj._proxy.geometry) obj._proxy.geometry.dispose();
       if (obj._proxy.material && obj._proxy.material.dispose) obj._proxy.material.dispose();
+    }
+    // The thick-line overlay (LineSegments2) owns its OWN geometry + material —
+    // never shared — so always dispose it (deleting objects / closing tabs / opening
+    // files otherwise leaks one LineSegmentsGeometry + LineMaterial per object).
+    if (obj._thickEdges) {
+      if (obj._thickEdges.geometry) obj._thickEdges.geometry.dispose();
+      if (obj._thickEdges.material && obj._thickEdges.material.dispose) obj._thickEdges.material.dispose();
     }
   } catch (_) {}
   // Drop matching BIM data unless we're inside BIM.rebuild
@@ -8218,6 +8229,8 @@ function snapshot() {
         faces:    em ? em.faces.map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) }))
                      : (c.faces || []).map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
         edges:    em ? (em.edges || []).map(e => ({ a: e.a, b: e.b })) : (c.edges || []).map(e => ({ a: e.a, b: e.b })),
+        softEdges: em && em.softEdges ? Array.from(em.softEdges) : (c.softEdges || []),
+        smoothShade: em ? !!em._smoothShade : !!c.smoothShade,
       };
     }),
   };
@@ -11625,15 +11638,18 @@ function computeSnap(e, opts = {}) {
       if (!o || !o.group || !o.group.visible || o.locked) continue;
       let bb; try { bb = o.computeBBox(); } catch (_) { _objSDist.set(o, 0); continue; }
       if (!bb || !isFinite(bb.min.x)) { _objSDist.set(o, 0); continue; }
-      let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity, front = false;
+      let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity, front = false, allFront = true;
       const C = bb.min, D = bb.max, cx = [C.x, D.x], cy = [C.y, D.y], cz = [C.z, D.z];
       for (let i = 0; i < 8; i++) {
         const p = worldToScreen(_snapTmpV.set(cx[i & 1], cy[(i >> 1) & 1], cz[(i >> 2) & 1]));
-        if (p.z < 1) front = true;
+        if (p.z < 1) front = true; else allFront = false;
         if (p.x < mnX) mnX = p.x; if (p.y < mnY) mnY = p.y;
         if (p.x > mxX) mxX = p.x; if (p.y > mxY) mxY = p.y;
       }
-      if (!front) { _objSDist.set(o, Infinity); continue; }
+      if (!front) { _objSDist.set(o, Infinity); continue; }       // entirely behind camera → cull
+      // Straddles the camera plane (some corners behind): the screen AABB is
+      // garbage, so don't trust it — mark near (dist 0) and always scan it.
+      if (!allFront) { _objSDist.set(o, 0); continue; }
       const dx = Math.max(mnX - mx, 0, mx - mxX), dy = Math.max(mnY - my, 0, my - mxY);
       _objSDist.set(o, Math.hypot(dx, dy));
     }
@@ -13179,7 +13195,7 @@ function refreshSelectionVisuals() {
     side: THREE.DoubleSide, depthTest: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   });
-  for (const [obj, faceIdxs] of ((_selVisualsLite || _bigSel) ? [] : Selection.faces)) {
+  for (const [obj, faceIdxs] of (_selVisualsLite ? [] : Selection.faces)) {
     // Whole-object selection (e.g., grouped object click) auto-fills faces;
     // skip the per-face overlay so the object isn't painted blue.
     if (Selection.objects.has(obj)) continue;
@@ -13205,7 +13221,11 @@ function refreshSelectionVisuals() {
     color: 0x0066ff, depthTest: false, transparent: true, opacity: 0.95,
   });
   const edgeRadius = Math.max(0.00075, controls.spherical.radius * 0.0006);
-  for (const [obj, keys] of ((_selVisualsLite || _bigSel) ? [] : Selection.edges)) {
+  for (const [obj, keys] of (_selVisualsLite ? [] : Selection.edges)) {
+    // Whole-selected objects' edges are covered by the silhouette / merged bbox —
+    // skip them here (a group/triple-click auto-fills Selection.edges with every
+    // member edge, which previously built a tube PER edge → the marquee freeze).
+    if (Selection.objects.has(obj)) continue;
     for (const k of keys) {
       const [a, b] = k.split(':').map(Number);
       const A = obj.em.vertices[a], B = obj.em.vertices[b];
@@ -14467,8 +14487,12 @@ Tools.select = {
       // scene (whole-object select is what you want there — SketchUp-style). When
       // editing a group the per-face path still runs, but only on the small active
       // subtree, so it stays responsive.
-      if (o.em._smoothShade || (o.em.faces && o.em.faces.length > 300) ||
-          (Model.activeGroupId == null && Model.objects.length > 150)) {
+      // Smooth-shaded imports are ALWAYS whole-objected (per-face would iterate
+      // tens of thousands of faces per frame). The dense/big-scene whole-object
+      // shortcuts apply only at TOP LEVEL — inside a group edit we keep per-face
+      // marquee on the (small) active subtree so face/edge selection still works.
+      if (o.em._smoothShade ||
+          (Model.activeGroupId == null && ((o.em.faces && o.em.faces.length > 300) || Model.objects.length > 150))) {
         const bb = this._cachedBBox(o);
         const cs = [
           new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z),
@@ -15140,7 +15164,7 @@ Tools.move = {
           }
           // Underlay was dragged via group.position; the delta is now baked
           // into vertices, so zero the group offset to avoid double movement.
-          if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
+          if (o.group) o.group.position.set(0, 0, 0);   // fast-move offset baked into verts above → zero it (all objects, not just underlay)
           o.rebuild();
         }
       }
@@ -15150,7 +15174,7 @@ Tools.move = {
         for (const o of this.objs) {
           const orig = this.origVertsByObj.get(o);
           if (orig) for (let i = 0; i < o.em.vertices.length; i++) o.em.vertices[i].copy(orig[i]);
-          if (o.isUnderlay && o.group) o.group.position.set(0, 0, 0);
+          if (o.group) o.group.position.set(0, 0, 0);   // fast-move offset baked into verts above → zero it (all objects, not just underlay)
           o.rebuild();
         }
         // For component instance copies: shift componentOrigin by delta so
@@ -25435,6 +25459,10 @@ function sceneToDoc() {
         pivot: c.pivot ? { ...c.pivot } : { x: 0, y: 0, z: 0 },
         materialId: c.materialId || null,
         vertices: verts, faces, edges,
+        // Persist the soften state so curved/auto-softened imported components
+        // don't revert to faceted (seam-lined) shading on reload.
+        softEdges: em && em.softEdges ? Array.from(em.softEdges) : (c.softEdges || []),
+        smoothShade: em ? !!em._smoothShade : !!c.smoothShade,
       };
     }),
   };
@@ -25493,6 +25521,8 @@ async function loadDocIntoScene(doc) {
     vertices: (c.vertices || []).map(v => ({ ...v })),
     faces: (c.faces || []).map(f => ({ verts: f.verts.slice(), color: f.color, layerId: f.layerId, holes: (f.holes || []).map(h => h.slice()) })),
     edges: (c.edges || []).map(e => ({ a: e.a, b: e.b })),
+    softEdges: c.softEdges || [],
+    smoothShade: !!c.smoothShade,
   }));
 
   // Restore objects
