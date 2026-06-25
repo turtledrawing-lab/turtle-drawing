@@ -8084,11 +8084,15 @@ function selectGroup(gid, add=false) {
 const History = { past: [], future: [], maxDepth: 50 };
 let _lastSnapshot = null;
 let _undoDisabledWarned = false;
-// Above this many total faces, a full-model undo snapshot (deep-cloning every
-// object's mesh) is hundreds of MB and OOMs the renderer (crash when painting a
-// big import). Past it, snapshotting is skipped — edits still apply but can't be
-// undone. Roughly matches the autosave size guard (~4.5 MB serialised).
-const UNDO_MAX_FACES = 120000;
+// Above this many UNIQUE faces, even a delta-undo snapshot is too much memory.
+// Delta-undo shares clones across history entries, so the real cost is ~one
+// baseline clone — not the old 50×-full-depth that forced the original 120k limit
+// — hence this is far higher now. Component INSTANCES share their def geometry and
+// are counted ONCE (see the unique-face count in snapshot()), so instanced city
+// imports (thousands of instances of a few defs) stay well under this. Past the
+// limit, snapshotting is skipped: edits still apply but can't be undone, and
+// undo() refuses rather than restore a stale pre-import snapshot and wipe the scene.
+const UNDO_MAX_FACES = 300000;
 /* Adaptive undo depth (P1-4). snapshot() deep-clones every mesh, so a heavy
    scene held at full depth (50) can reach hundreds of MB and OOM. Scale the
    retained depth down for large scenes — keeping a usable minimum — so the
@@ -8116,12 +8120,17 @@ function snapshot() {
   // import and OOMs the renderer (the crash when painting a ~460k-face model).
   // Past a face budget, skip snapshotting and return null — callers treat null
   // as "no undo step", so the app stays alive (undo is simply unavailable).
+  // Count UNIQUE geometry only: each non-instance object's faces + each component
+  // def's faces ONCE. Instances share def.em, so the old per-object loop counted
+  // them N× and tripped the budget on instanced imports whose real snapshot cost is
+  // tiny (an instance stores only a matrix — its em is not cloned, see below).
   let _snapFaces = 0;
-  for (const o of Model.objects) if (o && o.em && o.em.faces) _snapFaces += o.em.faces.length;
+  for (const o of Model.objects) if (o && !o.isInstance && o.em && o.em.faces) _snapFaces += o.em.faces.length;
+  for (const c of (Model.components || [])) if (c && c.em && c.em.faces) _snapFaces += c.em.faces.length;
   if (_snapFaces > UNDO_MAX_FACES) {
     if (!_undoDisabledWarned) {
       _undoDisabledWarned = true;
-      try { setStatus('msg', '⚠ Model too large — undo disabled to prevent out-of-memory'); } catch (_) {}
+      try { setStatus('msg', '⚠ Model too large (' + Math.round(_snapFaces / 1000) + 'k faces) — undo disabled (memory)'); } catch (_) {}
     }
     return null;
   }
@@ -8138,15 +8147,21 @@ function snapshot() {
           ? o.em.vertices[0].x + o.em.vertices[o.em.vertices.length - 1].y * 3 +
             o.em.vertices[o.em.vertices.length >> 1].z * 5
           : 0);
-      let em;
-      const cached = _snapEmCache.get(o._uid);
-      if (cached && cached.gen === o._editGen && cached.chk === _chk) {
-        em = cached.em;
-      } else {
-        em = o.em.clone();
-        // Preserve smooth-shade flag so undo doesn't lose smooth rendering.
-        if (o.em._smoothShade) em._smoothShade = true;
-        _snapEmCache.set(o._uid, { gen: o._editGen, chk: _chk, em });
+      // Component INSTANCES share def.em — cloning it per instance would defeat
+      // instancing and balloon snapshot memory (N copies of one geometry). Store no
+      // em; restore() rebuilds the instance from defId + instanceMatrix, and the
+      // shared def geometry is snapshotted once in `components` below.
+      let em = null;
+      if (!o.isInstance) {
+        const cached = _snapEmCache.get(o._uid);
+        if (cached && cached.gen === o._editGen && cached.chk === _chk) {
+          em = cached.em;
+        } else {
+          em = o.em.clone();
+          // Preserve smooth-shade flag so undo doesn't lose smooth rendering.
+          if (o.em._smoothShade) em._smoothShade = true;
+          _snapEmCache.set(o._uid, { gen: o._editGen, chk: _chk, em });
+        }
       }
       return {
         em,
@@ -8502,6 +8517,14 @@ function restore(entry) {
         continue;
       }
     }
+    if (!s.em) {
+      // Only instances are stored without an em (rebuilt from defId+matrix above).
+      // Reaching here means the instance branch couldn't reconstruct it (its def
+      // vanished — shouldn't happen, components restore first). Skip rather than
+      // crash on s.em.clone(); the alternative is wiping every other restored object.
+      try { console.warn('[restore] instance with no def and no em — skipping', s.uid); } catch (_) {}
+      continue;
+    }
     const emClone = s.em.clone();
     if (s.em._smoothShade) emClone._smoothShade = true;
     const obj = new SketchObject(emClone, s.name, { skipEdges: !!s.skipEdges });
@@ -8679,6 +8702,14 @@ function restore(entry) {
 }
 function undo() {
   if (!History.past.length) return;
+  // If the CURRENT scene can't be snapshotted (_lastSnapshot is null — over the
+  // face budget), every History entry predates it (e.g. the pre-import empty scene)
+  // and edits since were never recorded. Restoring one would silently WIPE the live
+  // model back to that old state. Refuse rather than destroy the user's work.
+  if (!_lastSnapshot) {
+    try { setStatus('msg', '⚠ Undo unavailable here — model too large to record history'); } catch (_) {}
+    return;
+  }
   // Only record a redo point if we have a valid snapshot. On huge models
   // snapshot() returns null; spreading null here would push a state-less entry
   // that crashes restore() on a later redo.
@@ -8696,6 +8727,12 @@ function undo() {
 }
 function redo() {
   if (!History.future.length) return;
+  // Same guard as undo(): if the current scene is too large to snapshot, refuse
+  // rather than restore a stale entry that predates it and wipe live work.
+  if (!_lastSnapshot) {
+    try { setStatus('msg', '⚠ Redo unavailable here — model too large to record history'); } catch (_) {}
+    return;
+  }
   if (_lastSnapshot) History.past.push({ label:'undo', ..._lastSnapshot });
   const entry = History.future.pop();
   restore(entry);
