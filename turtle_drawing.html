@@ -6296,6 +6296,13 @@ class EditableMesh {
     }));
     em.edges = this.edges.map(e => ({ a: e.a, b: e.b }));
     if (this._smoothShade) em._smoothShade = true;
+    // Preserve the softened-edge set so undo/redo restores the EXACT wireframe
+    // (import auto-soften + the manual Soften slider). Without this, clone() drops
+    // softEdges and undoing a soften reverts all the way to fully-faceted — losing
+    // the auto-soften too, which looks like jumping back an extra step. Deep-copied:
+    // _softenEdgesByAngle mutates the set in place (clear()+repopulate), so a shared
+    // reference would corrupt the snapshot clone (treated as immutable).
+    if (this.softEdges && this.softEdges.size) em.softEdges = new Set(this.softEdges);
     return em;
   }
 }
