@@ -92,8 +92,11 @@ def _mat4(t):
     return a.T if TRANSPOSE_XFORM else a
 
 
-def _build_materials(model):
-    """name -> dict(color=(r,g,b,a) 0..1, opacity=0..1, image=PIL.Image|None)."""
+def _build_materials(model, only=None):
+    """name -> dict(color=(r,g,b,a) 0..1, opacity=0..1, image=PIL.Image|None).
+    With `only` (a set of material names), extract textures ONLY for those — the
+    binding's texture.write dominates conversion (~0.4s each, ~85% of total on a
+    city model), so skipping materials no exported face uses roughly halves it."""
     import tempfile
     from PIL import Image
     out = {}
@@ -114,7 +117,7 @@ def _build_materials(model):
             image = None
             avg = None
             tex = getattr(mat, "texture", None)
-            if tex and hasattr(tex, "write"):
+            if tex and hasattr(tex, "write") and (only is None or name in only):
                 try:
                     p = os.path.join(tempfile.gettempdir(), "td_skptex_%d.png" % mi)
                     tex.write(p)
@@ -182,7 +185,6 @@ def _emit_face(bucket, face, xform, default_mat):
 def convert(skp_path, glb_path):
     import sketchup  # provided by the SketchUp binding next to this file
     model = sketchup.Model.from_file(skp_path)
-    mats = _build_materials(model)
 
     # --- World-baked geometry: root faces, groups, and singleton components ---
     # bucket key (path_tuple, mat_name) -> {v,f,uv}  (world coords, Y-up metres)
@@ -311,6 +313,14 @@ def convert(skp_path, glb_path):
 
     root = _AXIS if Z_UP_TO_Y_UP else np.eye(4)
     walk(model.entities, root, "DefaultMaterial", ())
+
+    # Build materials now that the walk has revealed which are actually used, and
+    # extract textures only for those (texture.write is ~85% of conversion time).
+    _used_mats = {mn for (_p, mn) in buckets}
+    for _d in def_cache.values():
+        if _d:
+            _used_mats.update(_d.keys())
+    mats = _build_materials(model, _used_mats)
 
     _ndef = sum(1 for v in def_cache.values() if v)
     sys.stderr.write("[convert] baked buckets=%d, definitions=%d, instance placements=%d\n"
