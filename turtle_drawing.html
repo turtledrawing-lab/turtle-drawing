@@ -6817,15 +6817,37 @@ class SketchObject {
     }
   }
   computeBBox() {
-    const box = new THREE.Box3();
+    // Cache the result: computeBBox is called per-object on EVERY snap (every mouse
+    // move while drawing), and the vertex loop is O(verts) — for an instanced city
+    // (thousands of objects × the shared def's verts) that's the per-move cost that
+    // made drawing stutter. The geometry/placement is static between edits, so cache
+    // it and invalidate on geometry change (_editGen) or, for instances, on a world-
+    // matrix change. Exact (no approximation): on a cache miss the full vertex loop
+    // still runs; we just skip it when nothing changed.
     if (this.isInstance && this.instanceMatrix) {
-      // em is definition-LOCAL; place by the group's world transform.
-      this.group.updateMatrixWorld(true);
-      const M = this.group.matrixWorld, _t = new THREE.Vector3();
+      // NON-forced: updates only if the matrix is actually dirty (a move sets
+      // matrixWorldNeedsUpdate; the render loop flushes it each frame). Forcing a
+      // full recompute here cost ~7-9ms across an instanced city on every snap.
+      this.group.updateMatrixWorld();
+      const M = this.group.matrixWorld, me = M.elements;
+      const dgen = (this.def && this.def._editGen) || 0;
+      const c = this._bboxCache;
+      if (c && c.me && c.dgen === dgen) {
+        let same = true;
+        for (let i = 0; i < 16; i++) { if (c.me[i] !== me[i]) { same = false; break; } }
+        if (same) return c.box.clone();
+      }
+      const box = new THREE.Box3(), _t = new THREE.Vector3();
       for (const v of this.em.vertices) box.expandByPoint(_t.copy(v).applyMatrix4(M));
-    } else {
-      for (const v of this.em.vertices) box.expandByPoint(v);
+      this._bboxCache = { dgen, me: me.slice(), box: box.clone() };
+      return box;
     }
+    const gen = this._editGen || 0;
+    const c = this._bboxCache;
+    if (c && !c.me && c.gen === gen) return c.box.clone();
+    const box = new THREE.Box3();
+    for (const v of this.em.vertices) box.expandByPoint(v);
+    this._bboxCache = { gen, box: box.clone() };
     return box;
   }
 }
@@ -11663,6 +11685,10 @@ const _AXIS_DEFS = [
   { name: 'Z', vec: new THREE.Vector3(0, 0, 1), color: 0x007aff }, // blue
 ];
 
+// Camera-state tracking for the snap prefilter's per-object screen-bbox cache:
+// _snapCamSeq bumps whenever the camera/viewport changes, invalidating the caches.
+let _snapCamPrev = null, _snapCamSeq = 0;
+
 /* Given a mouse event, compute the active snap point.
    Priority: Endpoint > Midpoint > On Edge > On Face > Grid.
    Scans ALL visible objects (face vertices + standalone edge endpoints), so
@@ -11741,33 +11767,70 @@ function computeSnap(e, opts = {}) {
   const _snapCull = Model.objects.length > 80;
   const _objSDist = _snapCull ? new Map() : null;
   if (_snapCull) {
+    // An object's 8-corner SCREEN bbox depends only on the camera + viewport, NOT
+    // the cursor. Detect a static camera (one element-wise compare per call) and
+    // reuse each object's cached screen AABB across mouse-moves while drawing —
+    // recomputing only the cheap cursor-distance. Projecting 8 corners × ~1500
+    // objects every move was the residual ~7-10ms stutter in dense views.
+    try { camera.updateMatrixWorld(); } catch (_) {}
+    const _vpEl = (typeof renderer !== 'undefined' && renderer.domElement) ? renderer.domElement : null;
+    const _vpW = _vpEl ? _vpEl.clientWidth : 0, _vpH = _vpEl ? _vpEl.clientHeight : 0;
+    const _cp = camera.position, _ct = (typeof controls !== 'undefined' && controls.target) ? controls.target : _cp;
+    // Treat the camera as STATIC unless it moved more than a sub-pixel fraction of the
+    // view distance. OrbitControls DAMPING leaves an ever-shrinking residual that never
+    // settles to the same float, so an exact matrix compare missed the cache every
+    // frame (miss == object count). Epsilon scales with scene size so it works at any
+    // unit scale; a real orbit/pan/zoom easily exceeds it and rebuilds the caches.
+    const _camEps = (_cp.distanceTo(_ct) || 1) * 1e-5;
+    const P = _snapCamPrev;
+    const _camStatic = P && P.w === _vpW && P.h === _vpH && P.zoom === camera.zoom && P.fov === camera.fov &&
+      Math.abs(_cp.x - P.px) < _camEps && Math.abs(_cp.y - P.py) < _camEps && Math.abs(_cp.z - P.pz) < _camEps &&
+      Math.abs(_ct.x - P.tx) < _camEps && Math.abs(_ct.y - P.ty) < _camEps && Math.abs(_ct.z - P.tz) < _camEps;
+    if (!_camStatic) { _snapCamSeq++; _snapCamPrev = { px: _cp.x, py: _cp.y, pz: _cp.z, tx: _ct.x, ty: _ct.y, tz: _ct.z, w: _vpW, h: _vpH, zoom: camera.zoom, fov: camera.fov }; }
+    const _camSeq = _snapCamSeq;
     const _snapTmpV = new THREE.Vector3();
     for (const o of Model.objects) {
       if (!o || !o.group || !o.group.visible || o.locked) continue;
-      let bb; try { bb = o.computeBBox(); } catch (_) { _objSDist.set(o, 0); continue; }
-      if (!bb || !isFinite(bb.min.x)) { _objSDist.set(o, 0); continue; }
-      let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity, front = false, allFront = true;
-      const C = bb.min, D = bb.max, cx = [C.x, D.x], cy = [C.y, D.y], cz = [C.z, D.z];
-      for (let i = 0; i < 8; i++) {
-        const p = worldToScreen(_snapTmpV.set(cx[i & 1], cy[(i >> 1) & 1], cz[(i >> 2) & 1]));
-        if (p.z < 1) front = true; else allFront = false;
-        if (p.x < mnX) mnX = p.x; if (p.y < mnY) mnY = p.y;
-        if (p.x > mxX) mxX = p.x; if (p.y > mxY) mxY = p.y;
+      // Geometry/placement signature — drops the screen cache when this object's
+      // geometry (or, for an instance, its local matrix) changes.
+      let gk;
+      if (o.isInstance) { const e = o.group.matrix.elements; gk = (((o.def && o.def._editGen) || 0) * 1e7) + (e[12] + e[13] * 7 + e[14] * 13 + e[0] * 3 + e[5] * 5 + e[10] * 11); }
+      else gk = (o._editGen || 0);
+      let sc = o._snapScr;
+      if (!(sc && sc.cs === _camSeq && sc.gk === gk)) {
+        let bb; try { bb = o.computeBBox(); } catch (_) { _objSDist.set(o, 0); o._snapScr = null; continue; }
+        if (!bb || !isFinite(bb.min.x)) { _objSDist.set(o, 0); o._snapScr = null; continue; }
+        let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity, front = false, allFront = true;
+        const C = bb.min, D = bb.max, cx = [C.x, D.x], cy = [C.y, D.y], cz = [C.z, D.z];
+        for (let i = 0; i < 8; i++) {
+          const p = worldToScreen(_snapTmpV.set(cx[i & 1], cy[(i >> 1) & 1], cz[(i >> 2) & 1]));
+          if (p.z < 1) front = true; else allFront = false;
+          if (p.x < mnX) mnX = p.x; if (p.y < mnY) mnY = p.y;
+          if (p.x > mxX) mxX = p.x; if (p.y > mxY) mxY = p.y;
+        }
+        sc = o._snapScr = { cs: _camSeq, gk, mnX, mnY, mxX, mxY, front, allFront };
       }
-      if (!front) { _objSDist.set(o, Infinity); continue; }       // entirely behind camera → cull
+      if (!sc.front) { _objSDist.set(o, Infinity); continue; }       // entirely behind camera → cull
       // Straddles the camera plane (some corners behind): the screen AABB is
       // garbage, so don't trust it — mark near (dist 0) and always scan it.
-      if (!allFront) { _objSDist.set(o, 0); continue; }
-      const dx = Math.max(mnX - mx, 0, mx - mxX), dy = Math.max(mnY - my, 0, my - mxY);
+      if (!sc.allFront) { _objSDist.set(o, 0); continue; }
+      const dx = Math.max(sc.mnX - mx, 0, mx - sc.mxX), dy = Math.max(sc.mnY - my, 0, my - sc.mxY);
       _objSDist.set(o, Math.hypot(dx, dy));
     }
   }
-  const _snapObjects = Model.objects.filter(o =>
+  let _snapObjects = Model.objects.filter(o =>
     o.group.visible && !o.locked && (_snapUnderlayOK || !o.isUnderlay) &&
     !(_snapExclude && _snapExclude.has(o)) &&
     (!_snapEditing || isInActiveSubtree(o)) &&
     (!_snapCull || (_objSDist.get(o) || 0) <= 220)
   );
+  // Cap the deep-scan set to the closest N (by screen-bbox distance) so a dense view
+  // (hundreds of objects near the cursor) doesn't scan every one's vertices/edges
+  // every move. The nearest ~96 are far more than enough to snap to.
+  if (_snapCull && _snapObjects.length > 96) {
+    _snapObjects.sort((a, b) => (_objSDist.get(a) || 0) - (_objSDist.get(b) || 0));
+    _snapObjects.length = 96;
+  }
 
   // STAGE 3 — snap transform-aware for component instances. Snapping is done in
   // SCREEN space (worldToScreen) so candidate geometry must be in WORLD coords.
