@@ -25274,31 +25274,57 @@ async function importSKP(arrayBuffer, filename, srcPath) {
     // 200 <glb> synchronously — we use that directly (backward compatible).
     const asyncEndpoint = endpoint + (endpoint.indexOf('?') >= 0 ? '&' : '?') + 'async=1';
     const jobBase = endpoint.replace(/\/convert(\?.*)?$/, '');
-    const post = await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', asyncEndpoint);
-      xhr.responseType = 'arraybuffer';
-      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-      xhr.setRequestHeader('X-Filename', encodeURIComponent(_nm));
-      xhr.upload.onprogress = (ev) => {
-        if (ev.lengthComputable) setStatus('msg', '업로드 중 / Uploading … ' + Math.round(ev.loaded / ev.total * 100) + '%  (' + _nm + ')');
-      };
-      xhr.upload.onload = () => setStatus('msg', '서버에서 변환 중 / Converting on server …  (잠시 기다려 주세요)');
-      xhr.onerror = () => reject({ net: true });
-      xhr.onload = () => {
-        if (xhr.status === 202) {
-          try { resolve({ jobId: JSON.parse(new TextDecoder().decode(xhr.response)).job_id }); }
-          catch (_) { reject({ conv: 'bad server response' }); }
-        } else if (xhr.status === 200) {
-          resolve({ glb: xhr.response });               // older synchronous server
-        } else {
-          let detail = xhr.status;
-          try { detail = JSON.parse(new TextDecoder().decode(xhr.response)).error || detail; } catch (_) {}
-          reject({ conv: detail });
+    // Upload with a stall watchdog + auto-retry: a big (80MB+) upload over a flaky
+    // connection can freeze mid-transfer (the user hit this, retrying by hand). If no
+    // upload-progress event fires for STALL_MS, abort and retry — re-uploading from
+    // scratch (there is no resumable upload). A real HTTP/conversion error is surfaced
+    // immediately, never retried.
+    const STALL_MS = 30000, MAX_TRIES = 4;
+    let post = null, lastErr = { net: true };
+    for (let attempt = 1; attempt <= MAX_TRIES && !post; attempt++) {
+      try {
+        post = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          let stall = null;
+          const arm = () => { clearTimeout(stall); stall = setTimeout(() => { try { xhr.abort(); } catch (_) {} reject({ net: true, stall: true }); }, STALL_MS); };
+          const disarm = () => clearTimeout(stall);
+          xhr.open('POST', asyncEndpoint);
+          xhr.responseType = 'arraybuffer';
+          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          xhr.setRequestHeader('X-Filename', encodeURIComponent(_nm));
+          const _tag = attempt > 1 ? '  (재시도 / retry ' + attempt + '/' + MAX_TRIES + ')' : '';
+          xhr.upload.onprogress = (ev) => {
+            arm();   // progress resets the stall timer; only a true freeze trips it
+            if (ev.lengthComputable) setStatus('msg', '업로드 중 / Uploading … ' + Math.round(ev.loaded / ev.total * 100) + '%  (' + _nm + ')' + _tag);
+          };
+          xhr.upload.onload = () => { disarm(); setStatus('msg', '서버에서 변환 중 / Converting on server …  (잠시 기다려 주세요)'); };
+          xhr.onerror = () => { disarm(); reject({ net: true }); };
+          xhr.onload = () => {
+            disarm();
+            if (xhr.status === 202) {
+              try { resolve({ jobId: JSON.parse(new TextDecoder().decode(xhr.response)).job_id }); }
+              catch (_) { reject({ conv: 'bad server response' }); }
+            } else if (xhr.status === 200) {
+              resolve({ glb: xhr.response });               // older synchronous server
+            } else {
+              let detail = xhr.status;
+              try { detail = JSON.parse(new TextDecoder().decode(xhr.response)).error || detail; } catch (_) {}
+              reject({ conv: detail });
+            }
+          };
+          arm();
+          xhr.send(arrayBuffer);
+        });
+      } catch (e) {
+        if (e && e.conv != null) throw e;                  // real server error — don't retry
+        lastErr = e;                                       // network / stall — retry
+        if (attempt < MAX_TRIES) {
+          setStatus('msg', '업로드 중단됨, 재시도 / Upload stalled, retrying ' + (attempt + 1) + '/' + MAX_TRIES + ' …');
+          await new Promise(r => setTimeout(r, 1500));
         }
-      };
-      xhr.send(arrayBuffer);
-    });
+      }
+    }
+    if (!post) throw lastErr;
     if (post.glb) {
       glb = post.glb;
     } else {
@@ -25306,20 +25332,22 @@ async function importSKP(arrayBuffer, filename, srcPath) {
       const jobUrl = jobBase + '/job/' + encodeURIComponent(post.jobId);
       const _t0 = Date.now();
       glb = await new Promise((resolve, reject) => {
-        let polls = 0;
+        let polls = 0, pollErrs = 0;
+        const retryOrFail = () => { if (++pollErrs > 8) reject({ net: true }); else setTimeout(poll, 2500); };
         const poll = () => {
-          if (++polls > 400) { reject({ conv: 'timed out waiting for the server' }); return; }
+          if (++polls > 600) { reject({ conv: 'timed out waiting for the server' }); return; }
           const px = new XMLHttpRequest();
           px.open('GET', jobUrl);
-          px.onerror = () => reject({ net: true });
+          px.onerror = retryOrFail;                 // tolerate a transient blip mid-conversion
           px.onload = () => {
             let st = null, err = null;
             try { const j = JSON.parse(px.responseText); st = j.status; err = j.error; } catch (_) {}
             if (st === 'done') {
+              pollErrs = 0;
               const rx = new XMLHttpRequest();
               rx.open('GET', jobUrl + '/result');
               rx.responseType = 'arraybuffer';
-              rx.onerror = () => reject({ net: true });
+              rx.onerror = retryOrFail;             // job is done; a failed download re-polls
               rx.onload = () => {
                 if (rx.status === 200) { resolve(rx.response); return; }
                 let detail = rx.status;
@@ -25332,6 +25360,7 @@ async function importSKP(arrayBuffer, filename, srcPath) {
             } else if (px.status === 404) {
               reject({ conv: 'job lost (server restarted?) — try again' });
             } else {
+              pollErrs = 0;
               setStatus('msg', '서버에서 변환 중 / Converting on server … ' + Math.round((Date.now() - _t0) / 1000) + 's');
               setTimeout(poll, 2500);
             }
@@ -25343,6 +25372,7 @@ async function importSKP(arrayBuffer, filename, srcPath) {
     }
   } catch (e) {
     if (e && e.conv != null) showError('SKP 변환 실패 / conversion failed: ' + e.conv);
+    else if (e && e.stall) showError('업로드가 계속 끊깁니다 (' + endpoint + ').\n네트워크(업로드 속도)를 확인하고 다시 시도해 주세요. The upload kept stalling — check your network/upload speed and try again.');
     else showError('SKP 변환 서버에 연결할 수 없습니다 (' + endpoint + ').\nCould not reach the .skp conversion server — check that it is running and the URL is correct.');
     return;
   }
