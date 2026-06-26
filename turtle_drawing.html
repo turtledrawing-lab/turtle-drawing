@@ -8113,6 +8113,12 @@ function selectGroup(gid, add=false) {
 const History = { past: [], future: [], maxDepth: 50 };
 let _lastSnapshot = null;
 let _undoDisabledWarned = false;
+// True when the model is over the snapshot budget AND edits have happened since it
+// went over (so History.past's top is stale by ≥1 unrecorded step). undo() refuses
+// only then; if the budget-crossing action is the most recent one this stays false
+// and undo can cleanly restore the pre-edit state (bringing the scene back under
+// budget). See pushHistory()/undo().
+let _undoStale = false;
 // Above this many UNIQUE faces, even a delta-undo snapshot is too much memory.
 // Delta-undo shares clones across history entries, so the real cost is ~one
 // baseline clone — not the old 50×-full-depth that forced the original 120k limit
@@ -8328,6 +8334,7 @@ function pushHistory(label) {
   // Geometry changed → refresh the (manually-updated) shadow maps once.
   try { if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true; } catch (_) {}
   // Save the PRE-edit snapshot (captured last time), then re-snapshot the post-edit state.
+  const _wasOverBudget = !_lastSnapshot;
   if (_lastSnapshot) {
     History.past.push({ label, ..._lastSnapshot });
     while (History.past.length > _undoDepthCap()) History.past.shift();
@@ -8335,6 +8342,12 @@ function pushHistory(label) {
   try { renderHistoryList && renderHistoryList(); } catch (_) {}
   History.future = [];
   _lastSnapshot = snapshot();
+  // If THIS edit just crossed the budget, History.past's top is the clean pre-edit
+  // state and undo can still restore it (a legitimate single undo, back under
+  // budget). If we were ALREADY over budget, this edit went unrecorded, so that top
+  // entry is now stale by ≥1 step and undo must refuse — else it would silently drop
+  // the unrecorded edits and wipe the model back to a much older state.
+  _undoStale = _lastSnapshot ? false : _wasOverBudget;
   setStatus('msg', _lastSnapshot ? ('Undo: ' + label) : ('✔ ' + label + ' (undo off — model too large)'));
 }
 function restore(entry) {
@@ -8731,11 +8744,14 @@ function restore(entry) {
 }
 function undo() {
   if (!History.past.length) return;
-  // If the CURRENT scene can't be snapshotted (_lastSnapshot is null — over the
-  // face budget), every History entry predates it (e.g. the pre-import empty scene)
-  // and edits since were never recorded. Restoring one would silently WIPE the live
-  // model back to that old state. Refuse rather than destroy the user's work.
-  if (!_lastSnapshot) {
+  // When the CURRENT scene can't be snapshotted (_lastSnapshot is null — over the
+  // face budget), refuse ONLY if History.past's top is stale (edits happened while
+  // over budget and went unrecorded): restoring it would drop them and wipe the model
+  // back to a much older state (the "undo jumped to before the import" report). If the
+  // budget-crossing action is the MOST RECENT one (_undoStale false), the top entry is
+  // its clean pre-edit state — fall through and restore it (a valid single undo that
+  // also brings the scene back under budget and re-enables history).
+  if (!_lastSnapshot && _undoStale) {
     try { setStatus('msg', '⚠ Undo unavailable here — model too large to record history'); } catch (_) {}
     return;
   }
@@ -8756,9 +8772,8 @@ function undo() {
 }
 function redo() {
   if (!History.future.length) return;
-  // Same guard as undo(): if the current scene is too large to snapshot, refuse
-  // rather than restore a stale entry that predates it and wipe live work.
-  if (!_lastSnapshot) {
+  // Same guard as undo(): refuse only when the over-budget history is stale.
+  if (!_lastSnapshot && _undoStale) {
     try { setStatus('msg', '⚠ Redo unavailable here — model too large to record history'); } catch (_) {}
     return;
   }
@@ -11794,7 +11809,7 @@ function computeSnap(e, opts = {}) {
       // Geometry/placement signature — drops the screen cache when this object's
       // geometry (or, for an instance, its local matrix) changes.
       let gk;
-      if (o.isInstance) { const e = o.group.matrix.elements; gk = (((o.def && o.def._editGen) || 0) * 1e7) + (e[12] + e[13] * 7 + e[14] * 13 + e[0] * 3 + e[5] * 5 + e[10] * 11); }
+      if (o.isInstance) { const e = o.group.matrix.elements; gk = (((o.def && o.def._editGen) || 0) * 1e7) + (e[12] + e[13] * 7 + e[14] * 13 + e[0] * 3 + e[5] * 5 + e[10] * 11 + e[1] * 17 + e[2] * 19 + e[4] * 23 + e[6] * 29 + e[8] * 31 + e[9] * 37); }
       else gk = (o._editGen || 0);
       let sc = o._snapScr;
       if (!(sc && sc.cs === _camSeq && sc.gk === gk)) {
