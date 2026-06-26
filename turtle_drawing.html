@@ -25267,9 +25267,16 @@ async function importSKP(arrayBuffer, filename, srcPath) {
   // otherwise makes the browser reject the request before sending.
   let glb;
   try {
-    glb = await new Promise((resolve, reject) => {
+    // POST with ?async=1. A current server replies 202 {job_id} and converts in a
+    // background worker (we then poll /job/<id>), so a slow (>100s) conversion can't
+    // hold one request open past Cloudflare's ~100s edge timeout (the 524 that made
+    // big models like 합정동 fail). An OLDER server ignores the query and replies
+    // 200 <glb> synchronously — we use that directly (backward compatible).
+    const asyncEndpoint = endpoint + (endpoint.indexOf('?') >= 0 ? '&' : '?') + 'async=1';
+    const jobBase = endpoint.replace(/\/convert(\?.*)?$/, '');
+    const post = await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', endpoint);
+      xhr.open('POST', asyncEndpoint);
       xhr.responseType = 'arraybuffer';
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.setRequestHeader('X-Filename', encodeURIComponent(_nm));
@@ -25277,20 +25284,63 @@ async function importSKP(arrayBuffer, filename, srcPath) {
         if (ev.lengthComputable) setStatus('msg', '업로드 중 / Uploading … ' + Math.round(ev.loaded / ev.total * 100) + '%  (' + _nm + ')');
       };
       xhr.upload.onload = () => setStatus('msg', '서버에서 변환 중 / Converting on server …  (잠시 기다려 주세요)');
-      xhr.onprogress = (ev) => {
-        if (ev.lengthComputable) setStatus('msg', '결과 받는 중 / Downloading model … ' + Math.round(ev.loaded / ev.total * 100) + '%');
-        else setStatus('msg', '결과 받는 중 / Downloading model … ' + (ev.loaded / 1e6).toFixed(1) + ' MB');
-      };
       xhr.onerror = () => reject({ net: true });
-      xhr.ontimeout = () => reject({ net: true });
       xhr.onload = () => {
-        if (xhr.status === 200) { resolve(xhr.response); return; }
-        let detail = xhr.status;
-        try { detail = JSON.parse(new TextDecoder().decode(xhr.response)).error || detail; } catch (_) {}
-        reject({ conv: detail });
+        if (xhr.status === 202) {
+          try { resolve({ jobId: JSON.parse(new TextDecoder().decode(xhr.response)).job_id }); }
+          catch (_) { reject({ conv: 'bad server response' }); }
+        } else if (xhr.status === 200) {
+          resolve({ glb: xhr.response });               // older synchronous server
+        } else {
+          let detail = xhr.status;
+          try { detail = JSON.parse(new TextDecoder().decode(xhr.response)).error || detail; } catch (_) {}
+          reject({ conv: detail });
+        }
       };
       xhr.send(arrayBuffer);
     });
+    if (post.glb) {
+      glb = post.glb;
+    } else {
+      // Poll the job, then download the result — each request is short, so no 524.
+      const jobUrl = jobBase + '/job/' + encodeURIComponent(post.jobId);
+      const _t0 = Date.now();
+      glb = await new Promise((resolve, reject) => {
+        let polls = 0;
+        const poll = () => {
+          if (++polls > 400) { reject({ conv: 'timed out waiting for the server' }); return; }
+          const px = new XMLHttpRequest();
+          px.open('GET', jobUrl);
+          px.onerror = () => reject({ net: true });
+          px.onload = () => {
+            let st = null, err = null;
+            try { const j = JSON.parse(px.responseText); st = j.status; err = j.error; } catch (_) {}
+            if (st === 'done') {
+              const rx = new XMLHttpRequest();
+              rx.open('GET', jobUrl + '/result');
+              rx.responseType = 'arraybuffer';
+              rx.onerror = () => reject({ net: true });
+              rx.onload = () => {
+                if (rx.status === 200) { resolve(rx.response); return; }
+                let detail = rx.status;
+                try { detail = JSON.parse(new TextDecoder().decode(rx.response)).error || detail; } catch (_) {}
+                reject({ conv: detail });
+              };
+              rx.send();
+            } else if (st === 'error') {
+              reject({ conv: err || 'conversion failed' });
+            } else if (px.status === 404) {
+              reject({ conv: 'job lost (server restarted?) — try again' });
+            } else {
+              setStatus('msg', '서버에서 변환 중 / Converting on server … ' + Math.round((Date.now() - _t0) / 1000) + 's');
+              setTimeout(poll, 2500);
+            }
+          };
+          px.send();
+        };
+        poll();
+      });
+    }
   } catch (e) {
     if (e && e.conv != null) showError('SKP 변환 실패 / conversion failed: ' + e.conv);
     else showError('SKP 변환 서버에 연결할 수 없습니다 (' + endpoint + ').\nCould not reach the .skp conversion server — check that it is running and the URL is correct.');

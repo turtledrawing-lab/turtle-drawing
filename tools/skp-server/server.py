@@ -25,7 +25,10 @@ import os
 import struct
 import sys
 import threading
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 ARGS = None
 
@@ -34,6 +37,37 @@ ARGS = None
 # so one model converts at a time (extra requests queue on the lock).
 MAX_UPLOAD = int(os.environ.get("TD_SKP_MAX_UPLOAD") or (400 * 1024 * 1024))   # 400 MB
 _CONVERT_LOCK = threading.Lock()
+
+# Async conversion jobs. A model that takes >100s to convert trips Cloudflare's
+# 524 edge timeout on a synchronous POST. With POST /convert?async=1 the request
+# returns a job id immediately, the conversion runs in a worker thread (still
+# serialized on _CONVERT_LOCK), and the client polls GET /job/<id> then downloads
+# GET /job/<id>/result — so no single request is held open long enough to 524.
+_JOBS = {}                       # job_id -> {status, glb, error, ts}
+_JOBS_LOCK = threading.Lock()
+_JOB_TTL = 1800                  # forget finished/abandoned jobs after 30 min
+
+
+def _prune_jobs():
+    now = time.time()
+    with _JOBS_LOCK:
+        for k in [k for k, v in _JOBS.items() if now - v["ts"] > _JOB_TTL]:
+            _JOBS.pop(k, None)
+
+
+def _run_job(job_id, skp, name):
+    try:
+        with _CONVERT_LOCK:                       # binding isn't concurrency-safe
+            glb = cube_glb() if ARGS.stub else convert_skp(skp, name)
+        with _JOBS_LOCK:
+            j = _JOBS.get(job_id)
+            if j is not None:
+                j.update(status="done", glb=glb, ts=time.time())
+    except Exception as e:                        # noqa: BLE001
+        with _JOBS_LOCK:
+            j = _JOBS.get(job_id)
+            if j is not None:
+                j.update(status="error", error=str(e), ts=time.time())
 
 
 def cube_glb():
@@ -104,33 +138,81 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename")
 
+    def _reply_json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _reply_glb(self, glb):
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", "model/gltf-binary")
+        self.send_header("Content-Length", str(len(glb)))
+        self.end_headers()
+        self.wfile.write(glb)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
         self.end_headers()
 
     def do_GET(self):
-        if self.path.split("?")[0] == "/health":
-            body = json.dumps({"ok": True, "stub": bool(ARGS.stub)}).encode()
-            self.send_response(200)
-            self._cors()
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_error(404)
+        path = self.path.split("?")[0]
+        if path == "/health":
+            self._reply_json(200, {"ok": True, "stub": bool(ARGS.stub)})
+            return
+        # Async job status / result. GET /job/<id> -> {status,error};
+        # GET /job/<id>/result -> the glb bytes (200) once status is "done".
+        if path.startswith("/job/"):
+            rest = path[len("/job/"):]
+            want_result = rest.endswith("/result")
+            job_id = rest[:-len("/result")] if want_result else rest
+            with _JOBS_LOCK:
+                j = _JOBS.get(job_id)
+                snap = dict(j) if j else None
+            if not snap:
+                self._reply_json(404, {"error": "unknown job"})
+                return
+            if not want_result:
+                self._reply_json(200, {"status": snap["status"], "error": snap.get("error")})
+                return
+            if snap["status"] == "done":
+                with _JOBS_LOCK:
+                    _JOBS.pop(job_id, None)          # free the glb once fetched
+                self._reply_glb(snap["glb"])
+            elif snap["status"] == "error":
+                self._reply_json(500, {"error": snap.get("error") or "conversion failed"})
+            else:
+                self._reply_json(409, {"status": "running"})
+            return
+        self.send_error(404)
 
     def do_POST(self):
         if self.path.split("?")[0] != "/convert":
             self.send_error(404)
             return
+        is_async = parse_qs(urlparse(self.path).query).get("async", ["0"])[0] in ("1", "true", "yes")
         try:
             n = int(self.headers.get("Content-Length", 0))
             if n <= 0 or n > MAX_UPLOAD:
                 raise ValueError("upload too large or empty (%d bytes; max %d)" % (n, MAX_UPLOAD))
             skp = self.rfile.read(n)
             name = self.headers.get("X-Filename", "model.skp")
+            if is_async:
+                # Hand off to a worker thread and return a job id NOW — the client
+                # polls /job/<id> so a slow conversion can't hold this request open
+                # past Cloudflare's 100s edge timeout.
+                _prune_jobs()
+                job_id = uuid.uuid4().hex
+                with _JOBS_LOCK:
+                    _JOBS[job_id] = {"status": "running", "glb": None, "error": None, "ts": time.time()}
+                threading.Thread(target=_run_job, args=(job_id, skp, name), daemon=True).start()
+                self._reply_json(202, {"job_id": job_id})
+                return
             if ARGS.stub:
                 glb = cube_glb()
             else:
@@ -138,20 +220,9 @@ class Handler(BaseHTTPRequestHandler):
                 with _CONVERT_LOCK:
                     glb = convert_skp(skp, name)
         except Exception as e:  # noqa: BLE001 — report any converter failure to the client
-            msg = json.dumps({"error": str(e)}).encode()
-            self.send_response(500)
-            self._cors()
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(msg)))
-            self.end_headers()
-            self.wfile.write(msg)
+            self._reply_json(500, {"error": str(e)})
             return
-        self.send_response(200)
-        self._cors()
-        self.send_header("Content-Type", "model/gltf-binary")
-        self.send_header("Content-Length", str(len(glb)))
-        self.end_headers()
-        self.wfile.write(glb)
+        self._reply_glb(glb)
 
     def log_message(self, fmt, *a):
         sys.stderr.write("[skp-server] " + (fmt % a) + "\n")
