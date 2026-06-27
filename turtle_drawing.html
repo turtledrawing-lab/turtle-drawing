@@ -33161,26 +33161,29 @@ function showContextMenu(e) {
   const hasSel = Selection.objects.size > 0 || Selection.faces.size > 0 || Selection.edges.size > 0;
   const hasHidden = Model.objects.some(o => o.hidden);
   const hasTex = !!(_ctxObj && _ctxObj.mat && _ctxObj.mat.map);
+  // Localize labels to match the menu-bar language (i18n-menu.json terms reused).
+  const ko = (typeof _tdLang === 'function') && _tdLang() === 'ko';
+  const L = (k, e) => (ko ? k : e);
   const items = [
-    { label: 'Make Group', act: 'group' },
-    { label: 'Make Component', act: 'make-component', disabled: !hasSel },
-    { label: 'Make Unique', act: 'make-unique', disabled: !hasSel },
-    { label: 'Explode', act: 'explode' },
-    { label: 'Intersect Faces', act: 'intersect-faces', disabled: Selection.objects.size < 2 },
-    { label: 'Boolean: Union',     act: 'bool-union',    disabled: Selection.objects.size < 2 },
-    { label: 'Boolean: Subtract',  act: 'bool-subtract', disabled: Selection.objects.size < 2 },
-    { label: 'Boolean: Intersect', act: 'bool-intersect',disabled: Selection.objects.size < 2 },
+    { label: L('그룹 만들기', 'Make Group'), act: 'group' },
+    { label: L('컴포넌트 만들기', 'Make Component'), act: 'make-component', disabled: !hasSel },
+    { label: L('고유로 만들기', 'Make Unique'), act: 'make-unique', disabled: !hasSel },
+    { label: L('분해', 'Explode'), act: 'explode' },
+    { label: L('면 교차', 'Intersect Faces'), act: 'intersect-faces', disabled: Selection.objects.size < 2 },
+    { label: L('불리언: 합집합', 'Boolean: Union'),     act: 'bool-union',    disabled: Selection.objects.size < 2 },
+    { label: L('불리언: 빼기', 'Boolean: Subtract'),  act: 'bool-subtract', disabled: Selection.objects.size < 2 },
+    { label: L('불리언: 교집합', 'Boolean: Intersect'), act: 'bool-intersect',disabled: Selection.objects.size < 2 },
     { label: '---' },
-    { label: 'Reverse Faces', act: 'reverse-faces', disabled: !(hasSel || _ctxObj) },
+    { label: L('면 뒤집기', 'Reverse Faces'), act: 'reverse-faces', disabled: !(hasSel || _ctxObj) },
     { label: '---' },
-    { label: 'Hide', act: 'hide', disabled: !hasSel },
-    { label: 'Unhide All', act: 'unhide-all', disabled: !hasHidden },
+    { label: L('숨기기', 'Hide'), act: 'hide', disabled: !hasSel },
+    { label: L('모두 표시', 'Unhide All'), act: 'unhide-all', disabled: !hasHidden },
     { label: '---' },
-    { label: 'Apply Texture...', act: 'tex-apply', disabled: !_ctxObj },
-    { label: 'Scale Texture...', act: 'tex-scale', disabled: !hasTex },
+    { label: L('재질 적용...', 'Apply Texture...'), act: 'tex-apply', disabled: !_ctxObj },
+    { label: L('텍스처 크기 조정...', 'Scale Texture...'), act: 'tex-scale', disabled: !hasTex },
     { label: '---' },
-    { label: 'Delete', act: 'delete' },
-    { label: 'Undo', act: 'undo' },
+    { label: L('삭제', 'Delete'), act: 'delete' },
+    { label: L('실행 취소', 'Undo'), act: 'undo' },
   ];
   m.innerHTML = '';
   for (const it of items) {
@@ -34488,7 +34491,7 @@ animate();
       zIndex: 99999, minWidth: '200px',
     });
     const item = document.createElement('div');
-    item.textContent = 'Customize toolbar…';
+    item.textContent = (typeof _tdLang === 'function' && _tdLang() === 'ko') ? '툴바 사용자화…' : 'Customize toolbar…';
     Object.assign(item.style, { padding: '6px 14px', cursor: 'pointer' });
     item.onmouseenter = () => { item.style.background = '#0a84ff'; item.style.color = '#fff'; };
     item.onmouseleave = () => { item.style.background = ''; item.style.color = ''; };
