@@ -326,7 +326,21 @@ ipcMain.handle('convert-skp', async (_e, payload) => {
     const runtimeDir = process.env.TD_SKP_RUNTIME
       || (isDev ? path.join(__dirname, 'tools', 'skp-server', 'runtime-macos')
                 : path.join(process.resourcesPath || '', 'skp-runtime'));
-    const py = process.env.TD_SKP_PYTHON || '/opt/homebrew/opt/python@3.10/bin/python3.10';
+    // The bundled sketchup.so is a CPython 3.10 ABI extension, so the converter
+    // MUST run under a python3.10. Honor TD_SKP_PYTHON, else probe known 3.10
+    // locations (a GUI-launched app has a minimal PATH, so bare names won't
+    // resolve — list absolute candidates, user-local first).
+    const py = process.env.TD_SKP_PYTHON || (() => {
+      const home = require('os').homedir();
+      const cands = [
+        path.join(home, '.local/python-3.10/bin/python3.10'),                 // user-local standalone
+        '/opt/homebrew/opt/python@3.10/bin/python3.10',                       // homebrew
+        '/opt/homebrew/bin/python3.10',
+        '/usr/local/bin/python3.10',
+        '/Library/Frameworks/Python.framework/Versions/3.10/bin/python3.10',  // python.org
+      ];
+      return cands.find(p => { try { return fs.existsSync(p); } catch (_) { return false; } }) || cands[0];
+    })();
     if (!fs.existsSync(path.join(runtimeDir, 'convert.py')) ||
         !fs.existsSync(path.join(runtimeDir, 'sketchup.so'))) {
       return { error: 'SKP converter not installed (runtime missing)' };

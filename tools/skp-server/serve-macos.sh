@@ -19,7 +19,21 @@
 # TD_SKP_PYTHON=/path/to/python3.x.
 set -euo pipefail
 cd "$(dirname "$0")/runtime-macos"
-PY="${TD_SKP_PYTHON:-/opt/homebrew/opt/python@3.10/bin/python3.10}"
+# sketchup.so is a CPython 3.10 ABI extension → must run under python3.10.
+# Honor TD_SKP_PYTHON, else probe known 3.10 locations (user-local first),
+# mirroring main.js's resolver.
+PY="${TD_SKP_PYTHON:-}"
+if [ -z "$PY" ]; then
+  for c in \
+    "$HOME/.local/python-3.10/bin/python3.10" \
+    "/opt/homebrew/opt/python@3.10/bin/python3.10" \
+    "/opt/homebrew/bin/python3.10" \
+    "/usr/local/bin/python3.10" \
+    "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3.10"; do
+    if [ -x "$c" ]; then PY="$c"; break; fi
+  done
+  PY="${PY:-/opt/homebrew/opt/python@3.10/bin/python3.10}"
+fi
 if [ ! -f sketchup.so ]; then
   echo "❌ runtime-macos/sketchup.so missing — the SketchUp SDK runtime is not installed here." >&2
   echo "   (It is proprietary + gitignored; place the macOS binding in tools/skp-server/runtime-macos/.)" >&2

@@ -25222,7 +25222,19 @@ async function importSKP(arrayBuffer, filename, srcPath) {
     }
     catch (e) { showError('SKP 변환 실패 / conversion failed: ' + (e && e.message || e)); return; }
     if (res === null) { /* not supported on this platform → fall through to web */ }
-    else if (res && res.error) { showError('SKP 변환 실패 / conversion failed: ' + res.error); return; }
+    else if (res && res.error) {
+      // The OFFLINE converter isn't available on THIS machine — e.g. the
+      // installed build doesn't bundle the proprietary SketchUp runtime, or no
+      // python3.10 is present. Fall through to the public web conversion server
+      // so .skp import still works (the desktop build ships without the runtime;
+      // only the owner's dev machine has it). A genuine conversion FAILURE
+      // (timeout, bad model, converter crash) still surfaces as an error —
+      // re-uploading to the same converter wouldn't help and would only send the
+      // file to the server needlessly.
+      if (/runtime missing|not installed|ENOENT|spawn\b/i.test(res.error)) {
+        console.log('[skp-import] offline converter unavailable (' + res.error + ') → web server fallback');
+      } else { showError('SKP 변환 실패 / conversion failed: ' + res.error); return; }
+    }
     else {
       const u8 = res;   // Uint8Array (the glb)
       console.log('[skp-import] converted glb bytes=' + (u8 && u8.byteLength));
