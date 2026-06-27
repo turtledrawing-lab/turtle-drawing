@@ -21,7 +21,10 @@ cd "$(dirname "$0")/.."
 
 VERSION="$(node -p "require('./package.json').version")"
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
-BUILD_DATE="$(date +%Y-%m-%d)"   # surfaced as "last updated" in the About dialog
+# "Last updated" in the About dialog. Cloudflare's build runner is UTC, so a
+# KST-evening push built just after 00:00 UTC showed YESTERDAY's date. Stamp it
+# in the project's timezone (Asia/Seoul) so the date matches local expectation.
+BUILD_DATE="$(TZ='Asia/Seoul' date +%Y-%m-%d)"
 OUT="dist-web"
 
 rm -rf "$OUT"
