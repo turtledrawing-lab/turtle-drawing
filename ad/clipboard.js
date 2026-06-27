@@ -42,6 +42,14 @@
       locked: o.locked,
       smoothShade: !!em._smoothShade,
       materialId: o.materialId || null,
+      // Material APPEARANCE (mirrors snapshot()/sceneToDoc) so paste restores the
+      // exact color/opacity/transparency even when the material def can't be found
+      // — e.g. SKP/OBJ imported glass. Without these, pasted glass turned opaque.
+      matColor: (o.mat && o.mat.color) ? o.mat.color.getHex() : null,
+      matOpacity: o.mat ? o.mat.opacity : null,
+      matTransparent: o.mat ? !!o.mat.transparent : null,
+      matDepthWrite: o.mat ? !!o.mat.depthWrite : null,
+      castShadow: o.mesh ? !!o.mesh.castShadow : null,
       isImagePlane: !!o.isImagePlane,
       isEntourage:  !!o.isEntourage,
       entourageId:  o.entourageId || null,
@@ -63,11 +71,21 @@
       vertices: em.vertices.map(v => [v.x, v.y, v.z]),
       faces: em.faces.map(f => ({
         verts: f.verts.slice(),
+        // Serialize the face normal so the paste roundtrip is lossless (matches
+        // em.clone). addFace would otherwise recompute it from winding and lose
+        // any independently-flipped normal → broken faces on paste.
+        normal: f.normal ? [f.normal.x, f.normal.y, f.normal.z] : null,
         color: f.color,
         layerId: f.layerId,
         holes: (f.holes || []).map(h => h.slice()),
       })),
       edges: (em.edges || []).map(e => ({ a: e.a, b: e.b })),
+      // Soft (hidden) edges — the coplanar/triangulation diagonals that the
+      // renderer skips. Without these the paste shows every triangle split.
+      // sceneToDoc/.tt serialize these (and em.clone keeps them); the clipboard
+      // roundtrip must too. Keyed by vertex index ("min:max"), which the roundtrip
+      // preserves (vertices are restored in the same order).
+      softEdges: em.softEdges ? Array.from(em.softEdges) : [],
     };
   }
 
@@ -105,8 +123,18 @@
         fd.color != null ? fd.color : 0xffffff,
         fd.layerId || data.layerId || 'Layer0');
       if (fd.holes && fd.holes.length) f.holes = fd.holes.map(h => h.slice());
+      // Preserve the EXACT stored normal. addFace recomputes it from winding
+      // (Newell), but a face whose normal was flipped independently of its winding
+      // (SKP import / flip-faces) would otherwise re-orient on paste — flipping the
+      // earcut projection in triangulateFace → BROKEN triangulation/shading. em.clone()
+      // keeps the normal (so the move-tool copy is fine); the clipboard roundtrip must too.
+      if (fd.normal && fd.normal.length === 3) f.normal.set(fd.normal[0], fd.normal[1], fd.normal[2]);
     }
     for (const ed of (data.edges || [])) em.edges.push({ a: ed.a, b: ed.b });
+    // Restore soft (hidden) edges — without these, an SKP-triangulated face's
+    // coplanar diagonals (softened in the source) render as visible triangle
+    // splits on paste. Matches sceneToDoc/.tt and em.clone.
+    if (data.softEdges && data.softEdges.length) em.softEdges = new Set(data.softEdges);
 
     const obj = new SketchObject(em, (data.name || 'Object') + ' (copy)');
     obj.layerId = data.layerId || 'Layer0';
@@ -123,13 +151,24 @@
       };
     }
 
-    // Built-in material restore.
-    if (data.materialId && typeof MATERIALS !== 'undefined') {
-      const matDef = MATERIALS.find(m => m.id === data.materialId);
-      if (matDef && typeof applyMaterialToObject === 'function') {
-        try { applyMaterialToObject(obj, matDef); } catch (_) {}
-      }
+    // Material restore — mirror the undo/.tt loader: restore the appearance props
+    // first, then re-apply the texture from EITHER registry. SKP/OBJ imported
+    // materials (incl. glass) live in ImportedMaterials, which the old code never
+    // searched (and it skipped the opacity/transparent props), so imported
+    // materials and glass transparency were lost on paste.
+    if (data.matColor != null && obj.mat && obj.mat.color) obj.mat.color.setHex(data.matColor);
+    if (data.matOpacity != null && obj.mat) obj.mat.opacity = data.matOpacity;
+    if (data.matTransparent != null && obj.mat) obj.mat.transparent = data.matTransparent;
+    if (data.matDepthWrite != null && obj.mat) obj.mat.depthWrite = data.matDepthWrite;
+    if (data.castShadow != null && obj.mesh) obj.mesh.castShadow = data.castShadow;
+    if (data.materialId && typeof applyMaterialToObject === 'function') {
+      if (obj.mat) obj.mat.vertexColors = false;
+      let matDef = null;
+      if (typeof MATERIALS !== 'undefined') matDef = MATERIALS.find(m => m.id === data.materialId);
+      if (!matDef && typeof ImportedMaterials !== 'undefined') matDef = ImportedMaterials.find(m => m.id === data.materialId);
+      if (matDef) { try { applyMaterialToObject(obj, matDef); } catch (_) {} }
     }
+    if (obj.mat) obj.mat.needsUpdate = true;
 
     // Image-plane / entourage restore (reuses the .tt loader's pattern).
     if (data.isImagePlane || data.isEntourage) {
@@ -283,6 +322,7 @@
           const f = obj.em.faces[i];
           return {
             verts: f.verts.map(remap),
+            normal: f.normal ? [f.normal.x, f.normal.y, f.normal.z] : null,
             color: f.color,
             layerId: f.layerId,
             holes: (f.holes || []).map(h => h.map(remap)),
@@ -373,6 +413,17 @@
     const placed = [];
     const bb = new THREE.Box3();
     bb.makeEmpty();
+    // addObject() refreshes the outliner + layer visibility PER object, so pasting
+    // a large group is O(n²) and freezes. Suppress the per-object refresh and run
+    // it ONCE below — mirrors the bulk-import paths in turtle_drawing.html.
+    const _prevSuppress = (typeof Model !== 'undefined' && Model) ? Model._suppressAddRefresh : false;
+    if (typeof Model !== 'undefined' && Model) Model._suppressAddRefresh = true;
+    // rebuild() calls rebuildSectionFills() PER object, which rebuilds the WHOLE
+    // scene's section fills (O(sectionPlanes × Model.objects × faces)). Pasting N
+    // objects that way is O(n²) and is the real freeze. _bulkRestore skips the
+    // per-object call; we run rebuildSectionFills() ONCE below (bulk-import idiom).
+    const _prevBulk = window._bulkRestore;
+    window._bulkRestore = true;
     for (const data of Clip.objects) {
       const obj = reconstructObject(data, { x: 0, y: 0, z: 0 }, groupMap);
       if (!obj) continue;
@@ -382,6 +433,8 @@
       if (obj.isInstance && typeof obj.computeBBox === 'function') bb.union(obj.computeBBox());
       else for (const v of obj.em.vertices) bb.expandByPoint(v);
     }
+    if (typeof Model !== 'undefined' && Model) Model._suppressAddRefresh = _prevSuppress;
+    window._bulkRestore = _prevBulk;
     if (!placed.length) return;
     // Anchor at bottom-corner of the combined bbox so the cursor grabs
     // the (min x, min y, min z) foot of the pasted content.
@@ -390,11 +443,19 @@
       : new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z);
     refreshSelectionVisuals();
     renderEntityInfo();
+    // Per-object refresh was suppressed during the loop; run each ONCE now so the
+    // pasted group shows correctly during placement: outliner, layer visibility,
+    // thick-edge layer weights/colors (applyToScene), and section fills.
+    if (!_prevSuppress) {
+      try { if (typeof renderOutliner === 'function') renderOutliner(); } catch (_) {}
+      try { if (typeof applyLayerVisibility === 'function') applyLayerVisibility(); } catch (_) {}
+      try { if (window.AD && AD.Layers && AD.Layers.applyToScene) AD.Layers.applyToScene(); } catch (_) {}
+    }
+    if (!_prevBulk) { try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {} }
 
     // Enter paste-drag mode.
     const state = {
       objs: placed,
-      origVerts: placed.map(o => o.em.vertices.map(v => v.clone())),
       // Instances move via their matrix during the paste-drag (em is shared).
       origMat: placed.map(o => (o.isInstance && o.instanceMatrix) ? o.instanceMatrix.clone() : null),
       anchor: anchor,
@@ -458,11 +519,11 @@
         try { obj.group.updateMatrixWorld(true); } catch (_) {}
         continue;
       }
-      const orig = state.origVerts[i];
-      for (let k = 0; k < obj.em.vertices.length; k++) {
-        obj.em.vertices[k].copy(orig[k]).add(shift);
-      }
-      try { obj.rebuild(); } catch (_) {}
+      // Non-instance: translate the whole group via its transform (O(1)/object)
+      // for a smooth live preview. Rewriting every vertex + obj.rebuild() per
+      // frame froze large-group pastes. em.vertices stay at their paste-time
+      // positions; the offset is baked into them once on commit (_commitPaste).
+      obj.group.position.copy(shift);
     }
   }
 
@@ -500,9 +561,27 @@
 
   function _commitPaste() {
     if (!_pasteState) return;
-    const count = _pasteState.objs.length;
+    const st = _pasteState;
+    const count = st.objs.length;
     _pasteState = null;
     _teardownPasteListeners();
+    const _prevBulkB = window._bulkRestore;
+    window._bulkRestore = true;   // skip per-object rebuildSectionFills — run once below
+    // Bake the live-preview group offset (group.position) into geometry so each
+    // pasted object owns its final world coords, then rebuild ONCE — instead of
+    // the per-frame rebuild during the drag that froze large-group pastes.
+    for (let i = 0; i < st.objs.length; i++) {
+      const obj = st.objs[i];
+      if (obj.isInstance) continue;   // placed via instanceMatrix during the drag
+      const p = obj.group.position;
+      if (p.x || p.y || p.z) {
+        for (let k = 0; k < obj.em.vertices.length; k++) obj.em.vertices[k].add(p);
+        obj.group.position.set(0, 0, 0);
+        try { obj.rebuild(); } catch (_) {}
+      }
+    }
+    window._bulkRestore = _prevBulkB;
+    if (!_prevBulkB) { try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {} }
     if (typeof renderOutliner === 'function') { try { renderOutliner(); } catch (_) {} }
     if (typeof applyLayerVisibility === 'function') { try { applyLayerVisibility(); } catch (_) {} }
     if (typeof pushHistory === 'function') { try { pushHistory('Paste'); } catch (_) {} }

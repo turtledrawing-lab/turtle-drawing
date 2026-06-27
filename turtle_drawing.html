@@ -15013,6 +15013,13 @@ Tools.move = {
     };
     if (!this._cloneOrigVerts) this._cloneOrigVerts = new Map();
     if (!this._clonePartial) this._clonePartial = new Map();
+    // addObject() per clone refreshes the outliner + layer visibility each time,
+    // so alt-drag duplicating a large group is O(n²) and freezes. Suppress the
+    // per-object refresh and run it ONCE after the loop (bulk-import idiom).
+    const _prevSuppressCopy = Model._suppressAddRefresh;
+    Model._suppressAddRefresh = true;
+    const _prevBulkCopy = window._bulkRestore;
+    window._bulkRestore = true;   // skip per-clone rebuildSectionFills (O(scene) each) — once at end
     for (const o of this.objs) {
       let cloneObj;
       if (o.isInstance && o.def && typeof createComponentInstance === 'function') {
@@ -15031,6 +15038,21 @@ Tools.move = {
         // independently from the source mesh (partial clones have a different
         // vert indexing).
         this._cloneOrigVerts.set(cloneObj, cloneEm.vertices.map(v => v.clone()));
+        // Copy the source's material/appearance (incl. glass transparency). A fresh
+        // SketchObject has a default OPAQUE material, so without this a copied glass
+        // panel renders opaque. Copy the live mat directly (the source is in hand) —
+        // faithful even for imported/edited materials.
+        cloneObj.materialId = o.materialId || null;
+        if (o.mat && cloneObj.mat) {
+          cloneObj.mat.color.copy(o.mat.color);
+          cloneObj.mat.opacity = o.mat.opacity;
+          cloneObj.mat.transparent = o.mat.transparent;
+          cloneObj.mat.depthWrite = o.mat.depthWrite;
+          cloneObj.mat.vertexColors = o.mat.vertexColors;
+          if (o.mat.map) cloneObj.mat.map = o.mat.map;
+          cloneObj.mat.needsUpdate = true;
+        }
+        if (o.mesh && cloneObj.mesh) cloneObj.mesh.castShadow = o.mesh.castShadow;
         // Preserve component linkage so copies stay live instances of the
         // same definition — editing one propagates to all.
         if (o.componentId) {
@@ -15076,6 +15098,13 @@ Tools.move = {
         o.rebuild();
       }
     }
+    Model._suppressAddRefresh = _prevSuppressCopy;
+    window._bulkRestore = _prevBulkCopy;
+    if (!_prevSuppressCopy) {
+      try { renderOutliner(); applyLayerVisibility(); } catch (_) {}
+      try { if (window.AD && AD.Layers && AD.Layers.applyToScene) AD.Layers.applyToScene(); } catch (_) {}
+    }
+    if (!_prevBulkCopy) { try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {} }
     setStatus('msg', 'Copy mode ON — click to place copy. Press C or Option to toggle.');
   },
   onPointerDown(e) {
@@ -15292,6 +15321,12 @@ Tools.move = {
         setStatus('msg', 'Section plane moved.');
         return;
       }
+      // Finalizing rebuilds every target/original object; each rebuild() calls
+      // rebuildSectionFills() (O(sectionPlanes × scene). Suppress per-object and
+      // run it ONCE at the end so committing a big copy/move with an active
+      // section plane isn't O(n²).
+      const _prevBulkCommit = window._bulkRestore;
+      window._bulkRestore = true;
       // Snap the destination point for precise placement
       const snap = computeSnap(e, { skipOuterGroups: false });
       if (snap) {
@@ -15355,6 +15390,11 @@ Tools.move = {
         }
       }
       if (this.copyMode) {
+        // Bake any clones dragged via the group-transform fast path. When there
+        // was no snap at commit, the snap loop above didn't finalize them; this
+        // adds group.position into their verts + rebuilds once. Idempotent when
+        // the snap loop already baked + zeroed group.position.
+        this._bakeFastMoves();
         // In copy mode: restore originals to their saved positions (they
         // were already restored when entering copy mode, but be safe)
         for (const o of this.objs) {
@@ -15458,6 +15498,8 @@ Tools.move = {
         pushHistory('Move');
         setStatus('msg', 'Moved.');
       }
+      window._bulkRestore = _prevBulkCommit;
+      if (!_prevBulkCommit) { try { if (typeof rebuildSectionFills === 'function') rebuildSectionFills(); } catch (_) {} }
       try { refreshSelectionVisuals(); } catch (_) {}   // move the selection highlight to the new position (no stale ghost at the old spot)
       this.dragging = false;
       this.obj = null;
@@ -15506,11 +15548,16 @@ Tools.move = {
         o.group.position.copy(delta);
         continue;
       }
-      // Fast path: whole-object baked move → translate the group transform only
-      // (O(1) per object — no geometry/normal/edge/BVH rebuild, so it scales to
-      // huge groups). em.vertices are baked once on commit (_bakeFastMoves); snap
-      // already excludes these objects so their stale verts don't affect the drag.
-      if (!this.copyMode && !isPartial && !mask && o.group) {
+      // Fast path: whole-object baked move (INCLUDING copy-mode clones) → translate
+      // the group transform only (O(1) per object — no geometry/normal/edge/BVH
+      // rebuild, so it scales to huge groups). Copy-mode duplicating a large group
+      // previously hit the slow per-vertex rebuild below EVERY frame and froze;
+      // clones are whole objects (not partial/masked) so they translate the same way.
+      // em.vertices are baked once on commit (_bakeFastMoves — also invoked in the
+      // copy-commit branch for the no-snap case); snap already excludes these objects
+      // (copy mode excludes copyObjs — see onPointerMove _exclMove) so stale verts
+      // don't affect the drag.
+      if (!isPartial && !mask && o.group) {
         o.group.position.copy(delta);
         (this._fastMoveObjs || (this._fastMoveObjs = new Set())).add(o);
         continue;
@@ -33980,6 +34027,44 @@ function openShortcutsModal() {
   wrap.focus();
 }
 
+/* Zoom/frame the current selection (or the whole visible model if nothing is
+   selected) — bound to the Z key. Keeps the current view DIRECTION and just
+   moves the camera in/out + recenters the orbit target so the content fits the
+   viewport (mirrors the starter-scene framing: set target + position, then
+   controls._fromCamera()). */
+function zoomToSelection() {
+  const objs = (typeof Selection !== 'undefined' && Selection.objects && Selection.objects.size)
+    ? Array.from(Selection.objects)
+    : (typeof Model !== 'undefined' && Model.objects ? Model.objects.filter(o => o && o.group && o.group.visible) : []);
+  if (!objs.length) return;
+  const box = new THREE.Box3(); box.makeEmpty();
+  for (const o of objs) {
+    try {
+      if (typeof o.computeBBox === 'function') { const b = o.computeBBox(); if (b && !b.isEmpty()) box.union(b); }
+      else if (o.em && o.em.vertices) for (const v of o.em.vertices) box.expandByPoint(v);
+    } catch (_) {}
+  }
+  if (box.isEmpty()) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const radius = Math.max(size.length() / 2, 1e-3);
+  // Preserve the current view direction (camera → target).
+  const dir = new THREE.Vector3().subVectors(camera.position, controls.target);
+  if (dir.lengthSq() < 1e-9) dir.set(1, 0.6, 1);
+  dir.normalize();
+  // Distance so the bounding sphere fits both vertically and horizontally.
+  const fov = (camera.fov || 50) * Math.PI / 180;
+  const aspect = camera.aspect || 1;
+  const hFov = 2 * Math.atan(Math.tan(fov / 2) * aspect);
+  let dist = Math.max(radius / Math.sin(fov / 2), radius / Math.sin(hFov / 2)) * 1.15;
+  if (!isFinite(dist) || dist <= 0) dist = radius * 3;
+  controls.target.copy(center);
+  camera.position.copy(center).addScaledVector(dir, dist);
+  if (typeof controls._fromCamera === 'function') controls._fromCamera();
+  else if (typeof controls.update === 'function') controls.update();
+  if (typeof render === 'function') render();
+}
+
 /* --- Keyboard shortcuts --- */
 window.addEventListener('keydown', e => {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
@@ -34037,6 +34122,10 @@ window.addEventListener('keydown', e => {
       return;
     }
   }
+  // Z → zoom/frame the current selection (or the whole model if nothing is
+  // selected). Placed after the Move/Rotate/Scale axis-lock block above so those
+  // tools keep Z for their Z-axis lock; in every other tool Z zooms.
+  if (k === 'z') { try { zoomToSelection(); } catch (_) {} e.preventDefault(); return; }
   // Dispatch via the user-customisable shortcut table. Anything not found
   // there falls through to the F-keys below (which are reserved and not
   // user-editable).
@@ -34119,12 +34208,18 @@ window.addEventListener('keydown', e => {
       _tickFaceCamera();
     } catch (_) {}
   };
-  if (!placePerson()) {
-    setTimeout(() => { if (!placePerson()) fallbackBox(); else orientNow(); }, 300);
-  } else {
-    orientNow();
-  }
-  setTimeout(orientNow, 400);
+  // Seed the starter figure. Exposed so a NEW TAB (Tabs.newTab → blank scene)
+  // can place the same starter entourage the first window gets — otherwise new
+  // tabs open empty. placeAt() doesn't pushHistory, so this never dirties the tab.
+  window._placeStarterEntourage = function () {
+    if (!placePerson()) {
+      setTimeout(() => { if (!placePerson()) fallbackBox(); else orientNow(); }, 300);
+    } else {
+      orientNow();
+    }
+    setTimeout(orientNow, 400);
+  };
+  window._placeStarterEntourage();
 })();
 
 ToolMgr.set('select');

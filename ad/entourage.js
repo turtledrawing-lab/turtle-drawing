@@ -406,18 +406,22 @@
       const H = item.height;
       const W = H * (vbW / vbH);
 
-      // Billboard basis — initially face the current camera horizontally.
-      const camFwd = new THREE.Vector3();
-      camera.getWorldDirection(camFwd);
-      camFwd.y = 0;
-      if (camFwd.lengthSq() < 1e-6) camFwd.set(0, 0, -1);
-      camFwd.normalize();
-      const rightVec = new THREE.Vector3()
-        .crossVectors(new THREE.Vector3(0, 1, 0), camFwd).normalize();
-      const upVec    = new THREE.Vector3(0, 1, 0);
-
+      // Billboard basis — IDENTICAL to _tickFaceCamera (normal = camPos − centre,
+      // right = worldUp × normal, up = normal × right). The old basis used the
+      // camera's FORWARD vector, whose `right` is the OPPOSITE sign, so the figure
+      // appeared and then the first per-frame face-camera tick flipped it left-right.
+      // Using the tick's exact formula makes that first tick reproduce these same
+      // vertices → the figure appears correctly in one shot, no flip.
+      const worldUp = new THREE.Vector3(0, 1, 0);
       // Bottom-center anchored: place with base at worldPos.
-      const centre = worldPos.clone().add(upVec.clone().multiplyScalar(H / 2));
+      const centre = worldPos.clone().add(worldUp.clone().multiplyScalar(H / 2));
+      let normal = camera.position.clone().sub(centre);
+      if (normal.lengthSq() < 1e-8) normal.set(0, 0, 1);
+      normal.normalize();
+      let rightVec = new THREE.Vector3().crossVectors(worldUp, normal);
+      if (rightVec.lengthSq() < 1e-6) rightVec.set(1, 0, 0);
+      rightVec.normalize();
+      const upVec = new THREE.Vector3().crossVectors(normal, rightVec).normalize();
       const r = rightVec.clone().multiplyScalar(W / 2);
       const u = upVec.clone().multiplyScalar(H / 2);
 

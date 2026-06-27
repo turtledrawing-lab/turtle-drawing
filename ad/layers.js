@@ -153,7 +153,14 @@
     const orig = addObject;
     window.addObject = function (obj) {
       orig(obj);
-      try { AD.Layers.applyToScene(); } catch (_) {}
+      // applyToScene() re-syncs EVERY object's thick-edge overlay (O(scene)).
+      // Calling it per object during a bulk add (paste/duplicate/import, where
+      // Model._suppressAddRefresh is set) is O(n²) and freezes the app on a large
+      // group. The bulk caller runs AD.Layers.applyToScene() ONCE at the end, so
+      // skip the per-object pass while suppressed.
+      if (typeof Model === 'undefined' || !Model._suppressAddRefresh) {
+        try { AD.Layers.applyToScene(); } catch (_) {}
+      }
     };
     window.addObject._adPatched = true;
   }

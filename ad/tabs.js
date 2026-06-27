@@ -391,6 +391,10 @@
       if (typeof renderLayers === 'function') renderLayers();
       if (typeof applyLayerVisibility === 'function') applyLayerVisibility();
     }
+    // Seed the same starter entourage figure the first window opens with, so a
+    // new tab matches first launch instead of opening empty. (_placeStarterEntourage
+    // uses placeAt, which doesn't pushHistory → the new tab stays clean/undirty.)
+    try { if (typeof window._placeStarterEntourage === 'function') window._placeStarterEntourage(); } catch (_) {}
     Tabs._bumpAutosaveGen();
     render();
   };
