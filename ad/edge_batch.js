@@ -45,6 +45,13 @@
       try {
         if (typeof Model === 'undefined' || !Model.objects) return;
         this._teardown();
+        // Shaded face style = no wireframe at all: hide every per-object thick
+        // overlay and emit no batch. (setViewMode drives this and also hides the
+        // thin o.edges; without this the merged batch kept the lines on screen.)
+        if (Model.viewMode === 'shaded') {
+          for (const o of Model.objects) if (o && o._thickEdges) o._thickEdges.visible = false;
+          return;
+        }
         // Sections restyle cut edges per-object — don't batch while one is active.
         const sectionActive = Model.sectionPlanes && Model.sectionPlanes.some(s => s && s.visible);
         // Group edit dims non-member objects per-object (edgeMat/thick-edge opacity);

@@ -4109,6 +4109,7 @@ class EditableMesh {
     this.faces = [];    // { verts:[idx..], normal:Vector3, color:int, layerId:string }
     this.edges = [];    // { a:idx, b:idx }  (optional stand-alone edges)
     this.softEdges = new Set(); // edge keys "min:max" — hidden in wireframe
+    this.hiddenEdges = new Set(); // edge keys "min:max" — user-HIDDEN in wireframe (distinct from soft)
   }
   /* When a face W has slid into the plane of another face O with opposite
      normals (e.g. hole-wall pushed to the slab's outer wall), CSG-subtract
@@ -4579,6 +4580,7 @@ class EditableMesh {
       color: color||0xffffff,
       layerId: layerId||'Layer0',
       holes: [],  // array of inner-loop vertex index arrays (for faces with holes)
+      hidden: false,  // per-face HIDE (skipped by geometry builders; travels with `holes`)
     };
     this.computeFaceNormal(f);
     this.faces.push(f);
@@ -6104,6 +6106,7 @@ class EditableMesh {
     const faceIdxMap = []; // for picking: each triangle -> face index
     for (let fi = 0; fi < this.faces.length; fi++) {
       const f = this.faces[fi];
+      if (f.hidden) continue;
       this.computeFaceNormal(f);
       const col = new THREE.Color(f.color);
       // Choose UV projection axes based on face normal (triplanar)
@@ -6149,6 +6152,7 @@ class EditableMesh {
     for (let i = 0; i < adj.length; i++) adj[i] = [];
     for (let fi = 0; fi < this.faces.length; fi++) {
       const f = this.faces[fi];
+      if (f.hidden) continue;
       this.computeFaceNormal(f);
       for (const vi of f.verts) adj[vi].push(f.normal);
     }
@@ -6157,6 +6161,7 @@ class EditableMesh {
     const tmpN = new THREE.Vector3();
     for (let fi = 0; fi < this.faces.length; fi++) {
       const f = this.faces[fi];
+      if (f.hidden) continue;
       const fn = f.normal;
       const col = new THREE.Color(f.color);
       const absN = [Math.abs(fn.x), Math.abs(fn.y), Math.abs(fn.z)];
@@ -6202,12 +6207,15 @@ class EditableMesh {
     if (this._smoothShade) return this._toCreaseEdgeGeometry();
     const positions = [];
     const soft = this.softEdges || null;
+    const hidden = this.hiddenEdges || null;
     const ekey = (a, b) => (a < b ? a + ':' + b : b + ':' + a);
     for (const f of this.faces) {
+      if (f.hidden) continue;
       const vs = f.verts;
       for (let i = 0; i < vs.length; i++) {
         const ia = vs[i], ib = vs[(i+1)%vs.length];
         if (soft && soft.has(ekey(ia, ib))) continue;
+        if (hidden && hidden.has(ekey(ia, ib))) continue;
         const a = this.vertices[ia];
         const b = this.vertices[ib];
         positions.push(a.x,a.y,a.z, b.x,b.y,b.z);
@@ -6224,6 +6232,7 @@ class EditableMesh {
     }
     for (const e of this.edges) {
       if (soft && soft.has(ekey(e.a, e.b))) continue;
+      if (hidden && hidden.has(ekey(e.a, e.b))) continue;
       const a = this.vertices[e.a], b = this.vertices[e.b];
       positions.push(a.x,a.y,a.z, b.x,b.y,b.z);
     }
@@ -6241,6 +6250,7 @@ class EditableMesh {
     const edgeMap = new Map();
     for (let fi = 0; fi < this.faces.length; fi++) {
       const f = this.faces[fi];
+      if (f.hidden) continue;
       this.computeFaceNormal(f);
       const vs = f.verts;
       for (let i = 0; i < vs.length; i++) {
@@ -6253,8 +6263,10 @@ class EditableMesh {
       }
     }
     const soft = this.softEdges || null;
+    const hidden = this.hiddenEdges || null;
     for (const [key, faceList] of edgeMap) {
       if (soft && soft.has(key)) continue;
+      if (hidden && hidden.has(key)) continue;
       const sep = key.indexOf(':');
       const a = +key.slice(0, sep), b = +key.slice(sep + 1);
       const va = this.vertices[a], vb = this.vertices[b];
@@ -6276,6 +6288,7 @@ class EditableMesh {
     // auto-soften) can hide tessellation here, just like the crease loop above.
     for (const e of this.edges) {
       if (soft && soft.has(e.a < e.b ? e.a + ':' + e.b : e.b + ':' + e.a)) continue;
+      if (hidden && hidden.has(e.a < e.b ? e.a + ':' + e.b : e.b + ':' + e.a)) continue;
       const a = this.vertices[e.a], b = this.vertices[e.b];
       positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
     }
@@ -6293,6 +6306,7 @@ class EditableMesh {
       color: f.color,
       layerId: f.layerId,
       holes: (f.holes || []).map(h => h.slice()),
+      hidden: !!f.hidden,
     }));
     em.edges = this.edges.map(e => ({ a: e.a, b: e.b }));
     if (this._smoothShade) em._smoothShade = true;
@@ -6303,6 +6317,7 @@ class EditableMesh {
     // _softenEdgesByAngle mutates the set in place (clear()+repopulate), so a shared
     // reference would corrupt the snapshot clone (treated as immutable).
     if (this.softEdges && this.softEdges.size) em.softEdges = new Set(this.softEdges);
+    if (this.hiddenEdges && this.hiddenEdges.size) em.hiddenEdges = new Set(this.hiddenEdges);
     return em;
   }
 }
@@ -13387,7 +13402,7 @@ function refreshSelectionVisuals() {
     if (Selection.objects.has(obj)) continue;
     for (const fi of faceIdxs) {
       const face = obj.em.faces[fi];
-      if (!face || face.verts.length < 3) continue;
+      if (!face || face.verts.length < 3 || face.hidden) continue;
       // Use proper triangulation (earcut) to avoid blue triangles
       // extending outside concave faces.
       const tris = obj.em.triangulateFace(face);
@@ -13458,8 +13473,10 @@ function refreshSelectionVisuals() {
     //   • grouped members selected via triple-click INSIDE the group
     //     (_selectActiveGroupAll fills edges too — selectGroup does not), so
     //     a plain single-click group-as-unit pick keeps just the dashed outline.
-    const groupTripleSel = o.groupId != null && Selection.edges.has(o);
-    if (!_bigSel && wholeSel && o.mesh && o.mesh.geometry && (o.groupId == null || groupTripleSel)) {
+    // Translucent blue fill for EVERY whole-selected object — including a group
+    // picked as a unit. Previously grouped picks got only a faint 1px edge tint,
+    // so the user couldn't tell the group was selected; the fill makes it obvious.
+    if (!_bigSel && wholeSel && o.mesh && o.mesh.geometry) {
       const overlay = new THREE.Mesh(o.mesh.geometry, wholeSelMat);
       o.group.updateMatrixWorld(true);
       overlay.matrixAutoUpdate = false;
@@ -13496,6 +13513,7 @@ function refreshSelectionVisuals() {
       if (_doSilhouette) {
         const edgeFaces = new Map();
         for (let fi = 0; fi < o.em.faces.length; fi++) {
+          if (o.em.faces[fi].hidden) continue;
           const vs = o.em.faces[fi].verts;
           for (let i = 0; i < vs.length; i++) {
             const a = vs[i], b = vs[(i + 1) % vs.length];
@@ -14252,17 +14270,20 @@ Tools.select = {
         return;
       }
 
-      // --- Triple click ---
-      //   Inside a group (no Shift) → select the WHOLE active group.
-      //   Plain    → flood-fill CONNECTED objects sharing same material.
-      //   Shift+   → all SAME-MATERIAL objects regardless of connectivity.
+      // --- Triple / quadruple click ---
+      //   Shift+ (any)             → all SAME-MATERIAL objects (any connectivity).
+      //   Inside the active group:
+      //       3 clicks             → CONNECTED part only (flood-fill from the click).
+      //       4+ clicks            → the WHOLE active group.
+      //   Plain (no active group)  → CONNECTED part (flood-fill, same material).
       if (this._clickCount >= 3) {
-        if (!this._clickSeqShift
+        const inActiveGroup = !this._clickSeqShift
             && Model.activeGroupId != null
-            && clickedObj.groupId === Model.activeGroupId) {
-          this._selectActiveGroupAll(Model.activeGroupId, 'replace');
-        } else if (this._clickSeqShift) {
+            && clickedObj.groupId === Model.activeGroupId;
+        if (this._clickSeqShift) {
           this._selectSameMaterial(clickedObj);
+        } else if (inActiveGroup && this._clickCount >= 4) {
+          this._selectActiveGroupAll(Model.activeGroupId, 'replace');
         } else {
           this._selectConnectedSameMaterial(clickedObj);
         }
@@ -14569,8 +14590,10 @@ Tools.select = {
       if (typeof enterComponentEdit === 'function') enterComponentEdit(resolved.obj);
       return;
     }
-    // Group enter on double-click of empty space exits the active group
-    if (resolved.type === 'empty' && Model.activeGroupId != null) {
+    // Double-click empty space exits the active group — UNLESS the user solo'd it
+    // with N (outside hidden, "independent edit"): then only Esc or N leaves, so a
+    // stray click in the (now empty-looking) isolated view can't kick you out.
+    if (resolved.type === 'empty' && Model.activeGroupId != null && Model.outsideVisible) {
       exitGroup();
     }
   },
@@ -25683,9 +25706,11 @@ function sceneToDoc() {
         color: f.color,
         layerId: f.layerId,
         holes: (f.holes || []).map(h => h.slice()),
+        hidden: !!f.hidden,
       })),
       edges: o.em.edges.map(e => ({ a: e.a, b: e.b })),
       softEdges: o.em.softEdges ? Array.from(o.em.softEdges) : [],
+      hiddenEdges: o.em.hiddenEdges ? Array.from(o.em.hiddenEdges) : [],
     })),
     // Dimension annotations (linear + angle). Lengths kept in meters to match
     // internal Vector3 representation; loader converts straight back.
@@ -25913,9 +25938,11 @@ async function loadDocIntoScene(doc) {
     for (const fd of (od.faces || [])) {
       const f = em.addFace(fd.verts.slice(), fd.color != null ? fd.color : 0xffffff, fd.layerId || od.layerId || 'Layer0');
       if (fd.holes && fd.holes.length) f.holes = fd.holes.map(h => h.slice());
+      if (fd.hidden) f.hidden = true;
     }
     for (const ed of (od.edges || [])) em.edges.push({ a: ed.a, b: ed.b });
     if (od.softEdges && od.softEdges.length) em.softEdges = new Set(od.softEdges);
+    if (od.hiddenEdges && od.hiddenEdges.length) em.hiddenEdges = new Set(od.hiddenEdges);
     const obj = new SketchObject(em, od.name || 'Object');
     obj.layerId = od.layerId || 'Layer0';
     obj.visible = od.visible !== false;
@@ -30133,6 +30160,7 @@ function setViewMode(mode) {
     }
     o.mesh.visible = (mode !== 'wire');
     o.edges.visible = (mode !== 'shaded'); // show edges in wire/both/hiddenline
+    if (o._thickEdges) o._thickEdges.visible = (mode !== 'shaded'); // thick overlay too
     o.mat.wireframe = (mode === 'wire');
     // Hidden-line: strip textures and force flat white faces; edges stay.
     // Restore saved state when leaving this mode.
@@ -30156,6 +30184,10 @@ function setViewMode(mode) {
       delete o._viewSaved;
     }
   }
+  // Edges also render as a merged thick-line BATCH + per-object LineSegments2
+  // overlay; refresh the batch so 'shaded' truly hides ALL wireframe (not just the
+  // thin o.edges). EdgeBatch.rebuild() honours Model.viewMode (hides on shaded).
+  try { if (window.AD && AD.EdgeBatch && typeof AD.EdgeBatch.rebuild === 'function') AD.EdgeBatch.rebuild(); } catch (_) {}
 }
 
 /* --- Layers UI --- */
@@ -31685,26 +31717,55 @@ function extractFacesIntoNewObject(sourceObj, faceIdxs, name) {
 }
 /* ── Hide / Unhide objects ───────────────────────────────────────────── */
 function hideSelectedObjects() {
-  // Collect objects to hide from all selection types
-  const toHide = new Set();
-  for (const o of Selection.objects) toHide.add(o);
-  for (const [o] of Selection.faces) toHide.add(o);
-  for (const [o] of Selection.edges) toHide.add(o);
-  if (toHide.size === 0) { setStatus('msg', 'Nothing selected to hide.'); return; }
-  for (const o of toHide) {
-    o.hidden = true;
+  // Whole-object / group picks (in Selection.objects) hide the whole object
+  // (o.hidden). PARTIAL picks — some faces/edges selected on an object that is
+  // NOT in Selection.objects — hide ONLY those faces (f.hidden) / edges
+  // (em.hiddenEdges), so hiding part of an object no longer hides all of it.
+  // The hidden state lives in the em (captured by snapshots) → undoable.
+  const whole = new Set(Selection.objects);
+  const dirty = new Set();
+  // Partial FACES.
+  for (const [o, faceSet] of Selection.faces) {
+    if (whole.has(o) || !faceSet || !faceSet.size) continue;
+    // A component instance shares its def geometry — per-face hide would silently
+    // affect every sibling. Fall back to hiding the whole instance (enter the
+    // component to hide individual faces). Plain objects hide just the faces.
+    if (o.isInstance) { whole.add(o); continue; }
+    for (const fi of faceSet) { const f = o.em.faces[fi]; if (f) f.hidden = true; }
+    dirty.add(o);
   }
+  // Partial EDGES.
+  for (const [o, keySet] of Selection.edges) {
+    if (whole.has(o) || !keySet || !keySet.size) continue;
+    if (o.isInstance) { whole.add(o); continue; }
+    if (!o.em.hiddenEdges) o.em.hiddenEdges = new Set();
+    for (const k of keySet) o.em.hiddenEdges.add(k);
+    dirty.add(o);
+  }
+  // Whole objects.
+  for (const o of whole) o.hidden = true;
+  if (!whole.size && !dirty.size) { setStatus('msg', 'Nothing selected to hide.'); return; }
+  for (const o of dirty) { try { o.rebuild(); } catch (_) {} }
   clearSelection();
   applyLayerVisibility();
   renderOutliner();
   renderHiddenList();
-  setStatus('msg', `Hidden ${toHide.size} object(s).`);
+  if (typeof pushHistory === 'function') { try { pushHistory('Hide'); } catch (_) {} }
+  setStatus('msg', whole.size && !dirty.size ? `Hidden ${whole.size} object(s).`
+    : !whole.size && dirty.size ? 'Hid selected faces/edges.'
+    : `Hidden ${whole.size + dirty.size} item(s).`);
 }
 
 function unhideAllObjects() {
   let count = 0;
   for (const o of Model.objects) {
-    if (o.hidden) { o.hidden = false; count++; }
+    let any = false, geo = false;
+    if (o.hidden) { o.hidden = false; any = true; }
+    // Also clear any per-face / per-edge hides so partial hides are recoverable.
+    if (o.em && o.em.faces) for (const f of o.em.faces) { if (f.hidden) { f.hidden = false; any = true; geo = true; } }
+    if (o.em && o.em.hiddenEdges && o.em.hiddenEdges.size) { o.em.hiddenEdges.clear(); any = true; geo = true; }
+    if (geo) { try { o.rebuild(); } catch (_) {} }
+    if (any) count++;
   }
   // Also re-show any hidden section plane markers
   for (const sp of (Model.sectionPlanes || [])) {
@@ -33159,7 +33220,7 @@ let _ctxFaceIdx = -1;  // em-face index under the right-click cursor (for Revers
 function showContextMenu(e) {
   const m = document.getElementById('contextMenu');
   const hasSel = Selection.objects.size > 0 || Selection.faces.size > 0 || Selection.edges.size > 0;
-  const hasHidden = Model.objects.some(o => o.hidden);
+  const hasHidden = Model.objects.some(o => o.hidden || (o.em && ((o.em.faces && o.em.faces.some(f => f.hidden)) || (o.em.hiddenEdges && o.em.hiddenEdges.size))));
   const hasTex = !!(_ctxObj && _ctxObj.mat && _ctxObj.mat.map);
   // Localize labels to match the menu-bar language (i18n-menu.json terms reused).
   const ko = (typeof _tdLang === 'function') && _tdLang() === 'ko';

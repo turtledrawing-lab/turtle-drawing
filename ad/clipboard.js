@@ -78,6 +78,7 @@
         color: f.color,
         layerId: f.layerId,
         holes: (f.holes || []).map(h => h.slice()),
+        hidden: !!f.hidden,
       })),
       edges: (em.edges || []).map(e => ({ a: e.a, b: e.b })),
       // Soft (hidden) edges — the coplanar/triangulation diagonals that the
@@ -86,6 +87,7 @@
       // roundtrip must too. Keyed by vertex index ("min:max"), which the roundtrip
       // preserves (vertices are restored in the same order).
       softEdges: em.softEdges ? Array.from(em.softEdges) : [],
+      hiddenEdges: em.hiddenEdges ? Array.from(em.hiddenEdges) : [],
     };
   }
 
@@ -123,6 +125,7 @@
         fd.color != null ? fd.color : 0xffffff,
         fd.layerId || data.layerId || 'Layer0');
       if (fd.holes && fd.holes.length) f.holes = fd.holes.map(h => h.slice());
+      if (fd.hidden) f.hidden = true;
       // Preserve the EXACT stored normal. addFace recomputes it from winding
       // (Newell), but a face whose normal was flipped independently of its winding
       // (SKP import / flip-faces) would otherwise re-orient on paste — flipping the
@@ -135,6 +138,7 @@
     // coplanar diagonals (softened in the source) render as visible triangle
     // splits on paste. Matches sceneToDoc/.tt and em.clone.
     if (data.softEdges && data.softEdges.length) em.softEdges = new Set(data.softEdges);
+    if (data.hiddenEdges && data.hiddenEdges.length) em.hiddenEdges = new Set(data.hiddenEdges);
 
     const obj = new SketchObject(em, (data.name || 'Object') + ' (copy)');
     obj.layerId = data.layerId || 'Layer0';
@@ -326,6 +330,7 @@
             color: f.color,
             layerId: f.layerId,
             holes: (f.holes || []).map(h => h.map(remap)),
+            hidden: !!f.hidden,
           };
         });
         const newVerts = Array.from(usedV.keys()).map(vi => {
