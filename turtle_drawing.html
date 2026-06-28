@@ -2064,6 +2064,23 @@ const ShadowSettings = {
   sunPath: false,       // visualize sun trajectory through the day
   shadowQuality: 'med', // 'low'|'med'|'high'|'ultra' — controls map size
 };
+// Shadow self-shadowing ("acne") scales with how much WORLD space one shadow-map
+// texel covers. On a small model the ortho frustum is tiny so a fixed tiny bias is
+// fine, but on a city-scale import the frustum is huge → each texel spans a big
+// patch → regular diagonal self-shadow STRIPES appear on the walls (esp. at a low,
+// grazing sun). Cure: offset the shadow lookup along the surface normal by a few
+// texel-widths. Recompute whenever the frustum size (sc) or map size changes.
+function _updateShadowBias() {
+  if (!sun || !sun.shadow) return;
+  const sc = Math.abs(sun.shadow.camera.right) || 150;     // ortho half-width (world units)
+  const map = sun.shadow.mapSize.width || 2048;
+  const texelWorld = (2 * sc) / map;
+  // ~3 texel-widths kills grazing-angle acne; floor = the old static 0.02 so small
+  // architectural scenes keep tight contact shadows (0.05 detached ~100mm walls /
+  // peter-panning); cap avoids gross light-leak if the scene is enormous.
+  sun.shadow.normalBias = Math.min(2.5, Math.max(0.02, texelWorld * 3.0));
+  sun.shadow.bias = -0.0003;
+}
 function setShadowQuality(q) {
   ShadowSettings.shadowQuality = q;
   const sizes = { low: 1024, med: 2048, high: 4096, ultra: 8192 };
@@ -2075,6 +2092,7 @@ function setShadowQuality(q) {
       try { sun.shadow.map.dispose(); } catch (_) {}
       sun.shadow.map = null;
     }
+    _updateShadowBias();
   }
   if (renderer && renderer.shadowMap) renderer.shadowMap.needsUpdate = true;
 }
@@ -2154,6 +2172,7 @@ function updateSunFromSettings() {
   sun.shadow.camera.near   = 0.5;
   sun.shadow.camera.far    = dist * 2 + sc * 2;
   sun.shadow.camera.updateProjectionMatrix();
+  _updateShadowBias();   // frustum just resized → rescale bias to the new texel size
   if (renderer.shadowMap) renderer.shadowMap.needsUpdate = true;
 
   if (s.useLightDark) {
@@ -13396,6 +13415,13 @@ function refreshSelectionVisuals() {
     side: THREE.DoubleSide, depthTest: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   });
+  // Budget the per-face overlay: a triple-click connected-face region on a
+  // material-merged city mesh can be THOUSANDS of faces, and one Mesh per face
+  // would freeze the UI (same failure as the 210k-mesh marquee). Highlight up to
+  // the cap; faces past it stay selected but unpainted (no freeze).
+  const _PARTIAL_FACE_CAP = 3000;
+  let _pfCount = 0;
+  faceLoop:
   for (const [obj, faceIdxs] of ((_selVisualsLite || _bigSel) ? [] : Selection.faces)) {
     // Whole-object selection (e.g., grouped object click) auto-fills faces;
     // skip the per-face overlay so the object isn't painted blue.
@@ -13415,6 +13441,7 @@ function refreshSelectionVisuals() {
       if (!pts.length) continue;
       const g = new THREE.BufferGeometry().setFromPoints(pts);
       selectionHelper.add(new THREE.Mesh(g, faceMat));
+      if (++_pfCount >= _PARTIAL_FACE_CAP) break faceLoop;
     }
   }
   // Highlight individually-selected edges with a thick blue tube overlay.
@@ -13422,6 +13449,11 @@ function refreshSelectionVisuals() {
     color: 0x0066ff, depthTest: false, transparent: true, opacity: 0.95,
   });
   const edgeRadius = Math.max(0.00075, controls.spherical.radius * 0.0006);
+  // Same budget guard for the (heavier) per-edge tubes — a big connected-face
+  // region carries thousands of boundary edges; cap the tube build so it can't freeze.
+  const _PARTIAL_EDGE_CAP = 3000;
+  let _peCount = 0;
+  edgeLoop:
   for (const [obj, keys] of ((_selVisualsLite || _bigSel) ? [] : Selection.edges)) {
     // Whole-selected objects' edges are covered by the silhouette / merged bbox —
     // skip them here (a group/triple-click auto-fills Selection.edges with every
@@ -13444,6 +13476,7 @@ function refreshSelectionVisuals() {
       mesh.quaternion.setFromUnitVectors(up, target);
       mesh.renderOrder = 11;
       selectionHelper.add(mesh);
+      if (++_peCount >= _PARTIAL_EDGE_CAP) break edgeLoop;
     }
   }
   // Edge color per object: only turn blue when the WHOLE object is selected
@@ -13755,7 +13788,8 @@ Tools.insertOpening = {
      - Single click on face/edge        -> select that face or edge
      - Double click on face             -> face + its boundary edges
      - Double click on edge             -> edge + connected faces
-     - Triple click                     -> whole object (all faces + edges)
+     - Triple click                     -> connected face region (flood-fill within object)
+     - 4+ clicks                        -> all same-material objects
      - Shift + any click                -> ADD to existing selection (toggle)
      - Drag from empty space            -> rubber band select
      - Esc                              -> deselect all
@@ -13787,7 +13821,7 @@ Tools.select = {
   _lastClickFace: null,  // { obj, fi } for face clicks
 
   onActivate() {
-    setStatus('msg', 'Click: select. Double-click face: +edges. Double-click edge: +faces. Triple-click: whole object. Shift: add.');
+    setStatus('msg', 'Click: select. Double-click face: +edges. Double-click edge: +faces. Triple-click: connected region. 4 clicks: same material. Shift: add.');
   },
   onDeactivate() {
     this.dragging = false;
@@ -13921,25 +13955,31 @@ Tools.select = {
     setStatus('msg', `Selected whole object (${obj.em.faces.length} faces, ${allEdges.size} edges).`);
   },
 
-  /* Shift+triple-click: select all objects that share the same materialId
-     (or same face color if no material) as the clicked object. */
-  _selectSameMaterial(startObj) {
+  /* 4+ clicks (Shift = additive): select all objects sharing the same materialId
+     (or same face color if no material) as the clicked object. Scoped to the active
+     group when one is being edited. */
+  _selectSameMaterial(startObj, additive) {
     const targetMat = startObj.materialId || null;
     // For plain-color objects, match by the majority face color
     const faceColor = (o) => o.em.faces.length ? o.em.faces[0].color : null;
     const targetColor = targetMat ? null : faceColor(startObj);
 
+    // When editing INSIDE a group, keep same-material selection within that group
+    // (don't spill across the boundary into the rest of the model — matches the
+    // group-scoping the connected/region selections already enforce).
+    const activeGid = (typeof Model !== 'undefined') ? Model.activeGroupId : null;
     const matches = Model.objects.filter(o => {
       if (!o.visible || o.hidden || o.isImagePlane || o.isEntourage) return false;
+      if (activeGid != null && o.groupId !== activeGid) return false;
       if (targetMat) return o.materialId === targetMat;
       return !o.materialId && faceColor(o) === targetColor;
     });
 
-    Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear();
+    if (!additive) { Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear(); }
     for (const o of matches) {
-      const allFaces = new Set();
+      const allFaces = Selection.faces.get(o) || new Set();
       for (let i = 0; i < o.em.faces.length; i++) allFaces.add(i);
-      const allEdges = new Set();
+      const allEdges = Selection.edges.get(o) || new Set();
       const ek = (a, b) => _edgeKey(a, b);
       for (const f of o.em.faces) {
         const loops = [f.verts, ...(f.holes || [])];
@@ -14113,6 +14153,84 @@ Tools.select = {
     setStatus('msg', `Connected objects selected: ${n} object${n > 1 ? 's' : ''}.`);
   },
 
+  // 3+ clicks → the CONNECTED FACE region within ONE object, flood-filled from the
+  // clicked face across shared edges (faces sharing >=2 vertex positions). Imported
+  // SKP/GLB meshes merge ALL faces of a material into a single object that spans the
+  // whole model (many disconnected islands), so selecting the whole object grabbed
+  // faces all over the place; this selects just the island under the cursor. Falls
+  // back to the whole object when the click landed on an edge (no face index).
+  _selectConnectedFaces(obj, resolved, additive) {
+    const em = obj && obj.em;
+    const startFi = (resolved && resolved.type === 'face') ? resolved.fi : -1;
+    if (!em || startFi == null || startFi < 0 || !em.faces[startFi]) {
+      if (!additive) { Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear(); }
+      if (obj) {
+        Selection.objects.add(obj);
+        const all = Selection.faces.get(obj) || new Set();
+        for (let i = 0; i < (em ? em.faces.length : 0); i++) all.add(i);
+        Selection.faces.set(obj, all);
+      }
+      refreshSelectionVisuals(); renderEntityInfo();
+      return;
+    }
+    const EPS = 1e-4;
+    const vk = vi => { const v = em.vertices[vi]; return Math.round(v.x / EPS) + ',' + Math.round(v.y / EPS) + ',' + Math.round(v.z / EPS); };
+    // Connect faces by a shared EDGE, not just a shared point. Key each face's
+    // boundary edges by their two endpoint POSITIONS (so unwelded imports — distinct
+    // vertex indices at the same xyz — still match). Two faces are neighbours iff
+    // they share an edge key. A lone shared corner, or two quads meeting only at a
+    // diagonal's two non-adjacent points, do NOT connect — that stops the flood from
+    // jumping across a pinch point into a geometrically separate island.
+    const computeEK = (fi) => {
+      const f = em.faces[fi], out = [];
+      const loops = [f.verts, ...(f.holes || [])];
+      for (const loop of loops) {
+        for (let k = 0; k < loop.length; k++) {
+          const ka = vk(loop[k]), kb = vk(loop[(k + 1) % loop.length]);
+          if (ka === kb) continue;
+          out.push(ka < kb ? ka + '|' + kb : kb + '|' + ka);
+        }
+      }
+      return out;
+    };
+    const faceEK = new Array(em.faces.length);
+    const edge2f = new Map();
+    for (let fi = 0; fi < em.faces.length; fi++) {
+      const eks = computeEK(fi); faceEK[fi] = eks;
+      for (const e2 of eks) { let s = edge2f.get(e2); if (!s) { s = new Set(); edge2f.set(e2, s); } s.add(fi); }
+    }
+    const sel = new Set([startFi]);
+    const stack = [startFi];
+    while (stack.length) {
+      const cf = stack.pop();
+      for (const e2 of faceEK[cf]) {
+        const nbrs = edge2f.get(e2); if (!nbrs) continue;
+        for (const nf of nbrs) { if (nf === cf || sel.has(nf)) continue; sel.add(nf); stack.push(nf); }
+      }
+    }
+    // Light up the region's wireframe too (edges of the selected faces).
+    const ek = (a, b) => _edgeKey(a, b);
+    const edges = new Set();
+    for (const fi of sel) {
+      const f = em.faces[fi];
+      const loops = [f.verts, ...(f.holes || [])];
+      for (const loop of loops) {
+        for (let k = 0; k < loop.length; k++) edges.add(ek(loop[k], loop[(k + 1) % loop.length]));
+      }
+    }
+    if (!additive) { Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear(); }
+    const fset = Selection.faces.get(obj) || new Set();
+    for (const fi of sel) fset.add(fi);
+    const eset = Selection.edges.get(obj) || new Set();
+    for (const e of edges) eset.add(e);
+    Selection.faces.set(obj, fset);
+    Selection.edges.set(obj, eset);
+    refreshSelectionVisuals();
+    renderEntityInfo();
+    const n = sel.size;
+    setStatus('msg', `Connected faces selected: ${n} face${n > 1 ? 's' : ''}.`);
+  },
+
   onPointerDown(e) {
     if (e.button !== 0) return;
     const shift = e.shiftKey;
@@ -14270,22 +14388,20 @@ Tools.select = {
         return;
       }
 
-      // --- Triple / quadruple click ---
-      //   Shift+ (any)             → all SAME-MATERIAL objects (any connectivity).
-      //   Inside the active group:
-      //       3 clicks             → CONNECTED part only (flood-fill from the click).
-      //       4+ clicks            → the WHOLE active group.
-      //   Plain (no active group)  → CONNECTED part (flood-fill, same material).
+      // --- Triple+ click ---  (Shift = additive: keep the current selection and
+      //   add to it instead of replacing — so you can build up a multi-selection.)
+      //   3 clicks → the CONNECTED FACE region under the cursor (flood-fill within
+      //              the clicked object). Imported meshes lump every face of a
+      //              material into one object spanning the whole model, so this
+      //              grabs just the island you clicked — not all same-material faces.
+      //   4+ clicks → ALL same-material objects across the model.
+      // Escalation: 1=face, 2=face+edges, 3=connected region, 4=same material.
       if (this._clickCount >= 3) {
-        const inActiveGroup = !this._clickSeqShift
-            && Model.activeGroupId != null
-            && clickedObj.groupId === Model.activeGroupId;
-        if (this._clickSeqShift) {
-          this._selectSameMaterial(clickedObj);
-        } else if (inActiveGroup && this._clickCount >= 4) {
-          this._selectActiveGroupAll(Model.activeGroupId, 'replace');
+        const additive = this._clickSeqShift;
+        if (this._clickCount >= 4) {
+          this._selectSameMaterial(clickedObj, additive);
         } else {
-          this._selectConnectedSameMaterial(clickedObj);
+          this._selectConnectedFaces(clickedObj, resolved, additive);
         }
         this.dragging = false;
         return;
