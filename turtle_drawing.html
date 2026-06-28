@@ -8167,12 +8167,38 @@ const UNDO_MAX_FACES = 300000;
    retained depth down for large scenes — keeping a usable minimum — so the
    undo stack stays within a memory budget. Normal scenes keep the full depth. */
 function _undoDepthCap() {
-  let faces = 0;
-  try { for (const o of Model.objects) if (o && o.em && o.em.faces) faces += o.em.faces.length; } catch (_) {}
-  if (faces <= 0) return History.maxDepth;
-  const BUDGET = 80 * 1024 * 1024;         // ~80 MB target for the whole stack
-  const PER_FACE = 250;                    // rough bytes/face/snapshot (verts+face objs)
-  const byBudget = Math.floor(BUDGET / Math.max(1, faces * PER_FACE));
+  let faces = 0, objs = 0, maxObjFaces = 0, compFaces = 0;
+  try {
+    for (const o of Model.objects) if (o && !o.isInstance && o.em && o.em.faces) {
+      const f = o.em.faces.length; faces += f; objs++; if (f > maxObjFaces) maxObjFaces = f;
+    }
+    for (const c of (Model.components || [])) if (c && c.em && c.em.faces) compFaces += c.em.faces.length;
+  } catch (_) {}
+  if (faces <= 0 && compFaces <= 0) return History.maxDepth;
+  // DELTA-undo memory model (the old formula BUDGET/(faces*PER_FACE) assumed every
+  // history level deep-cloned the WHOLE model → collapsed a ~277k-face city to a
+  // 2-step undo). Reality: unchanged objects' em clones are SHARED by reference
+  // across entries (via _snapEmCache) → a ONE-TIME baseline. But each extra history
+  // LEVEL still pays, UN-shared:
+  //   • the per-object metadata array (objs * META_OBJ),
+  //   • a full re-clone of the object(s) that changed that step — every prior clone
+  //     stays alive, and the worst case is the single LARGEST object being edited
+  //     repeatedly (push/pull on one merged building IS the real workflow), and
+  //   • a full re-copy of every component DEFINITION — snapshot() rebuilds the
+  //     `components` array fresh each call (defs are NOT cached/shared like em).
+  // Budget depth against that real per-level cost after reserving the baseline.
+  // (UNDO_MAX_FACES stays the hard ceiling that disables snapshotting entirely.)
+  const BUDGET = 448 * 1024 * 1024;        // whole-stack memory target
+  const PER_FACE = 450;                    // bytes/face incl. per-face Vector3 normal + vertex objs (honest V8 heap)
+  const META_OBJ = 300;                    // bytes for one object's plain state entry
+  const DELTA_MIN = 4000;                  // floor for the per-level changed-geometry charge
+  const baseline = faces * PER_FACE;       // one shared clone of all object geometry (paid once)
+  const perLevel = objs * META_OBJ + (Math.max(DELTA_MIN, maxObjFaces) + compFaces) * PER_FACE;
+  const avail = BUDGET - baseline;
+  const byBudget = avail > 0 ? Math.floor(avail / Math.max(1, perLevel)) : 0;
+  // Floor of 2 (not 4): the very heaviest single-object scenes allowed under
+  // UNDO_MAX_FACES genuinely can't afford 4 full re-clones, so let the budget win
+  // there (2 is still a usable undo). Everything lighter keeps far more.
   return Math.max(2, Math.min(History.maxDepth, byBudget));
 }
 /* Snapshot clone cache for delta undo: uid -> { gen, chk, em }. Entries are
