@@ -1630,6 +1630,11 @@ function createWindow(pendingDocJson) {
         { label: 'Right',                                           click: send('view-right') },
         { label: 'Iso',                                             click: send('view-iso') },
         { type: 'separator' },
+        { label: 'Isometric (locked)',                              click: send('view-isometric') },
+        { label: 'Planometric',                                     click: send('view-planometric') },
+        { label: 'Oblique · Cavalier',                              click: send('view-cavalier') },
+        { label: 'Oblique · Cabinet',                               click: send('view-cabinet') },
+        { type: 'separator' },
         {
           label: 'Face Style',
           submenu: [

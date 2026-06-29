@@ -1092,6 +1092,11 @@ input[type="range"]:hover { accent-color: #22a722; }
         <div data-act="view-right">Right <span>Num 3</span></div>
         <div data-act="view-iso">Iso <span>Num 7</span></div>
         <div class="sep"></div>
+        <div data-act="view-isometric">Isometric (locked)</div>
+        <div data-act="view-planometric">Planometric</div>
+        <div data-act="view-cavalier">Oblique · Cavalier</div>
+        <div data-act="view-cabinet">Oblique · Cabinet</div>
+        <div class="sep"></div>
         <div data-act="eye-level">Position Camera (Eye Level 1.6 m)</div>
         <div class="sep"></div>
         <div class="submenu">Face Style <span>▸</span>
@@ -2803,6 +2808,20 @@ function toggleShadowPanel() {
 /* ── Camera FOV & 2-point perspective ────────────────────────────── */
 let _twoPtPerspective = false;
 
+// ── Parallel-projection "drawing" modes (architectural axonometric looks) ──────
+// Mutually exclusive with each other AND with _twoPtPerspective. 'none' = plain
+// perspective/orthographic (the camera type decides which). All four build on the
+// orthographic camera + the distance→frustum zoom (_applyOrthoFrustum).
+let _drawMode = 'none';             // 'none'|'iso'|'plan'|'cavalier'|'cabinet'
+let _planAngleDeg    = 45;          // planometric: plan rotation about vertical
+let _obliqueAngleDeg = 45;          // cavalier/cabinet: on-screen receding angle
+const _OBLIQUE = new Set(['plan', 'cavalier', 'cabinet']);       // modes that hand-write projectionMatrix (shear)
+const _LOCKED  = new Set(['iso', 'plan', 'cavalier', 'cabinet']); // modes that lock the orbit angle
+const ISO_THETA = Math.PI / 4;              // azimuth 45°
+const ISO_PHI   = Math.atan(Math.SQRT2);    // ≈54.74° polar → ground elevation ≈35.26° (equal 120° axes)
+const _PLAN_LIFT = 2000;                    // extra camera height in planometric so tall geometry never clips near
+const _projShearTmp = new THREE.Matrix4();  // reused each frame (no per-frame alloc)
+
 function setCameraFov(fov) {
   camera.fov = fov;
   camera.updateProjectionMatrix();
@@ -2813,6 +2832,7 @@ function setCameraFov(fov) {
 }
 
 function setTwoPointPerspective(on) {
+  if (on && _drawMode !== 'none') exitDrawMode();   // 2pt and parallel draw modes are mutually exclusive
   _twoPtPerspective = on;
   const cb = document.getElementById('cam2pt');
   if (cb) cb.checked = on;
@@ -2832,6 +2852,7 @@ function initCameraPanel() {
   const cb2pt = document.getElementById('cam2pt');
   if (cb2pt) {
     cb2pt.addEventListener('change', () => {
+      if (cb2pt.checked && _drawMode !== 'none') exitDrawMode();
       _twoPtPerspective = cb2pt.checked;
     });
   }
@@ -3354,6 +3375,31 @@ function initShadowPanel() {
   syncSliders();
 }
 
+// Push ShadowSettings (+ softness on sun.shadow.radius) INTO the shadow panel
+// controls — used after loading a file so the sliders/toggles match the restored
+// settings. Mirrors the value-setting lines in initShadowPanel (no listeners here).
+function syncShadowUI() {
+  const $ = id => document.getElementById(id);
+  const s = ShadowSettings;
+  const setV = (id, v) => { const el = $(id); if (el) el.value = v; };
+  const setT = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  const setC = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
+  setV('shMonth', s.month); setT('shMonthVal', s.month);
+  setV('shDay', s.day);     setT('shDayVal', s.day);
+  setV('shTime', s.hour * 60 + s.minute);
+  setT('shTimeVal', String(s.hour).padStart(2, '0') + ':' + String(s.minute).padStart(2, '0'));
+  setV('shLat', s.latitude);
+  setV('shNorth', s.northAngle);
+  setV('shLight2', Math.round(s.lightFace * 100)); setT('shLight2Val', Math.round(s.lightFace * 100));
+  setV('shDark2',  Math.round(s.darkFace * 100));  setT('shDark2Val',  Math.round(s.darkFace * 100));
+  setC('shSunShade', s.sunShadeNoShadow);
+  setC('shSunPath',  s.sunPath);
+  setV('shQuality', s.shadowQuality || 'med');
+  if (sun && sun.shadow && sun.shadow.radius != null) { setV('shSoftness', sun.shadow.radius); setT('shSoftnessVal', sun.shadow.radius); }
+  const btn = $('shadowToggleBtn');
+  if (btn) { btn.textContent = s.enabled ? 'ON' : 'OFF'; btn.style.color = s.enabled ? '#2266cc' : ''; }
+}
+
 // Grid + axes
 const grid = new THREE.GridHelper(2000, 2000, 0xcccccc, 0xe0e0e0);
 // Push grid slightly below y=0 so edges sitting on the ground aren't hidden
@@ -3393,6 +3439,82 @@ function _drawRect() {
   const r = CAN.getBoundingClientRect();
   return (r.width > 0 && r.height > 0) ? r : VP.getBoundingClientRect();
 }
+// Orthographic "zoom": an ortho camera has no perspective foreshortening, so
+// dollying (changing the orbit distance) does NOT change apparent size — zoom
+// MUST come from the frustum size. Tie the half-height to the orbit distance so
+// the wheel / pinch (which change controls.spherical.radius) actually zoom in ortho,
+// and a perspective↔orthographic swap keeps the same framing. h = distance*tan(fov/2)
+// matches the 45° perspective camera. (The old code hardcoded h=10 in every resize
+// path, so ortho ignored the wheel entirely and the swap looked "zoomed in".)
+const ORTHO_HALF_TAN = Math.tan(THREE.MathUtils.degToRad(45) / 2);
+function _orthoRadius() {
+  return (typeof controls !== 'undefined' && controls && controls.spherical)
+    ? controls.spherical.radius : 15;
+}
+function _applyOrthoFrustum(cam, radius, aspect) {
+  const h = Math.max(1e-4, radius * ORTHO_HALF_TAN);
+  cam.left = -h * aspect; cam.right = h * aspect; cam.top = h; cam.bottom = -h;
+}
+
+// ── Parallel-projection helpers (oblique SHEAR on the ortho base) ──────────────
+// Both write camera.projectionMatrix directly, so both MUST refresh
+// projectionMatrixInverse — Raycaster.setFromCamera unprojects through it, so a
+// stale inverse makes every snap/pick land offset (same trap as 2-point
+// perspective; see OrbitController.update). The shear is applied in EYE space:
+// the renderer computes clip = projectionMatrix · viewMatrix · world, so setting
+// projectionMatrix = O·S shears AFTER the view transform. The shear's z-row stays
+// identity → NDC depth == plain ortho depth → the z-buffer stays valid.
+
+// Elevation oblique (cavalier scale=1 / cabinet scale=0.5): front elevation
+// (world XY) stays true; world-Z depth recedes on screen at `angleDeg` by `scale`.
+// Caller has already placed the camera in a clean FRONT view.
+function _applyElevObliqueProjection(cam, radius, aspect, angleDeg, scale) {
+  _applyOrthoFrustum(cam, radius, aspect);
+  cam.updateProjectionMatrix();                       // cam.projectionMatrix = O
+  const a = THREE.MathUtils.degToRad(angleDeg);
+  const kx = scale * Math.cos(a), ky = scale * Math.sin(a);
+  _projShearTmp.identity();
+  _projShearTmp.elements[8]  = kx;                     // m02: eye_z → eye_x (depth recedes right)
+  _projShearTmp.elements[9]  = ky;                     // m12: eye_z → eye_y (…and up)
+  // The camera sits `radius` in front of the target, so the front-elevation plane
+  // is at eye_z = -radius. Without these the shear translates the WHOLE image by
+  // k·(-radius) and pushes the model off-screen. Cancel that baseline so the front
+  // plane lands centred and depth recedes FROM it (mirrors planometric's elements[13]).
+  _projShearTmp.elements[12] = kx * radius;            // m03
+  _projShearTmp.elements[13] = ky * radius;            // m13
+  cam.projectionMatrix.multiply(_projShearTmp);        // O · S
+  cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+}
+
+// Planometric (plan oblique): the horizontal PLAN (world XZ) keeps TRUE shape,
+// rotated on screen by `planAngleDeg`; world-Y height rises VERTICALLY at 1:1.
+// Realized as a clean TOP-DOWN view (camera above the target, up = a HORIZONTAL
+// vector rotated by planAngleDeg so up ⟂ look-dir → NO gimbal) plus a shear that
+// pushes (eye_z + camHeight) [= height above the target plane] into eye_y. The
+// camera sits camHeight = radius+_PLAN_LIFT above, so eye_z is deep inside near/far
+// (no clipping even when zoomed in), and the unsheared z-row makes taller geometry
+// (nearer the bird's-eye camera) occlude correctly. The +camHeight term cancels
+// eye_z's baseline so there's no huge vertical shift; it tracks radius each frame.
+function _applyPlanometricProjection(cam, target, radius, aspect, planAngleDeg) {
+  const t = THREE.MathUtils.degToRad(planAngleDeg);
+  const camH = Math.max(radius, 1e-3) + _PLAN_LIFT;
+  cam.position.set(target.x, target.y + camH, target.z);
+  cam.up.set(Math.sin(t), 0, -Math.cos(t));           // horizontal, rotated t about Y (⟂ down look-dir)
+  cam.lookAt(target);
+  cam.updateMatrixWorld(true);                        // clean top-down view V
+  // The +_PLAN_LIFT camera lift pushes the whole scene to eye-depth ~camH, which can
+  // exceed the default ortho far (5000) on big imports → the ground clips. Widen far
+  // (and keep a tight near) so nothing clips; ortho depth is linear so precision holds.
+  cam.far = Math.max(cam.far, camH + Math.max(radius, 1e-3) * 4 + 10);
+  cam.near = Math.min(cam.near, 0.1);
+  _applyOrthoFrustum(cam, radius, aspect);
+  cam.updateProjectionMatrix();                       // cam.projectionMatrix = O
+  _projShearTmp.identity();
+  _projShearTmp.elements[9]  = 1;                      // m12: eye_z → eye_y (k=1, cavalier 1:1)
+  _projShearTmp.elements[13] = camH;                  // m13: +camH cancels eye_z's baseline
+  cam.projectionMatrix.multiply(_projShearTmp);        // O · S
+  cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+}
 function _resizeApplySize() {
   const r = _drawRect();
   if (r.width === _lastResizeW && r.height === _lastResizeH) return;
@@ -3403,10 +3525,12 @@ function _resizeApplySize() {
   if (camera.isPerspectiveCamera) {
     camera.aspect = r.width / r.height;
   } else if (camera.isOrthographicCamera) {
-    const a = r.width / r.height, h = 10;
-    camera.left = -h*a; camera.right = h*a; camera.top = h; camera.bottom = -h;
+    _applyOrthoFrustum(camera, _orthoRadius(), r.width / r.height);
   }
   camera.updateProjectionMatrix();
+  // A sheared parallel mode's matrix was just clobbered by updateProjectionMatrix —
+  // re-apply it (controls.update rebuilds the shear). Iso/plain need no re-heal.
+  if (_OBLIQUE.has(_drawMode) && typeof controls !== 'undefined' && controls) controls.update();
   try { drawOverlay(); } catch (_) {}
 }
 let _resizeDebounce = 0;
@@ -3416,10 +3540,10 @@ function resize() {
   const r = _drawRect();
   if (camera.isPerspectiveCamera) camera.aspect = r.width / r.height;
   else if (camera.isOrthographicCamera) {
-    const a = r.width / r.height, h = 10;
-    camera.left = -h*a; camera.right = h*a; camera.top = h; camera.bottom = -h;
+    _applyOrthoFrustum(camera, _orthoRadius(), r.width / r.height);
   }
   camera.updateProjectionMatrix();
+  if (_OBLIQUE.has(_drawMode) && typeof controls !== 'undefined' && controls) controls.update();
   clearTimeout(_resizeDebounce);
   _resizeDebounce = setTimeout(_resizeApplySize, 180);
 }
@@ -3869,6 +3993,7 @@ class OrbitController {
     const dx = e.clientX - this.lastX, dy = e.clientY - this.lastY;
     this.lastX = e.clientX; this.lastY = e.clientY;
     if (this.state === 'orbit') {
+      if (_LOCKED.has(_drawMode)) return;   // parallel drawing modes lock the viewing angle (pan/zoom still work)
       this.spherical.theta -= dx * 0.005;
       this.spherical.phi   -= dy * 0.005;
       this.spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, this.spherical.phi));
@@ -3895,7 +4020,11 @@ class OrbitController {
     // 2-point perspective builds a custom asymmetric frustum keyed off
     // target.y, so translating the target toward a cursor point would shift
     // the frame vertically mid-zoom. Keep plain zoom-toward-target there.
-    if (_twoPtPerspective) {
+    // 2-point perspective and the SHEARED parallel modes (plan/cavalier/cabinet)
+    // build a custom projection; zoom-toward-cursor's target shift assumes the
+    // standard view, so keep plain zoom-toward-target there. (Iso is plain ortho —
+    // it keeps zoom-to-cursor below.)
+    if (_twoPtPerspective || _OBLIQUE.has(_drawMode)) {
       this.spherical.radius = Math.max(this.minDistance,
         Math.min(this.maxDistance, this.spherical.radius * factor));
       return;
@@ -3983,8 +4112,44 @@ class OrbitController {
       // in 2-pt mode used the stale symmetric frustum and landed visibly
       // offset from the cursor (grows with camera/target height difference).
       this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
+    } else if (_drawMode !== 'none') {
+      // Parallel-projection drawing modes (iso / planometric / cavalier / cabinet).
+      // All run on the orthographic camera; angles are locked (orbit is swallowed).
+      const asp = (CAN && CAN.height) ? (CAN.width / CAN.height)
+        : (this.camera.top ? this.camera.right / this.camera.top : 1);
+      const R = this.spherical.radius;
+      if (_drawMode === 'iso') {
+        // Locked isometric angle, then the STOCK ortho path — updateProjectionMatrix()
+        // refreshes the inverse automatically, so no hand-written matrix here.
+        this.spherical.theta = ISO_THETA;
+        this.spherical.phi   = ISO_PHI;
+        this.camera.position.copy(this.target).add(new THREE.Vector3().setFromSpherical(this.spherical));
+        this.camera.up.set(0, 1, 0);
+        this.camera.lookAt(this.target);
+        _applyOrthoFrustum(this.camera, R, asp);
+        this.camera.updateProjectionMatrix();
+      } else if (_drawMode === 'plan') {
+        _applyPlanometricProjection(this.camera, this.target, R, asp, _planAngleDeg);
+      } else {   // cavalier | cabinet — clean FRONT view + eye-space shear
+        this.spherical.theta = 0; this.spherical.phi = Math.PI / 2;
+        this.camera.position.set(this.target.x, this.target.y, this.target.z + Math.max(R, 1e-3));
+        this.camera.up.set(0, 1, 0);
+        this.camera.lookAt(this.target);
+        this.camera.updateMatrixWorld(true);
+        _applyElevObliqueProjection(this.camera, R, asp, _obliqueAngleDeg,
+          _drawMode === 'cabinet' ? 0.5 : 1.0);
+      }
     } else {
       this.camera.lookAt(this.target);
+      // Orthographic zoom rides the orbit distance: rebuild the frustum each frame
+      // from spherical.radius so the wheel/pinch (which only change that radius)
+      // actually zoom. Perspective foreshortening would do this automatically; ortho
+      // has none, so without this the wheel did nothing in orthographic view.
+      if (this.camera.isOrthographicCamera) {
+        const asp = (CAN && CAN.height) ? (CAN.width / CAN.height)
+          : (this.camera.top ? this.camera.right / this.camera.top : 1);
+        _applyOrthoFrustum(this.camera, this.spherical.radius, asp);
+      }
       this.camera.updateProjectionMatrix();
     }
   }
@@ -9100,6 +9265,35 @@ const DimStyle = {
 const raycaster = new THREE.Raycaster();
 raycaster.params.Line = { threshold: 0.15 };
 const pointer = new THREE.Vector2();
+
+// ── Shear-aware picking for the oblique parallel modes (plan/cavalier/cabinet) ──
+// THREE's OrthographicCamera Raycaster.setFromCamera unprojects the ray ORIGIN
+// (correct) but HARDCODES the ray DIRECTION to the camera axis (0,0,-1), ignoring
+// the projection shear → every snap/pick lands progressively offset (refreshing
+// projectionMatrixInverse can't fix it: the ortho path never reads the matrix for
+// direction). Patch the PROTOTYPE once so EVERY raycaster (the shared one + the
+// per-call locals) rebuilds the ray from the sheared projection — unproject the
+// cursor NDC at two depths; origin + (far-near) direction then follow the true
+// oblique ray. All non-sheared cases (iso, perspective, plain ortho) delegate to
+// the stock method.
+(function patchObliqueRaycast() {
+  if (!THREE.Raycaster || THREE.Raycaster.prototype._obliquePatched) return;
+  const _orig = THREE.Raycaster.prototype.setFromCamera;
+  const _na = new THREE.Vector3(), _nb = new THREE.Vector3();
+  THREE.Raycaster.prototype.setFromCamera = function (coords, cam) {
+    if (cam && cam.isOrthographicCamera &&
+        typeof _drawMode !== 'undefined' && _OBLIQUE.has(_drawMode)) {
+      _na.set(coords.x, coords.y, -1).unproject(cam);
+      _nb.set(coords.x, coords.y,  1).unproject(cam);
+      this.ray.origin.copy(_na);
+      this.ray.direction.copy(_nb).sub(_na).normalize();
+      this.camera = cam;
+      return this;
+    }
+    return _orig.call(this, coords, cam);
+  };
+  THREE.Raycaster.prototype._obliquePatched = true;
+})();
 
 // Visual offset between OS mouse position and the pencil cursor's drawn tip.
 // Must match the .cursor-draw hotspot + SVG tip location so snap targets and
@@ -25780,7 +25974,21 @@ function sceneToDoc() {
       target: controls.target.toArray(),
       zoom: camera.zoom,
       ortho: !!camera.isOrthographicCamera,
+      drawMode: _drawMode,            // 'none'|'iso'|'plan'|'cavalier'|'cabinet'
+      planAngle: _planAngleDeg,
+      obliqueAngle: _obliqueAngleDeg,
+      // The TRUE orbit distance (zoom). Planometric drives camera.position to a
+      // LIFTED point (target.y + radius + _PLAN_LIFT), so |pos-target| ≠ the real
+      // radius; persist the real one so reload doesn't inflate (and compound) zoom.
+      orbitRadius: controls.spherical.radius,
     },
+    // Shadow / sun-study settings + the current Face Style, so reopening restores
+    // the exact lighting and display mode. softness lives on sun.shadow.radius,
+    // not in ShadowSettings, so it's captured separately.
+    shadow: Object.assign({}, ShadowSettings, {
+      softness: (sun && sun.shadow && sun.shadow.radius != null) ? sun.shadow.radius : 4,
+    }),
+    viewMode: Model.viewMode || 'shaded',
     layers: Model.layers.map(L => ({
       id: L.id, name: L.name, color: L.color,
       visible: L.visible, locked: L.locked,
@@ -26296,9 +26504,43 @@ async function loadDocIntoScene(doc) {
       camera.lookAt(controls.target);
       camera.updateProjectionMatrix();
       controls.update && controls.update();
+      // Restore a parallel drawing mode (additive fields; old files lack them →
+      // 'none'). setView already restored radius/target, so re-entering the mode
+      // keeps the saved zoom while re-locking the angle/projection.
+      if (typeof doc.camera.planAngle === 'number')    _planAngleDeg    = doc.camera.planAngle;
+      if (typeof doc.camera.obliqueAngle === 'number') _obliqueAngleDeg = doc.camera.obliqueAngle;
+      // Restore the TRUE orbit distance (setView derived it from camera.position,
+      // which is the LIFTED point in planometric → inflated). This keeps the saved
+      // zoom and stops the per-reload _PLAN_LIFT compounding.
+      if (typeof doc.camera.orbitRadius === 'number') controls.spherical.radius = doc.camera.orbitRadius;
+      const dm = (typeof doc.camera.drawMode === 'string') ? doc.camera.drawMode : 'none';
+      if (dm === 'iso')           setIsometric();
+      else if (dm === 'plan')     setPlanometric();
+      else if (dm === 'cavalier') setCavalier();
+      else if (dm === 'cabinet')  setCabinet();
+      else _drawMode = 'none';
     } catch (err) { console.warn('[load] camera restore', err); zoomAll(); }
   } else {
     zoomAll();
+  }
+  // Restore shadow / sun-study settings + Face Style (additive; old files lack
+  // these → current defaults are kept). softness lives on sun.shadow.radius.
+  if (doc.shadow && typeof doc.shadow === 'object') {
+    try {
+      const { softness, ...rest } = doc.shadow;
+      Object.assign(ShadowSettings, rest);
+      if (typeof softness === 'number' && sun && sun.shadow) {
+        sun.shadow.radius = softness;
+        sun.shadow.blurSamples = Math.max(8, softness * 2);
+      }
+      setShadowQuality(ShadowSettings.shadowQuality || 'med');   // resizes the shadow map
+      syncShadowUI();                                            // push values into the panel
+      setShadowEnabled(!!ShadowSettings.enabled);                // applies sun + shadow map (calls updateSunFromSettings)
+      if (ShadowSettings.sunPath) updateSunPathViz();
+    } catch (err) { console.warn('[load] shadow restore', err); }
+  }
+  if (typeof doc.viewMode === 'string') {
+    try { setViewMode(doc.viewMode); } catch (err) { console.warn('[load] viewMode restore', err); }
   }
   // Restore dimension annotations
   Model.dimensions = (doc.dimensions || []).map(d => {
@@ -29715,6 +29957,10 @@ function _handleActionImpl(act) {
     case 'view-front': setStandardView('front'); break;
     case 'view-right': setStandardView('right'); break;
     case 'view-iso':   setStandardView('iso'); break;
+    case 'view-isometric':   setIsometric();   break;
+    case 'view-planometric': setPlanometric(); break;
+    case 'view-cavalier':    setCavalier();    break;
+    case 'view-cabinet':     setCabinet();     break;
     case 'style-shaded': setViewMode('shaded'); break;
     case 'style-wire':   setViewMode('wire'); break;
     case 'style-both':   setViewMode('both'); break;
@@ -29979,6 +30225,9 @@ Middle drag — Orbit    Shift+Middle — Pan   Wheel — Zoom`);
 
 /* --- View helpers --- */
 function setPerspective(persp) {
+  // Choosing plain Perspective/Orthographic leaves any parallel drawing mode.
+  // (_enterDrawMode calls this first, then re-sets _drawMode, so the order is safe.)
+  _drawMode = 'none';
   // Swap camera type while preserving framing
   const oldPos = camera.position.clone(), tgt = controls.target.clone();
   const newCam = persp
@@ -29992,6 +30241,8 @@ function setPerspective(persp) {
   setStatus('msg', persp ? 'Perspective' : 'Orthographic');
 }
 function setStandardView(v) {
+  _drawMode = 'none';   // Top/Front/Right/Iso quick-looks are free-orbit views
+  camera.up.set(0, 1, 0);   // clear any planometric up-tilt so the standard view isn't rolled
   const d = 15;
   const tgt = new THREE.Vector3(0, 1, 0);
   const pos = {
@@ -30002,6 +30253,32 @@ function setStandardView(v) {
   }[v];
   controls.setView(pos, tgt);
 }
+
+// ── Parallel-projection drawing modes (iso / planometric / cavalier / cabinet) ──
+function exitDrawMode() {
+  _drawMode = 'none';
+  camera.up.set(0, 1, 0);   // planometric tilts up; reset so the next lookAt is level (no roll)
+}
+function _enterDrawMode(mode) {
+  if (_twoPtPerspective) setTwoPointPerspective(false);   // mutual exclusion with 2-pt
+  if (camera.isPerspectiveCamera) setPerspective(false);  // all parallel modes need the ortho base
+  _drawMode = mode;
+  if (mode === 'iso') {
+    controls.spherical.theta = ISO_THETA; controls.spherical.phi = ISO_PHI;
+  } else if (mode === 'cavalier' || mode === 'cabinet') {
+    controls.spherical.theta = 0; controls.spherical.phi = Math.PI / 2;
+  }
+  // planometric needs no angle seeding — its helper drives the camera each frame.
+  controls.update();
+  setStatus('msg', {
+    iso: 'Isometric', plan: 'Planometric ' + _planAngleDeg + '°',
+    cavalier: 'Oblique — Cavalier (1:1)', cabinet: 'Oblique — Cabinet (1:2)'
+  }[mode] || 'Drawing view');
+}
+function setIsometric()      { _enterDrawMode('iso'); }
+function setPlanometric(deg) { if (deg) _planAngleDeg = deg; _enterDrawMode('plan'); }
+function setCavalier(deg)    { if (deg) _obliqueAngleDeg = deg; _enterDrawMode('cavalier'); }
+function setCabinet(deg)     { if (deg) _obliqueAngleDeg = deg; _enterDrawMode('cabinet'); }
 
 /* Zoom Selection — zoom to fit currently selected objects/faces. */
 function zoomSelection() {
@@ -35930,9 +36207,9 @@ document.addEventListener('click', (e) => {
           camera.aspect = r.width / r.height;
           camera.updateProjectionMatrix();
         } else if (camera.isOrthographicCamera) {
-          const a = r.width / r.height, h = 10;
-          camera.left = -h*a; camera.right = h*a; camera.top = h; camera.bottom = -h;
+          _applyOrthoFrustum(camera, _orthoRadius(), r.width / r.height);
           camera.updateProjectionMatrix();
+          if (_OBLIQUE.has(_drawMode) && controls) controls.update();
         }
       } catch (_) {}
     }
