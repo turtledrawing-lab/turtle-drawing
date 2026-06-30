@@ -7122,16 +7122,19 @@ function addLayer(name, opts) {
     lineWeight: 0.25,
     cutHatch: (opts && opts.cutHatch) || null,
   });
-  renderLayers();
+  if (!Model._suppressAddRefresh) renderLayers();   // bulk import batches: refreshed once at the end
   return id;
 }
 // Find layer by name; create if missing (with optional opts).
+//   opts.colorIfNew — apply opts.color only when CREATING (don't recolor an existing
+//   same-named layer; used by material→layer import so a re-import / name collision
+//   doesn't silently overwrite a user's layer colour).
 function getOrAddLayer(name, opts) {
   const existing = Model.layers.find(l => l.name === name);
   if (existing) {
     if (opts && opts.cutHatch !== undefined) existing.cutHatch = opts.cutHatch;
-    if (opts && opts.color  !== undefined) existing.color    = opts.color;
-    renderLayers();
+    if (opts && opts.color !== undefined && !(opts && opts.colorIfNew)) existing.color = opts.color;
+    if (!Model._suppressAddRefresh) renderLayers();
     return existing.id;
   }
   return addLayer(name, opts);
@@ -25165,6 +25168,28 @@ function _defFromEM(em, name) {
 
 async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opts = {}) {
   const featureEdgesOnly = !!(opts && opts.featureEdgesOnly);
+  // Layer mapping for imported meshes. Priority: explicit opts.layerOf (e.g. the
+  // Rhino layer table) → else, by default, ONE LAYER PER MATERIAL (a model imports
+  // organised by material, like SketchUp; this was the historical behaviour). Set
+  // opts.noMaterialLayers to keep everything on the active layer (e.g. 3D text).
+  // The layer is created once per material name (cached) with the material colour.
+  const _matLayerCache = new Map();
+  const _matName = (m) => {
+    const mat = m && (Array.isArray(m.material) ? m.material[0] : m.material);
+    return (mat && mat.name && String(mat.name).trim()) || null;
+  };
+  const _layerOf = (opts && opts.layerOf) ? opts.layerOf
+    : ((opts && opts.noMaterialLayers) ? null : (m) => {
+        const nm = _matName(m);
+        if (!nm) return null;
+        if (!_matLayerCache.has(nm)) {
+          const mat = m && (Array.isArray(m.material) ? m.material[0] : m.material);
+          const col = (mat && mat.color && mat.color.getHexString) ? ('#' + mat.color.getHexString()) : undefined;
+          try { _matLayerCache.set(nm, getOrAddLayer(nm, col ? { color: col, colorIfNew: true } : undefined)); }
+          catch (_) { _matLayerCache.set(nm, null); }
+        }
+        return _matLayerCache.get(nm);
+      });
   // placeMode: instead of dropping objects at the camera target, build them and
   // hand off to _startPlacementMode so the user positions them with the mouse
   // (ghost preview → click), exactly like an imported model.
@@ -25288,7 +25313,7 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
       const inst = createComponentInstance(def, im);
       if (inst) {
         inst.name = def.name;
-        inst.layerId = (opts.layerOf && opts.layerOf(m)) || Model.activeLayerId || 'Layer0';
+        inst.layerId = (_layerOf && _layerOf(m)) || Model.activeLayerId || 'Layer0';
         _assignSrcPath(inst, m.name || '');
         try { _applyGlbSourceMaterial(inst, _srcMatI); } catch (_) {}
         try { bbox.union(inst.computeBBox()); } catch (_) {}
@@ -25442,10 +25467,13 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
       made.push(new SketchObject(em, (m.name || 'Mesh') + ' (' + (filename || 'imported') + ')'));
     }
     for (const so of made) {
-      // layerOf: per-source-mesh layer mapping (e.g. Rhino layer table).
-      so.layerId = (opts.layerOf && opts.layerOf(m)) || Model.activeLayerId || 'Layer0';
+      // layerOf: explicit (Rhino layer table) or default one-layer-per-material.
+      const _srcLayer = (_layerOf && _layerOf(m)) || null;
+      so.layerId = _srcLayer || Model.activeLayerId || 'Layer0';
       if (placeMode) { so.rebuild(); placeObjs.push(so); }   // build for ghost; placed on click
-      else { addObject(so); so.rebuild(); }
+      // addObject() forces layerId to the active layer — restore the source/material
+      // layer AFTER so it sticks for non-instanced meshes (instances set it post-create).
+      else { addObject(so); if (_srcLayer) so.layerId = _srcLayer; so.rebuild(); }
       // Glass/transparency + textures from the source material (no-op for
       // opaque solids — those keep the per-face vertex-colour path).
       try { _applyGlbSourceMaterial(so, _srcMat); } catch (e) { console.warn('[import] material apply failed:', e); }
@@ -25474,8 +25502,9 @@ async function _importMeshTreeIntoScene(rootObj, filename, unitToMeters = 1, opt
     try { _markHeavyObjects(Model.objects.slice(_startObjN), 'SKP Import'); } catch (_) {}
   }
   Model._suppressAddRefresh = _prevSuppress;
-  // Refresh outliner + layer visibility ONCE now (suppressed per-object above).
-  if (!_prevSuppress) { try { renderOutliner(); applyLayerVisibility(); } catch (_) {} }
+  // Refresh outliner + layer panel + visibility ONCE now (suppressed per-object/
+  // per-material above). renderLayers shows any material→layer entries created.
+  if (!_prevSuppress) { try { renderOutliner(); renderLayers(); applyLayerVisibility(); } catch (_) {} }
   try { if (typeof renderHeavyList === 'function') renderHeavyList(); } catch (_) {}
   console.log('[skp-import] DONE building objects: added=' + added + ' totalVerts=' + _vtot);
   if (placeMode) {
@@ -30806,7 +30835,8 @@ renderLayers();
 })();
 
 /* --- Outliner UI --- */
-const _outlinerCollapsed = new Set(); // track collapsed group keys
+const _outlinerCollapsed = new Set(); // explicitly-collapsed group/component keys
+const _outlinerExpanded  = new Set(); // explicitly-expanded keys (override big-tree default-collapse)
 
 function _makeObjRow(o, indent) {
   const row = document.createElement('div');
@@ -30858,6 +30888,23 @@ function renderOutliner() {
     if (!childGroups.has(p)) childGroups.set(p, []);
     childGroups.get(p).push(g.id);
   }
+  // Big-tree overview: on a large nested model the fully-expanded tree is too much
+  // to scan, so DEFAULT-COLLAPSE groups below the top level — you see the high-level
+  // structure first and drill in. Small models stay fully expanded (no change).
+  // 3-state: explicit collapse (_outlinerCollapsed) / explicit expand (_outlinerExpanded)
+  // / default. The group you're editing (activeGroupPath) stays open.
+  const _bigTree = !!(Model.groups && Model.groups.size > 40);
+  const AUTO_COLLAPSE_DEPTH = 1;
+  const isCollapsed = (key, depth, gid) => {
+    if (_outlinerCollapsed.has(key)) return true;
+    if (_outlinerExpanded.has(key)) return false;
+    if (gid != null && Model.activeGroupPath && Model.activeGroupPath.indexOf(gid) >= 0) return false;
+    return _bigTree && depth >= AUTO_COLLAPSE_DEPTH;
+  };
+  const toggleCollapse = (key, depth, gid) => {
+    if (isCollapsed(key, depth, gid)) { _outlinerExpanded.add(key); _outlinerCollapsed.delete(key); }
+    else { _outlinerCollapsed.add(key); _outlinerExpanded.delete(key); }
+  };
   const olEsc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const groupLabel = (gid) => {
     const g = Model.groups && Model.groups.get(gid);
@@ -30927,7 +30974,7 @@ function renderOutliner() {
     if (!groupHasVisible(gid)) return;           // skip emptied / all-hidden groups (no phantom "(0)" rows)
     _seenG.add(gid);
     const key = 'G:' + gid;
-    const collapsed = _outlinerCollapsed.has(key);
+    const collapsed = isCollapsed(key, depth, gid);
     const kids = childGroups.get(gid) || [];
     const objs = directObjs.get(gid) || [];
     const descSel = groupFullySelected(gid);
@@ -30940,7 +30987,7 @@ function renderOutliner() {
       `<span class="ol-label" style="flex:1; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;${active ? ' color:#0a84ff;' : ''}">📁 ${olEsc(groupLabel(gid))} (${kids.length + objs.length})</span>`;
     header.onclick = (e) => {
       if (e.target.classList && e.target.classList.contains('ol-arrow')) {
-        if (_outlinerCollapsed.has(key)) _outlinerCollapsed.delete(key); else _outlinerCollapsed.add(key);
+        toggleCollapse(key, depth, gid);
         renderOutliner(); return;
       }
       selectGroup(gid, e.shiftKey); renderOutliner();
@@ -30970,14 +31017,14 @@ function renderOutliner() {
   for (const [compId, objs] of compBuckets) {
     const def = (Model.components || []).find(c => c.id === compId);
     const key = 'C:' + compId;
-    const collapsed = _outlinerCollapsed.has(key);
+    const collapsed = isCollapsed(key, 0, null);
     const header = document.createElement('div');
     header.className = 'outliner-row' + (objs.every(o => Selection.objects.has(o)) ? ' selected' : '');
     header.style.cssText = 'display:flex; align-items:center; gap:2px; font-weight:600; font-size:10.5px;';
     header.innerHTML = `<span class="ol-arrow" style="width:14px; text-align:center; font-size:9px; cursor:pointer;">${collapsed ? '▸' : '▾'}</span><span class="ol-label" style="flex:1; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">🧩 ${olEsc(def ? def.name : 'Component')} (${objs.length})</span>`;
     header.onclick = (e) => {
       if (e.target.classList && e.target.classList.contains('ol-arrow')) {
-        if (_outlinerCollapsed.has(key)) _outlinerCollapsed.delete(key); else _outlinerCollapsed.add(key);
+        toggleCollapse(key, 0, null);
         renderOutliner(); return;
       }
       if (!e.shiftKey) clearSelection();
@@ -34326,7 +34373,7 @@ async function open3DTextDialog() {
   mesh.updateMatrixWorld(true);
   // Reuse the GLB import pipeline to convert into a SketchObject
   const root = new THREE.Group(); root.add(mesh);
-  _importMeshTreeIntoScene(root, '3D Text', 1, { featureEdgesOnly: true, groupComponents: true, placeMode: true });
+  _importMeshTreeIntoScene(root, '3D Text', 1, { featureEdgesOnly: true, groupComponents: true, placeMode: true, noMaterialLayers: true });
   setStatus('msg', 'Click in the viewport to place the 3D text. Esc to cancel.');
 }
 
