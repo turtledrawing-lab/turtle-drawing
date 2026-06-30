@@ -10,6 +10,16 @@
 (function () {
   const AD = window.AD || (window.AD = {});
 
+  // One-time hygiene: a previously-persisted HUGE clipboard (a copied city group
+  // can be tens of MB) bloats localStorage, and the first localStorage access on
+  // every boot then loads the whole store synchronously (~130ms for 24 MB). Drop an
+  // oversized stale entry so future boots start clean; new copies are size-capped
+  // in persist() below.
+  try {
+    const _cb = localStorage.getItem('turtle_clipboard');
+    if (_cb && _cb.length > 2 * 1024 * 1024) localStorage.removeItem('turtle_clipboard');
+  } catch (_) {}
+
   const Clip = { objects: [], groups: [] };
   AD.Clipboard = Clip;
 
@@ -287,6 +297,17 @@
   function persist(objs, groups) {
     try {
       const blob = JSON.stringify({ kind: 'turtle-clip', v: 1, objects: objs, groups: groups || [] });
+      // Cross-window/-reload persistence via localStorage — but a big selection
+      // (a copied city group can be tens of MB) bloats localStorage, and the FIRST
+      // localStorage access on EVERY boot then loads the whole store synchronously
+      // (~130ms for 24 MB — it was the single biggest first-paint cost). Cap it:
+      // above the limit keep the clipboard IN-MEMORY only (paste still works this
+      // session) and drop any stale oversized entry so it can't slow future boots.
+      const CLIP_LS_LIMIT = 2 * 1024 * 1024;   // ~2 MB
+      if (blob.length > CLIP_LS_LIMIT) {
+        try { localStorage.removeItem('turtle_clipboard'); } catch (_) {}
+        return;
+      }
       localStorage.setItem('turtle_clipboard', blob);
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(blob).catch(() => {});
