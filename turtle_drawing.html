@@ -2054,21 +2054,26 @@ scene.add(groundShadowMesh);
 
 /* ── Solar position from date/time (simplified model) ──────────────── */
 const ShadowSettings = {
-  enabled: false,
-  month: 6, day: 21, hour: 14, minute: 0,  // default: Jun 21 2pm
+  enabled: true,   // new models start with shadows ON (user's preferred default)
+  month: 6, day: 21, hour: 9, minute: 0,  // default start: Jun 21 09:00
   latitude: 37.5,  // Seoul
   longitude: 127.0,
   ambientIntensity: 0.5,
   sunIntensity: 0.8,
   shadowDarkness: 0.4,  // ShadowMaterial opacity
   sunShadeNoShadow: true,  // apply sun direction/intensity from date/time even when shadow map is off
-  lightFace: 1.75,   // SketchUp-style: max brightness on sun-facing faces (0..3)
-  darkFace:  1.0,   // SketchUp-style: brightness on shadowed faces — ambient floor (0..2)
+  lightFace: 1.12,   // SketchUp-style: max brightness on sun-facing faces (0..3)
+  darkFace:  0.83,   // SketchUp-style: brightness on shadowed faces — ambient floor (0..2)
   useLightDark: true,  // Light/Dark sliders drive ambient+sun (Bright/Sun removed)
   northAngle: 0,        // rotation offset (degrees)
   sunPath: false,       // visualize sun trajectory through the day
   shadowQuality: 'med', // 'low'|'med'|'high'|'ultra' — controls map size
 };
+// The values a NEW model starts from. Captured here from the pristine literal
+// (before initShadowPanel / file-load mutate ShadowSettings), so File → New can
+// reset to them. softness lives on sun.shadow.radius, not ShadowSettings.
+const SHADOW_DEFAULTS = Object.freeze(Object.assign({}, ShadowSettings));
+const SHADOW_DEFAULT_SOFTNESS = 1;
 // Shadow self-shadowing ("acne") scales with how much WORLD space one shadow-map
 // texel covers. On a small model the ortho frustum is tiny so a fixed tiny bias is
 // fine, but on a city-scale import the frustum is huge → each texel spans a big
@@ -2330,12 +2335,16 @@ function setShadowEnabled(on) {
     if (!(ambientLight.intensity > 0.1)) ambientLight.intensity = 0.5;
     renderer.shadowMap.needsUpdate = true;
   } else if (ShadowSettings.sunShadeNoShadow) {
-    // Shadow map off but "sun shading" still on: use flat, uniform
-    // brightness (no directional bias) at the same total intensity as
-    // when shading is fully off — sun direction shouldn't make one side
-    // bright and the other dark when there are no shadows.
-    sun.intensity = 0;
-    ambientLight.intensity = 0.9;
+    // Shadow map OFF but "sun shading" ON (SketchUp's "Use sun for shading"):
+    // light the scene with the REAL directional sun, positioned from the
+    // date/time/location, so sun-facing faces read brighter and away-facing
+    // faces darker — just WITHOUT cast shadows. (This branch previously forced
+    // flat uniform light identical to the shading-OFF branch below, so toggling
+    // the option did nothing.) The directional contrast is driven by the
+    // Light/Dark sliders (sun = Light − Dark, ambient = Dark).
+    updateSunFromSettings();          // positions the sun + sets sun/ambient intensity from the sliders
+    if (!(sun.intensity > 0.02)) sun.intensity = 0.6;            // keep the shading visibly directional
+    if (!(ambientLight.intensity > 0.05)) ambientLight.intensity = 0.4;
     for (const o of Model.objects) {
       if (o && o.mesh) { o.mesh.receiveShadow = false; o.mesh.castShadow = false; }
       if (o && o.mat)  { o.mat.needsUpdate = true; }
@@ -29525,6 +29534,17 @@ function _handleActionImpl(act) {
         for (const o of Model.objects.slice()) removeObject(o);
         History.past = []; History.future = [];
         currentFileName = null;
+        // Fresh model → reset shadow / sun-study to the project defaults (incl. softness).
+        try {
+          Object.assign(ShadowSettings, SHADOW_DEFAULTS);
+          if (sun && sun.shadow) {
+            sun.shadow.radius = SHADOW_DEFAULT_SOFTNESS;
+            sun.shadow.blurSamples = Math.max(8, SHADOW_DEFAULT_SOFTNESS * 2);
+          }
+          setShadowQuality(ShadowSettings.shadowQuality || 'med');
+          if (typeof syncShadowUI === 'function') syncShadowUI();
+          setShadowEnabled(!!ShadowSettings.enabled);
+        } catch (_) {}
         _lastSnapshot = snapshot();
         setStatus('msg', 'New scene.');
         if (typeof zoomAll === 'function') zoomAll();
@@ -34720,6 +34740,11 @@ _lastSnapshot = snapshot();
 // Initialize camera & shadow panel UI bindings
 initCameraPanel();
 initShadowPanel();
+// initShadowPanel only syncs the slider values; on a fresh boot also WIRE the
+// shadow state (shadow map on/off + per-mesh cast/receive + the ON/OFF button)
+// so the default-enabled shadows actually render. A recovered/opened tab re-applies
+// its own saved shadow via loadDocIntoScene afterward, overriding this.
+try { setShadowEnabled(ShadowSettings.enabled); } catch (_) {}
 initDimStylePanel();
 initOpeningLibraryPanel();
 initBuildUpLibraryPanel();
