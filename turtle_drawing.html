@@ -2054,7 +2054,7 @@ scene.add(groundShadowMesh);
 
 /* ── Solar position from date/time (simplified model) ──────────────── */
 const ShadowSettings = {
-  enabled: true,   // new models start with shadows ON (user's preferred default)
+  enabled: false,  // shadows OFF at startup (the shadow-map render slows first paint); sun-shade still gives directional light
   month: 6, day: 21, hour: 9, minute: 0,  // default start: Jun 21 09:00
   latitude: 37.5,  // Seoul
   longitude: 127.0,
