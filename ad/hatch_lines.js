@@ -197,7 +197,10 @@
     },
     poche_solid: (bbox) => {
       const segs = [];
-      const spacing = 0.015 * S();
+      // Dense horizontal-line poché. Was 0.015 (so tight it read as solid black and
+      // got slow on large sections); 0.05 keeps it a heavy poché while staying
+      // visibly LINES at model scale (matches the other patterns' density range).
+      const spacing = 0.05 * S();
       for (let y = bbox.minY; y <= bbox.maxY; y += spacing) {
         segs.push([bbox.minX, y, bbox.maxX, y]);
       }

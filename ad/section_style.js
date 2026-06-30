@@ -218,9 +218,10 @@
         if (Model.sectionFills) {
           for (const [, g] of groups) {
             for (const it of g.items) {
-              if (g.hatchId === 'poche_solid') {
-                drawSolidFill(it.segs, sp.plane, sectionFillRoot, 0x1a1a1a);
-              } else if (g.hatchId) {
+              if (g.hatchId) {
+                // Every layer hatch — INCLUDING poché — renders as its line pattern
+                // (poché used to be special-cased to a flat solid-black cap, which
+                // the user wanted shown as a hatch like the others).
                 drawHatchFill(it.segs, sp.plane, g.hatchId, sectionFillRoot);
               } else {
                 // No layer hatch assigned → default mid-gray poché fill.
