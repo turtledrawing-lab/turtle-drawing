@@ -30834,80 +30834,160 @@ function renderOutliner() {
   const list = document.getElementById('outlinerList');
   list.innerHTML = '';
 
-  // Collect visible objects
+  // ── Nested-group hierarchy (P6). Build the tree from Model.groups (registry:
+  //    gid→{parentId}) + each object's IMMEDIATE groupId, then render recursively.
+  //    Flat groups (no sub-groups) render exactly as before: header + member rows. ──
   const visibleObjs = Model.objects.filter(o => !o.hidden);
-
-  // Bucket by category (preserving discovery order):
-  //   groupId → "G:" + id (any non-null groupId is a real group)
-  //   componentId → "C:" + id (component instances)
-  //   else → "_solo:" + obj.id
-  const buckets = new Map();
-  const order = [];
-  const keyOf = (o) => {
-    if (o.groupId) return 'G:' + o.groupId;
-    if (o.componentId) return 'C:' + o.componentId;
-    return '_solo:' + o._id;
-  };
+  // Ensure every object's group is registered so the recursive walk reaches it
+  // (legacy/flat files synthesize parentId=null roots).
   for (const o of visibleObjs) {
-    const k = keyOf(o);
-    if (!buckets.has(k)) { buckets.set(k, []); order.push(k); }
-    buckets.get(k).push(o);
+    if (o.groupId != null && Model.groups && !Model.groups.has(o.groupId)) {
+      try { registerGroup(o.groupId); } catch (_) {}
+    }
   }
-  const headerLabel = (key, objs) => {
-    if (key.startsWith('G:')) {
-      const first = objs[0];
-      return { label: '📁 ' + (first.name.replace(/\s*\(copy\)$/, '') || 'Group') + ' (' + objs.length + ')', icon: '' };
-    }
-    if (key.startsWith('C:')) {
-      const compId = key.slice(2);
-      const def = (Model.components || []).find(c => c.id === compId);
-      const nm = def ? def.name : 'Component';
-      return { label: '🧩 ' + nm + ' (' + objs.length + ')', icon: '' };
-    }
-    return null;
+  const directObjs = new Map();   // immediate groupId (or null) → member objects
+  for (const o of visibleObjs) {
+    const g = o.groupId ?? null;
+    if (!directObjs.has(g)) directObjs.set(g, []);
+    directObjs.get(g).push(o);
+  }
+  const childGroups = new Map();  // parentId (or null) → child group ids
+  if (Model.groups) for (const g of Model.groups.values()) {
+    let p = g.parentId ?? null;
+    if (p != null && !Model.groups.has(p)) p = null;   // orphaned parent → treat as root
+    if (!childGroups.has(p)) childGroups.set(p, []);
+    childGroups.get(p).push(g.id);
+  }
+  const olEsc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const groupLabel = (gid) => {
+    const g = Model.groups && Model.groups.get(gid);
+    if (g && g.name) return g.name.replace(/\s*\(copy\)$/, '');
+    const objs = directObjs.get(gid);
+    return ((objs && objs[0] && objs[0].name) || 'Group').replace(/\s*\(copy\)$/, '');
   };
-  for (const key of order) {
-    const objs = buckets.get(key);
-    const head = headerLabel(key, objs);
-    if (!head || objs.length === 1 && key.startsWith('_solo')) {
-      // Solo object: just render the row
-      for (const o of objs) list.appendChild(_makeObjRow(o, 0));
-      continue;
-    }
-    const collapsed = _outlinerCollapsed.has(key);
-    const header = document.createElement('div');
-    const isGroupHeader = key.startsWith('G:');
-    const isGroupSelected = isGroupHeader && objs.every(o => Selection.objects.has(o));
-    header.className = 'outliner-row' + (isGroupSelected ? ' selected' : '');
-    header.style.cssText = 'display:flex; align-items:center; gap:2px; font-weight:600; font-size:10.5px;';
-    const arrow = collapsed ? '▸' : '▾';
-    header.innerHTML = `<span class="ol-arrow" style="width:14px; text-align:center; font-size:9px; cursor:pointer;">${arrow}</span><span class="ol-label" style="flex:1; cursor:pointer;">${head.label}</span>`;
-    header.onclick = (e) => {
-      // Arrow → collapse/expand. Label → select all members (or just the
-      // component instance for component groups).
-      if (e.target.classList.contains('ol-arrow')) {
-        if (_outlinerCollapsed.has(key)) _outlinerCollapsed.delete(key);
-        else _outlinerCollapsed.add(key);
-        renderOutliner();
-        return;
-      }
-      if (isGroupHeader) {
-        const gid = key.slice(2);
-        selectGroup(gid, e.shiftKey);
-        renderOutliner();
-      } else {
-        if (!e.shiftKey) clearSelection();
-        for (const o of objs) Selection.objects.add(o);
-        refreshSelectionVisuals();
-        renderEntityInfo();
-        renderOutliner();
-      }
+
+  // Breadcrumb: the active group-edit path (root→innermost). Click a segment to
+  // jump to that level; "Model" exits to the top. Shown only while inside a group.
+  if (Model.activeGroupPath && Model.activeGroupPath.length) {
+    const bc = document.createElement('div');
+    bc.style.cssText = 'display:flex; flex-wrap:wrap; align-items:center; gap:1px; font-size:10px; padding:3px 4px; border-bottom:1px solid #eee; margin-bottom:2px; position:sticky; top:0; background:var(--panel-bg,#fff); z-index:1;';
+    const seg = (label, onClick, active) => {
+      const s = document.createElement('span');
+      s.textContent = label;
+      s.style.cssText = 'cursor:pointer; padding:1px 4px; border-radius:3px; white-space:nowrap; ' + (active ? 'font-weight:600; color:#0a84ff;' : 'color:#888;');
+      s.onclick = onClick;
+      return s;
     };
+    bc.appendChild(seg('⌂ Model', () => { try { while (Model.activeGroupPath.length) exitGroup(); } catch (_) {} renderOutliner(); }, false));
+    Model.activeGroupPath.forEach((gid, i, arr) => {
+      const sep = document.createElement('span'); sep.textContent = '›'; sep.style.cssText = 'color:#ccc; margin:0 1px;';
+      bc.appendChild(sep);
+      bc.appendChild(seg(groupLabel(gid), () => { try { enterGroup(gid); } catch (_) {} renderOutliner(); }, i === arr.length - 1));
+    });
+    list.appendChild(bc);
+  }
+
+  // "Fully selected" per group, memoized bottom-up in ONE pass (O(n)) — a group
+  // header highlights when all its descendant visible objects are selected. (Calling
+  // getGroupDescendantObjects per header would be O(n×depth) on big nested trees.)
+  const _fullSelMemo = new Map();
+  const _fullSelSeen = new Set();
+  const groupFullySelected = (gid) => {
+    if (_fullSelMemo.has(gid)) return _fullSelMemo.get(gid);
+    if (_fullSelSeen.has(gid)) return false;       // cycle guard
+    _fullSelSeen.add(gid);
+    const objs = directObjs.get(gid) || [];
+    const kids = childGroups.get(gid) || [];
+    let ok = (objs.length > 0 || kids.length > 0);  // empty group is never "selected"
+    if (ok) for (const o of objs) if (!Selection.objects.has(o)) { ok = false; break; }
+    if (ok) for (const cg of kids) if (!groupFullySelected(cg)) { ok = false; break; }
+    _fullSelMemo.set(gid, ok);
+    return ok;
+  };
+
+  // Does a group's subtree contain ANY visible object? Memoized (O(n), cycle-safe).
+  // Used to skip stale/emptied registry groups so they don't render a phantom
+  // "📁 … (0)" row — the old flat outliner only showed groups with visible members.
+  const _hasVisMemo = new Map();
+  const groupHasVisible = (gid) => {
+    if (_hasVisMemo.has(gid)) return _hasVisMemo.get(gid);
+    _hasVisMemo.set(gid, false);                 // provisional (cycle guard)
+    const objs = directObjs.get(gid) || [];
+    const kids = childGroups.get(gid) || [];
+    const has = objs.length > 0 || kids.some(cg => groupHasVisible(cg));
+    _hasVisMemo.set(gid, has);
+    return has;
+  };
+
+  // Recursive group node (cycle/runaway guarded so a malformed parentId chain
+  // can't hang or double-render).
+  const _seenG = new Set();
+  const renderGroupNode = (gid, depth) => {
+    if (_seenG.has(gid) || depth > 64) return;
+    if (!groupHasVisible(gid)) return;           // skip emptied / all-hidden groups (no phantom "(0)" rows)
+    _seenG.add(gid);
+    const key = 'G:' + gid;
+    const collapsed = _outlinerCollapsed.has(key);
+    const kids = childGroups.get(gid) || [];
+    const objs = directObjs.get(gid) || [];
+    const descSel = groupFullySelected(gid);
+    const active = (Model.activeGroupId === gid);
+    const header = document.createElement('div');
+    header.className = 'outliner-row' + (descSel ? ' selected' : '');
+    header.style.cssText = 'display:flex; align-items:center; gap:2px; font-weight:600; font-size:10.5px;';
+    if (depth > 0) header.style.paddingLeft = (6 + depth * 14) + 'px';
+    header.innerHTML = `<span class="ol-arrow" style="width:14px; text-align:center; font-size:9px; cursor:pointer;">${collapsed ? '▸' : '▾'}</span>` +
+      `<span class="ol-label" style="flex:1; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;${active ? ' color:#0a84ff;' : ''}">📁 ${olEsc(groupLabel(gid))} (${kids.length + objs.length})</span>`;
+    header.onclick = (e) => {
+      if (e.target.classList && e.target.classList.contains('ol-arrow')) {
+        if (_outlinerCollapsed.has(key)) _outlinerCollapsed.delete(key); else _outlinerCollapsed.add(key);
+        renderOutliner(); return;
+      }
+      selectGroup(gid, e.shiftKey); renderOutliner();
+    };
+    header.ondblclick = () => { try { enterGroup(gid); } catch (_) {} renderOutliner(); };   // drill in to edit
     list.appendChild(header);
     if (!collapsed) {
-      for (const o of objs) list.appendChild(_makeObjRow(o, 1));
+      for (const cg of kids) renderGroupNode(cg, depth + 1);
+      for (const o of objs) list.appendChild(_makeObjRow(o, depth + 1));
     }
+  };
+
+  // Top level: root groups, then component buckets, then loose objects.
+  for (const rg of (childGroups.get(null) || [])) renderGroupNode(rg, 0);
+  // Defensive: surface any registered group NOT reached from a null root — e.g.
+  // stranded by a malformed parentId cycle in a corrupted .tt — so its objects
+  // can't silently vanish. _seenG prevents double-render; empty groups still skip.
+  if (Model.groups) for (const gid of Model.groups.keys()) { if (!_seenG.has(gid)) renderGroupNode(gid, 0); }
+
+  const topObjs = directObjs.get(null) || [];
+  const compBuckets = new Map();   // componentId → instances (only at top level)
+  const soloObjs = [];
+  for (const o of topObjs) {
+    if (o.componentId) { if (!compBuckets.has(o.componentId)) compBuckets.set(o.componentId, []); compBuckets.get(o.componentId).push(o); }
+    else soloObjs.push(o);
   }
+  for (const [compId, objs] of compBuckets) {
+    const def = (Model.components || []).find(c => c.id === compId);
+    const key = 'C:' + compId;
+    const collapsed = _outlinerCollapsed.has(key);
+    const header = document.createElement('div');
+    header.className = 'outliner-row' + (objs.every(o => Selection.objects.has(o)) ? ' selected' : '');
+    header.style.cssText = 'display:flex; align-items:center; gap:2px; font-weight:600; font-size:10.5px;';
+    header.innerHTML = `<span class="ol-arrow" style="width:14px; text-align:center; font-size:9px; cursor:pointer;">${collapsed ? '▸' : '▾'}</span><span class="ol-label" style="flex:1; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">🧩 ${olEsc(def ? def.name : 'Component')} (${objs.length})</span>`;
+    header.onclick = (e) => {
+      if (e.target.classList && e.target.classList.contains('ol-arrow')) {
+        if (_outlinerCollapsed.has(key)) _outlinerCollapsed.delete(key); else _outlinerCollapsed.add(key);
+        renderOutliner(); return;
+      }
+      if (!e.shiftKey) clearSelection();
+      for (const o of objs) Selection.objects.add(o);
+      refreshSelectionVisuals(); renderEntityInfo(); renderOutliner();
+    };
+    list.appendChild(header);
+    if (!collapsed) for (const o of objs) list.appendChild(_makeObjRow(o, 1));
+  }
+  for (const o of soloObjs) list.appendChild(_makeObjRow(o, 0));
 
   // Section planes at the end
   for (const sp of Model.sectionPlanes) {
