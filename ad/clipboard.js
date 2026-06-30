@@ -10,14 +10,16 @@
 (function () {
   const AD = window.AD || (window.AD = {});
 
-  // One-time hygiene: a previously-persisted HUGE clipboard (a copied city group
-  // can be tens of MB) bloats localStorage, and the first localStorage access on
-  // every boot then loads the whole store synchronously (~130ms for 24 MB). Drop an
-  // oversized stale entry so future boots start clean; new copies are size-capped
-  // in persist() below.
+  // One-time migration: the clipboard now lives in IndexedDB (async). A legacy
+  // localStorage entry (a copied city group could be tens of MB) bloated the
+  // synchronous store and slowed every boot's first access — move a reasonable one
+  // into IDB and clear localStorage either way so the store stays small.
   try {
     const _cb = localStorage.getItem('turtle_clipboard');
-    if (_cb && _cb.length > 2 * 1024 * 1024) localStorage.removeItem('turtle_clipboard');
+    if (_cb) {
+      if (_cb.length <= 2 * 1024 * 1024 && AD.IDB && AD.IDB.put) AD.IDB.put('kv', 'clipboard', _cb);
+      localStorage.removeItem('turtle_clipboard');
+    }
   } catch (_) {}
 
   const Clip = { objects: [], groups: [] };
@@ -295,30 +297,40 @@
   // localStorage. Also try the system clipboard (navigator.clipboard) so
   // copy/paste between separate Turtle Drawing windows works.
   function persist(objs, groups) {
+    let blob;
+    try { blob = JSON.stringify({ kind: 'turtle-clip', v: 1, objects: objs, groups: groups || [] }); }
+    catch (_) { return; }
+    // Cross-window / cross-reload persistence. Use IndexedDB (async), NOT
+    // localStorage: a big selection (a copied city group can be tens of MB) bloats
+    // the synchronous localStorage store, and the FIRST localStorage access on every
+    // boot then loads the WHOLE store (~130ms for 24 MB — was the biggest first-paint
+    // cost). IDB is async and off the boot critical path, so it holds large clipboards
+    // without slowing startup — no size cap needed.
     try {
-      const blob = JSON.stringify({ kind: 'turtle-clip', v: 1, objects: objs, groups: groups || [] });
-      // Cross-window/-reload persistence via localStorage — but a big selection
-      // (a copied city group can be tens of MB) bloats localStorage, and the FIRST
-      // localStorage access on EVERY boot then loads the whole store synchronously
-      // (~130ms for 24 MB — it was the single biggest first-paint cost). Cap it:
-      // above the limit keep the clipboard IN-MEMORY only (paste still works this
-      // session) and drop any stale oversized entry so it can't slow future boots.
-      const CLIP_LS_LIMIT = 2 * 1024 * 1024;   // ~2 MB
-      if (blob.length > CLIP_LS_LIMIT) {
+      if (window.AD && AD.IDB && AD.IDB.put) {
+        AD.IDB.put('kv', 'clipboard', blob);
+        try { localStorage.removeItem('turtle_clipboard'); } catch (_) {}   // migrate off LS
+      } else if (blob.length <= 2 * 1024 * 1024) {
+        localStorage.setItem('turtle_clipboard', blob);                     // no-IDB fallback, capped
+      } else {
         try { localStorage.removeItem('turtle_clipboard'); } catch (_) {}
-        return;
       }
-      localStorage.setItem('turtle_clipboard', blob);
-      if (navigator.clipboard && navigator.clipboard.writeText) {
+    } catch (_) {}
+    // System clipboard for cross-APP paste — skip very large blobs (writing tens of
+    // MB to the OS clipboard is slow and pointless).
+    try {
+      if (blob.length < 4 * 1024 * 1024 && navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(blob).catch(() => {});
       }
     } catch (_) {}
   }
-  function restoreFromStorageIfEmpty() {
+  async function restoreFromStorageIfEmpty() {
     if (Clip.objects && Clip.objects.length) return;
+    let blob = null;
+    try { if (window.AD && AD.IDB && AD.IDB.get) blob = await AD.IDB.get('kv', 'clipboard'); } catch (_) {}
+    if (!blob) { try { blob = localStorage.getItem('turtle_clipboard'); } catch (_) {} }   // legacy fallback
+    if (!blob) return;
     try {
-      const blob = localStorage.getItem('turtle_clipboard');
-      if (!blob) return;
       const j = JSON.parse(blob);
       if (j && j.kind === 'turtle-clip' && Array.isArray(j.objects)) {
         Clip.objects = j.objects;
@@ -404,10 +416,10 @@
      commit or presses Esc to cancel. The pasted objects live in the
      scene during placement so the user sees them update live. */
   Clip.paste = async function () {
-    // If our in-memory buffer is empty, try restoring from localStorage and
+    // If our in-memory buffer is empty, try restoring from IndexedDB and
     // then from the system clipboard (a Turtle Drawing JSON payload from
     // another window).
-    restoreFromStorageIfEmpty();
+    await restoreFromStorageIfEmpty();
     if (!Clip.objects.length && navigator.clipboard && navigator.clipboard.readText) {
       try {
         const text = await navigator.clipboard.readText();
