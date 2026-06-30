@@ -964,6 +964,12 @@ input[type="range"]:hover { accent-color: #22a722; }
   -webkit-backdrop-filter: saturate(1.8) blur(20px); backdrop-filter: saturate(1.8) blur(20px); }
 #mobileFsBtn:active { transform: scale(0.92); }
 
+/* Touch aiming crosshair (reticle): drawing/push-pull/section tools act at the
+   screen-center crosshair — aim by orbiting/zooming, then tap. Shown only on
+   touch + a modeling tool; positioned at the canvas centre via JS. */
+#reticle { position: fixed; display: none; z-index: 4500; pointer-events: none;
+  transform: translate(-50%, -50%); will-change: left, top; }
+
 /* Cursors per tool */
 .cursor-select  #viewport { cursor: default; }
 .cursor-move    #viewport { cursor: move; }
@@ -1771,11 +1777,15 @@ input[type="range"]:hover { accent-color: #22a722; }
   <button data-mt="tool-move" aria-label="이동" title="이동"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3v14M3 10h14M10 3 8 5M10 3l2 2M10 17l-2-2M10 17l2-2M3 10l2-2M3 10l2 2M17 10l-2-2M17 10l-2 2"/></svg></button>
   <button data-mt="tool-line" aria-label="선" title="선"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 16 L16 4"/><circle cx="4" cy="16" r="1.3" fill="currentColor" stroke="none"/><circle cx="16" cy="4" r="1.3" fill="currentColor" stroke="none"/></svg></button>
   <button data-mt="tool-rect" aria-label="직사각형" title="직사각형"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3.5" y="5.5" width="13" height="9" rx="1"/></svg></button>
+  <button data-mt="tool-pp" aria-label="밀기/끌기" title="밀기/끌기"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 9.5 L10 7 L15 9.5 L10 12 Z"/><path d="M5 9.5 V13.5 L10 16 V12"/><path d="M15 9.5 V13.5 L10 16"/><path d="M10 5.5 V2 M10 2 L8.4 3.6 M10 2 L11.6 3.6"/></svg></button>
+  <button data-mt="tool-section" aria-label="단면" title="단면"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3v14"/><path d="M4 6l6-3 6 3v8l-6 3-6-3Z" stroke-dasharray="2.5 2"/><path d="M10 3l6 3M10 17l6-3M10 3L4 6M10 17L4 14"/></svg></button>
   <button data-mt="tool-erase" aria-label="지우개" title="지우개"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M4 13 L10 7 L15 12 L11 16 L7 16 Z"/><path d="M7 16 H16"/></svg></button>
   <button data-mt="undo" aria-label="실행취소" title="실행취소"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7 H3.5 V3.5"/><path d="M3.5 7 C 7 3 14 3 16.5 9"/></svg></button>
 </div>
 <!-- Phone-only full-screen toggle (Fullscreen API; icon swaps via JS). -->
 <button id="mobileFsBtn" type="button" aria-label="전체화면" title="전체화면"></button>
+<!-- Touch aiming crosshair (shown on touch when a modeling tool is active). -->
+<div id="reticle" aria-hidden="true"><svg viewBox="0 0 40 40" width="40" height="40"><g fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" style="filter:drop-shadow(0 0 1.4px rgba(0,0,0,0.95))"><line x1="20" y1="2.5" x2="20" y2="12.5"/><line x1="20" y1="27.5" x2="20" y2="37.5"/><line x1="2.5" y1="20" x2="12.5" y2="20"/><line x1="27.5" y1="20" x2="37.5" y2="20"/></g><circle cx="20" cy="20" r="2.3" fill="#19c37d" stroke="#ffffff" stroke-width="1.1"/></svg></div>
 <input type="file" id="fileInput" accept=".tt,.dxf,.obj,.mtl,.glb,.gltf,.stl,.skp,.png,.jpg,.jpeg,.bmp,.gif,.tga" style="display:none;" />
 <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none;" />
 <input type="file" id="objFileInput" accept=".obj,.mtl,.png,.jpg,.jpeg,.bmp,.gif,.tga" multiple style="display:none;" />
@@ -3653,6 +3663,12 @@ function animate() {
     // In first-person look mode the camera position must stay fixed; controls.update()
     // would re-derive position from target+spherical and drag the eye along.
     if (!_lookMode.active) controls.update();
+    // Touch crosshair: keep the live tool preview/snap tracking whatever sits
+    // under the reticle as the user orbits/zooms (throttled; mouse never enters).
+    if (_usingTouch && typeof _reticleActive === 'function' && _reticleActive()) {
+      const _now = performance.now();
+      if (_now - _reticleLastT > 60) { _reticleLastT = _now; _updateReticleUI(); _reticleMove(); }
+    }
     // Walk-mode: integrate held WASD/QE keys before render
     if (_lookMode.active) _tickLookMove();
     // Refresh section depth fog (depends on camera position)
@@ -4179,6 +4195,53 @@ const controls = new OrbitController(camera, CAN);
      • 2 fingers      → pinch zoom + drag pan
      • tap (no move)  → click the active tool (select / place a point)
    Mouse & pen are completely untouched. */
+
+/* ── Touch crosshair (reticle) ──────────────────────────────────────────────
+   On touch, drawing/push-pull/section tools operate at a FIXED screen-centre
+   crosshair instead of where the finger taps. Aim by orbiting/zooming (which
+   touch already does well) until the target sits under the crosshair — the
+   tool preview/snap updates live — then TAP to place the point / grab the face.
+   Push/pull additionally lets a 1-finger drag set the extrusion depth once the
+   face is grabbed (lift to commit). All of this is OFF for mouse/pen. */
+let _usingTouch = false;            // flips true on the first touch pointer
+let _reticleLastT = 0;
+const RETICLE_TOOLS = new Set(['line','rect','circle','arc','polygon','freehand',
+  'wall','stair','pp','section','move','scale','rotate','tape','dim','dimAngle',
+  'text','callout','paint','offset','level']);
+function _reticleActive() {
+  return _usingTouch && !!(ToolMgr.active && RETICLE_TOOLS.has(ToolMgr.active.name));
+}
+function _reticleCenter() {
+  const r = CAN.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+function _reticleEvent(extra) {
+  const c = _reticleCenter();
+  return Object.assign({ clientX: c.x, clientY: c.y, button: 0, buttons: 0,
+    pointerType: 'touch', target: CAN, shiftKey: false, ctrlKey: false,
+    metaKey: false, altKey: false, preventDefault() {}, stopPropagation() {} }, extra || {});
+}
+function _updateReticleUI() {
+  const el = document.getElementById('reticle');
+  if (!el) return;
+  const on = _reticleActive();
+  el.style.display = on ? 'block' : 'none';
+  if (on) { const c = _reticleCenter(); el.style.left = c.x + 'px'; el.style.top = c.y + 'px'; }
+}
+function _reticleMove() {
+  // Live preview/snap at the crosshair. Suspended while push/pull is mid-extrude
+  // — the finger drag drives the depth then (see the touch move/up handlers).
+  if (!_reticleActive()) return;
+  const t = ToolMgr.active;
+  if (t.name === 'pp' && t.active) return;
+  try {
+    const ev = _reticleEvent();
+    if (t.onPointerMove) t.onPointerMove(ev);
+    updateSnapTooltip(ev);
+  } catch (_) {}
+}
+window.addEventListener('resize', _updateReticleUI);
+
 (function initTouchControls() {
   const dom = CAN;
   const tp = new Map();                 // pointerId → {x, y}
@@ -4209,6 +4272,7 @@ const controls = new OrbitController(camera, CAN);
 
   function onDown(e) {
     if (e.pointerType !== 'touch' || !controls.enabled) return;
+    if (!_usingTouch) { _usingTouch = true; try { _updateReticleUI(); } catch (_) {} }
     e.preventDefault(); e.stopImmediatePropagation();
     tp.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { dom.setPointerCapture(e.pointerId); } catch (_) {}
@@ -4243,13 +4307,26 @@ const controls = new OrbitController(camera, CAN);
         Math.min(controls.maxDistance, startRadius * (startDist / d)));
       panBy(c.x - lastCx, c.y - lastCy);
       lastCx = c.x; lastCy = c.y;
-    } else if (tp.size === 1 && (mode === 'down1' || mode === 'orbit')) {
+    } else if (tp.size === 1 && (mode === 'down1' || mode === 'orbit' || mode === 'tooldrag')) {
       const dx = e.clientX - lastCx, dy = e.clientY - lastCy;
       lastCx = e.clientX; lastCy = e.clientY;
       if (!moved && Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE) {
-        moved = true; mode = 'orbit'; controls.state = 'orbit';
+        moved = true;
+        // Push/pull mid-extrude: a 1-finger drag sets the depth (lift commits),
+        // rather than orbiting. Every other case keeps 1-finger = orbit.
+        if (ToolMgr.active && ToolMgr.active.name === 'pp' && ToolMgr.active.active) {
+          mode = 'tooldrag'; controls.state = 'none';
+        } else {
+          mode = 'orbit'; controls.state = 'orbit';
+        }
       }
       if (mode === 'orbit') orbitBy(dx, dy);
+      else if (mode === 'tooldrag') {
+        try {
+          const ev = _reticleEvent({ clientX: e.clientX, clientY: e.clientY });
+          if (ToolMgr.active && ToolMgr.active.onPointerMove) ToolMgr.active.onPointerMove(ev);
+        } catch (_) {}
+      }
     }
   }
   function onUp(e) {
@@ -4263,18 +4340,39 @@ const controls = new OrbitController(camera, CAN);
       if (tp.size === 0) controls.state = 'none';
       return;
     }
+    if (mode === 'tooldrag') {
+      // Lift after a push/pull drag → commit the extrude at the current depth.
+      tp.delete(e.pointerId);
+      try { dom.releasePointerCapture(e.pointerId); } catch (_) {}
+      try {
+        const ev = _reticleEvent({ clientX: e.clientX, clientY: e.clientY });
+        if (ToolMgr.active && ToolMgr.active.onPointerDown) ToolMgr.active.onPointerDown(ev);
+      } catch (err) { console.error('[touch-tooldrag]', err); }
+      mode = (tp.size === 0) ? 'none' : 'lockout';
+      if (tp.size === 0) controls.state = 'none';
+      return;
+    }
     const wasTap = mode === 'down1' && !moved &&
       (performance.now() - downT) < TAP_MS &&
       Math.hypot(e.clientX - downX, e.clientY - downY) <= TAP_MOVE;
     tp.delete(e.pointerId);
     try { dom.releasePointerCapture(e.pointerId); } catch (_) {}
     if (wasTap) {
-      // Tap → drive the active tool at that point (select / place a point).
-      const synth = { clientX: downX, clientY: downY, button: 0, buttons: 0,
+      // Tap → drive the active tool. For modeling tools on touch the action
+      // happens at the screen-centre CROSSHAIR (which the user aimed with
+      // orbit/zoom), not at the finger; select & friends still act at the tap.
+      const reticle = _reticleActive();
+      let tx = downX, ty = downY;
+      if (reticle) { const c = _reticleCenter(); tx = c.x; ty = c.y; }
+      const synth = { clientX: tx, clientY: ty, button: 0, buttons: 0,
         pointerType: 'touch', pointerId: e.pointerId, target: dom,
         shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
         preventDefault() {}, stopPropagation() {} };
       try {
+        // Refresh the tool's hover/snap at the crosshair before placing, so
+        // tools that read hoverFace on down (push/pull, section) act on the
+        // face under the crosshair rather than a stale one.
+        if (reticle && ToolMgr.active && ToolMgr.active.onPointerMove) ToolMgr.active.onPointerMove(synth);
         if (ToolMgr.active && ToolMgr.active.onPointerDown) ToolMgr.active.onPointerDown(synth);
         if (ToolMgr.active && ToolMgr.active.onPointerUp)   ToolMgr.active.onPointerUp(synth);
       } catch (err) { console.error('[touch-tap]', err); }
@@ -13946,6 +14044,8 @@ const ToolMgr = {
     // Cursor
     document.body.className = 'cursor-' + (this.active.cursor || 'select');
     if (this.active.onActivate) this.active.onActivate();
+    // Touch crosshair: show/hide for the new tool.
+    try { if (typeof _updateReticleUI === 'function') _updateReticleUI(); } catch (_) {}
   }
 };
 
@@ -36742,7 +36842,7 @@ try {
 (function initMobileToolbar() {
   const bar = document.getElementById('mobileToolbar');
   if (!bar) return;
-  const T = { 'tool-select': 'select', 'tool-move': 'move', 'tool-line': 'line', 'tool-rect': 'rect', 'tool-erase': 'erase' };
+  const T = { 'tool-select': 'select', 'tool-move': 'move', 'tool-line': 'line', 'tool-rect': 'rect', 'tool-pp': 'pp', 'tool-section': 'section', 'tool-erase': 'erase' };
   function sync() {
     const cur = (typeof ToolMgr !== 'undefined' && ToolMgr.active) ? ToolMgr.active.name : null;
     bar.querySelectorAll('button[data-mt]').forEach((b) => {
