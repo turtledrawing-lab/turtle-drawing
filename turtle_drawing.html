@@ -13730,11 +13730,6 @@ function refreshSelectionVisuals() {
         o.edgeMat.linewidth = 2;
       }
     }
-    // Whole-selection blue face fill for:
-    //   • ungrouped objects (groupId == null), and
-    //   • grouped members selected via triple-click INSIDE the group
-    //     (_selectActiveGroupAll fills edges too — selectGroup does not), so
-    //     a plain single-click group-as-unit pick keeps just the dashed outline.
     // Translucent blue fill for EVERY whole-selected object — including a group
     // picked as a unit. Previously grouped picks got only a faint 1px edge tint,
     // so the user couldn't tell the group was selected; the fill makes it obvious.
@@ -14229,91 +14224,6 @@ Tools.select = {
     setStatus('msg', `Same material(${label}) Object ${n} selected.`);
   },
 
-  /* Triple-click while INSIDE a group (the group was entered via double-click):
-     select EVERY member of the active group, regardless of material or vertex
-     connectivity — mirrors "triple-click selects the whole thing" for a normal
-     object, but the "whole thing" here is the entire group's contents. */
-  _selectActiveGroupAll(gid, mode = 'replace') {
-    const members = getGroupDescendantObjects(gid).filter(o => o.visible && !o.hidden);
-    if (mode === 'replace') { Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear(); }
-    const ek = (a, b) => _edgeKey(a, b);
-    for (const o of members) {
-      // Fill EVERY face + edge so each member highlights exactly like a
-      // triple-clicked standalone object (uniform coloring), instead of a
-      // bare object-level selection. The group's dashed edit outline is
-      // drawn separately (_groupEditOutline) and is unaffected.
-      const allFaces = new Set();
-      for (let i = 0; i < o.em.faces.length; i++) allFaces.add(i);
-      const allEdges = new Set();
-      for (const f of o.em.faces) {
-        const loops = [f.verts, ...(f.holes || [])];
-        for (const loop of loops)
-          for (let k = 0; k < loop.length; k++) allEdges.add(ek(loop[k], loop[(k + 1) % loop.length]));
-      }
-      if (o.em.edges) for (const ed of o.em.edges) allEdges.add(ek(ed.a, ed.b));
-      Selection.objects.add(o);
-      Selection.faces.set(o, allFaces);
-      Selection.edges.set(o, allEdges);
-    }
-    refreshSelectionVisuals();
-    renderEntityInfo();
-    setStatus('msg', `Select entire group (${members.length} objects).`);
-  },
-
-  /* Triple-click (no Shift): flood-fill connected objects by shared vertex
-     positions (tolerance 1e-4). Walks the scene graph finding every object
-     whose bounding-box vertex set overlaps with the growing frontier. */
-  _selectConnectedSameMaterial(startObj) {
-    const EPS = 1e-4;
-    const vkey = v => `${Math.round(v.x/EPS)},${Math.round(v.y/EPS)},${Math.round(v.z/EPS)}`;
-    const matKey = (o) => {
-      if (o.materialId) return o.materialId;
-      // For ungrouped/color-only imports the actual color lives in face.color
-      // (vertex colors). Fall back to the first face color, then mat color.
-      if (o.em && o.em.faces.length && o.em.faces[0].color != null) return 'fc:' + o.em.faces[0].color;
-      return 'c:' + (o.mat ? o.mat.color.getHex() : 0);
-    };
-    const startMat = matKey(startObj);
-    // Connected selection must NOT cross a group boundary: a grouped object is
-    // a separate entity, so flood-fill from an ungrouped object stops at any
-    // grouped neighbour (and vice-versa). Match the start object's group.
-    const startGroup = startObj.groupId ?? null;
-    const candidates = Model.objects.filter(o =>
-      o.visible && !o.hidden && !o.isImagePlane && !o.isEntourage &&
-      (!Model.activeGroupId || o.groupId === Model.activeGroupId) &&
-      (o.groupId ?? null) === startGroup &&
-      matKey(o) === startMat
-    );
-    const vsets = new Map();
-    for (const o of candidates) {
-      const s = new Set();
-      for (const v of o.em.vertices) s.add(vkey(v));
-      vsets.set(o, s);
-    }
-    const selected = new Set([startObj]);
-    const frontier = [startObj];
-    while (frontier.length) {
-      const cur = frontier.pop();
-      const curKeys = vsets.get(cur);
-      if (!curKeys) continue;
-      for (const cand of candidates) {
-        if (selected.has(cand)) continue;
-        const candKeys = vsets.get(cand);
-        let shared = false;
-        for (const k of curKeys) {
-          if (candKeys.has(k)) { shared = true; break; }
-        }
-        if (shared) {
-          selected.add(cand);
-          frontier.push(cand);
-        }
-      }
-    }
-    Selection.objects.clear(); Selection.faces.clear(); Selection.edges.clear();
-    for (const o of selected) Selection.objects.add(o);
-    refreshSelectionVisuals();
-    renderEntityInfo();
-  },
   _selectConnectedObjects(startObj) {
     const EPS = 1e-4;
     // Build a spatial key for a vertex position
@@ -30291,14 +30201,19 @@ function _enterDrawMode(mode) {
   // planometric needs no angle seeding — its helper drives the camera each frame.
   controls.update();
   setStatus('msg', {
-    iso: 'Isometric', plan: 'Planometric ' + _planAngleDeg + '°',
-    cavalier: 'Oblique — Cavalier (1:1)', cabinet: 'Oblique — Cabinet (1:2)'
+    iso: 'Isometric',
+    plan: 'Planometric ' + _planAngleDeg + '°  (select again → 30/45/60)',
+    cavalier: 'Oblique · Cavalier 1:1 @ ' + _obliqueAngleDeg + '°  (select again → 30/45/60)',
+    cabinet: 'Oblique · Cabinet 1:2 @ ' + _obliqueAngleDeg + '°  (select again → 30/45/60)'
   }[mode] || 'Drawing view');
 }
-function setIsometric()      { _enterDrawMode('iso'); }
-function setPlanometric(deg) { if (deg) _planAngleDeg = deg; _enterDrawMode('plan'); }
-function setCavalier(deg)    { if (deg) _obliqueAngleDeg = deg; _enterDrawMode('cavalier'); }
-function setCabinet(deg)     { if (deg) _obliqueAngleDeg = deg; _enterDrawMode('cabinet'); }
+// Re-selecting the SAME drawing mode cycles its angle (no extra menu items needed).
+const _DRAW_ANGLES = [45, 60, 30];
+function _cycleAngle(cur) { const i = _DRAW_ANGLES.indexOf(cur); return _DRAW_ANGLES[(i + 1) % _DRAW_ANGLES.length]; }
+function setIsometric()      { _enterDrawMode('iso'); }   // iso angle is fixed by definition
+function setPlanometric(deg) { if (deg) _planAngleDeg = deg;    else if (_drawMode === 'plan')     _planAngleDeg    = _cycleAngle(_planAngleDeg);    _enterDrawMode('plan'); }
+function setCavalier(deg)    { if (deg) _obliqueAngleDeg = deg; else if (_drawMode === 'cavalier') _obliqueAngleDeg = _cycleAngle(_obliqueAngleDeg); _enterDrawMode('cavalier'); }
+function setCabinet(deg)     { if (deg) _obliqueAngleDeg = deg; else if (_drawMode === 'cabinet')  _obliqueAngleDeg = _cycleAngle(_obliqueAngleDeg); _enterDrawMode('cabinet'); }
 
 /* Zoom Selection — zoom to fit currently selected objects/faces. */
 function zoomSelection() {
